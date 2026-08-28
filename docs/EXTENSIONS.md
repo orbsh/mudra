@@ -62,19 +62,23 @@ to core actions:
   browser's Alt+Tab is bound to a walker menu whose entries **exclude** browser windows
   (prefix filter). This is the "browser excluded from normal switching" behaviour.
 
-#### walker mode prefixes（`@s` / `@t`）
+#### walker 模式与切换（`@` / `#`）
 
-walker 集成按**前缀**切模式（分成多个相关前缀：session 管理、tab 管理等）。
+不用多个前缀；两个键 + 全局状态（`walker_mode`、`op_mod`）即可切换：
 
-- **`@s` session 模式**
-  - 切换 / 创建 / 删除 session；输入一个**不存在的名字 → 直接创建并切换**（k8s `ns` 语义）。
-  - 当前 session 持久化在 `state.current_session`；后续 tab 操作都基于当前 session（namespace 语义）。
-- **`@t` tab 模式**
-  - 搜索当前 session 的**打开窗口**；`Enter` 切过去（`activateTarget` + niri focus window）；
-    一个快捷键**关闭**（更多快捷操作后续）。
-- **`@g` global 模式**
-  - 搜索 / 打开 RSS、IM 等**全局 tab**（非 session 内）；它们在**所有 session 里都可见可访问**，
-    属一个单独的常驻全局实例，不随 `current_session` 改变（`session_id` 为 NULL）。
+- **`@`**：在 **session ↔ tab** 之间翻转（`state.walker_mode` 已记录当前模式，直接翻到另一种，无需多个前缀）。
+- **`#`**：切换**操作模式** `state.op_mod = 1/0` —— 仅当**当前激活窗口是 tab** 时有效：
+  - 激活窗口不是 tab → `#` **无效**。
+  - 是 tab → `#` 进入操作模式（对当前 tab 展示操作：关闭、导航等）；再按一次回到原 session/tab 模式。
+  - 当前是 session、按 `#` → 进入操作模式；按 `@` → 直接进入 tab 模式。
+
+各模式行为：
+- **session**：切换 / 创建 / 删除 session；输入**不存在的名字 → 直接创建并切换**（k8s `ns` 语义）；
+  `state.current_session` 持久化，后续 tab 操作都基于它（namespace 语义）。
+- **tab**：搜索当前 session 的**打开窗口**；`Enter` 切过去（`activateTarget` + niri focus window）。
+- **op_mod=true**：对当前激活 tab 提供操作（关闭等，可再扩）。
+- **全局 tab**（RSS / IM 等非 session 内）：在**所有 session 里都可显示/访问**，属一个单独的常驻
+  全局实例（`session_id` 为 NULL），不随 `current_session` 改变。
 - **关闭语义**：`qw` 主动关闭 → 从 session **删除**该页；通过 niri 关闭 / 意外（如崩溃）关闭 →
   **保留**（仅标 `closed_at`，不删）——主动关不留痕，外部/意外关不丢。
 
