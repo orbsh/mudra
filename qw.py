@@ -200,6 +200,36 @@ def cmd_use(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mode(args: argparse.Namespace) -> int:
+    """walker 模式状态机：walker_mode(session|tab) + op_mod(1|0)。"""
+    with db.connect() as conn:
+        shown = args.cmd in (None, "show")
+        if shown:
+            wm = db.get_state(conn, "walker_mode") or "session"
+            om = db.get_state(conn, "op_mod") or "0"
+            print(f"walker_mode={wm}  op_mod={om}")
+        elif args.cmd in ("session", "tab"):
+            db.set_state(conn, "walker_mode", args.cmd)
+            conn.commit()
+            print(f"walker_mode -> {args.cmd}")
+        elif args.cmd == "flip":
+            wm = db.get_state(conn, "walker_mode") or "session"
+            nxt = "tab" if wm == "session" else "session"
+            db.set_state(conn, "walker_mode", nxt)
+            conn.commit()
+            print(f"@: walker_mode {wm} -> {nxt}")
+        elif args.cmd == "op":
+            om = db.get_state(conn, "op_mod") or "0"
+            nxt = "0" if om == "1" else "1"
+            db.set_state(conn, "op_mod", nxt)
+            conn.commit()
+            print(f"#: op_mod {om} -> {nxt}")
+        else:
+            print("usage: mode [session|tab|flip|op]")
+            return 1
+    return 0
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     with db.connect() as conn:
         s = conn.execute(
@@ -317,6 +347,10 @@ def main() -> int:
     u = sub.add_parser("use", help="set / show current session (k8s-ns like)")
     u.add_argument("name", nargs="?", help="session to switch to (creates if missing)")
     u.set_defaults(fn=cmd_use)
+
+    mo = sub.add_parser("mode", help="walker mode state: session|tab|flip|op")
+    mo.add_argument("cmd", nargs="?", help="session/tab/flip/op (default: show)")
+    mo.set_defaults(fn=cmd_mode)
 
     a = sub.add_parser("add", help="add a page to a running session")
     a.add_argument("name")
