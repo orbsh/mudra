@@ -112,6 +112,19 @@ qw daemon start|stop|status
 - Caveat: error/built-in pages aren't injectable (rarely open windows). niri window-rule can catch leaks.
 - **Cascade**: the interception must be (re)injected on **every** new page target (`Target.targetCreated` → `Page.addScriptToEvaluateOnNewDocument`); otherwise a window that `qwd` itself spawns carries no script, and a further `_blank` there reverts to a chrome-default (non-`--app`) window.
 
+### Extensions（WM / launcher 对接，可插拔）
+
+`qw` 核心是 **WM / launcher 无关**的：只管理 session/instance/page + CDP。环境相关集成做成
+**扩展模块**，经统一接口加载、按需启用：
+
+- **WM 扩展**（`move` / focus / 列宽 / workspace 路由 / 窗口映射）：核心只经 `WmExt` 接口调用，
+  由具体实现提供（`niri` 现成；`hyprland` 未来可加）。niri 实现走 `niri msg` IPC。
+- **Launcher 扩展**（菜单提供 + 动作处理）：核心暴露 session/page 数据，`LauncherExt` 把数据
+  渲染成 launcher（walker）菜单项并处理选中动作。
+- **启用清单**由配置决定（如 `extensions: [niri, walker]`）；核心不感知具体实现。
+
+对接方式、接口定义、walker/niri 具体接法见 `docs/EXTENSIONS.md`。
+
 ## 6. Verified vs pending (facts)
 
 **Verified**:
@@ -136,6 +149,8 @@ qw daemon start|stop|status
 - **P4 proxy & extensions**: `--proxy-server`; `--load-extension` list; build+ship SurfingKeys bundle.
 - **P5 column-width memory**: Win+R capture → `site_widths`; auto-apply on open.
 - **P6 new-window interception**: `inject.js` + local `/open` server in `qwd`.
-- **P7 integration (later)**: walker session/browser-window menus; hotkeys (`Mod+Space` etc.).
+- **P7 extension modules**: build `WmExt` (niri move / column-width / workspace routing /
+  window mapping) + `LauncherExt` (walker session/page menus + hotkeys) behind the pluggable
+  interface (§5 Extensions); migrate `qw move` and focus onto the `WmExt` interface.
 
 Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutting: verify niri/CDP APIs against reality before wiring each phase (the "fabricated API" rule).
