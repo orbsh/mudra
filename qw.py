@@ -93,30 +93,53 @@ def cmd_open(args: argparse.Namespace) -> int:
                 "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
                 (args.name, f"web:{args.name}", now),
             )
-            sid, inst = cur.lastrowid, None
+            sid, inst, s = cur.lastrowid, None, {"id": cur.lastrowid, "instance_id": None}
     if inst:
         if _pid_alive(inst["pid"]):
             print(f"session {args.name!r} already running (port {inst['port']})")
             return 0
-        # 实例 chromium 已死但 DB 还标 running(如 daemon 缺席时) → 复位后重新拉起
         with db.connect() as conn:
-            conn.execute("UPDATE instances SET running=0 WHERE id=?", (s["instance_id"],))
+            conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst["id"],))
             conn.execute(
                 "UPDATE pages SET closed_at=? WHERE session_id=? AND closed_at IS NULL",
                 (int(time.time()), sid),
             )
             conn.commit()
+    # 复用 conf 预建的实例配置行(running=0),取 proxy/extensions
+    with db.connect() as conn:
+        irow = (
+            conn.execute(
+                "SELECT * FROM instances WHERE id=?", (s["instance_id"],)
+            ).fetchone()
+            if s and s["instance_id"]
+            else None
+        )
     port = spawn.free_port(9200)
     url = spawn.normalize_url(args.url)
-    pid, udir = spawn.launch(args.name, url, port)
+    proxy = irow["proxy"] if irow else None
+    ext = irow["extensions"] if irow and irow["extensions"] else None
+    pid, udir = spawn.launch(
+        args.name, url, port,
+        proxy=proxy,
+        extensions=ext.split(",") if ext else None,
+    )
     with db.connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO instances(profile,port,pid,running) VALUES(?,?,?,1)",
-            (udir, port, pid),
-        )
-        iid = cur.lastrowid
+        if irow:
+            conn.execute(
+                "UPDATE instances SET profile=?,port=?,pid=?,running=1 WHERE id=?",
+                (udir, port, pid, irow["id"]),
+            )
+            iid = irow["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO instances(profile,port,pid,running,proxy,extensions)"
+                " VALUES(?,?,?,1,?,?)",
+                (udir, port, pid, proxy, ext),
+            )
+            iid = cur.lastrowid
         conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
-    print(f"opened {args.url!r} in session {args.name!r} (port {port}, pid {pid})")
+    print(f"opened {args.url!r} in session {args.name!r} (port {port}, pid {pid})"
+          + (f" proxy={proxy}" if proxy else ""))
     print("pages 由 qwd daemon 实时同步")
     return 0
 
@@ -249,7 +272,12 @@ def cmd_add(args: argparse.Namespace) -> int:
     url = spawn.normalize_url(args.url)
     prev = niri.focused_window_id() if args.bg else None
     before = niri.window_ids() if args.bg else None
-    spawn.launch(args.name, url, None)  # 无 debug 端口 → 并入已有实例的新 --app 窗口
+    ext = inst["extensions"] if inst["extensions"] else None
+    spawn.launch(
+        args.name, url, None,  # 无 debug 端口 → 并入已有实例的新 --app 窗口
+        proxy=inst["proxy"],
+        extensions=ext.split(",") if ext else None,
+    )
     if args.bg:
         assert before is not None
         nwid = niri.wait_for_new_window(before)
@@ -307,6 +335,41 @@ def cmd_close(args: argparse.Namespace) -> int:
                 )
             conn.commit()
             print(f"closed session {args.name!r}")
+    return 0
+
+
+def cmd_conf(args: argparse.Namespace) -> int:
+    """per-session 代理/扩展配置；预建 running=0 的实例行，open 时复用。"""
+    with db.connect() as conn:
+        s = conn.execute(
+            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
+        ).fetchone()
+        if s:
+            sid, iid = s["id"], s["instance_id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
+                (args.name, f"web:{args.name}", int(time.time())),
+            )
+            sid, iid = cur.lastrowid, None
+        if not iid:
+            cur = conn.execute(
+                "INSERT INTO instances(profile,port,pid,running) VALUES(NULL,NULL,NULL,0)"
+            )
+            iid = cur.lastrowid
+            conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
+        if args.proxy is not None:
+            newp = None if args.proxy.lower() in ("none", "off") else args.proxy
+            conn.execute("UPDATE instances SET proxy=? WHERE id=?", (newp, iid))
+        if args.ext is not None:
+            newe = None if args.ext.lower() in ("default", "") else args.ext
+            conn.execute("UPDATE instances SET extensions=? WHERE id=?", (newe, iid))
+        row = conn.execute(
+            "SELECT proxy,extensions FROM instances WHERE id=?", (iid,)
+        ).fetchone()
+        conn.commit()
+        print(f"session {args.name!r}: proxy={row['proxy'] or '(none)'}  "
+              f"extensions={row['extensions'] or '(default surfingkeys)'}")
     return 0
 
 
@@ -394,6 +457,12 @@ def main() -> int:
     c.add_argument("name")
     c.add_argument("query", nargs="?", help="url filter → close just that open tab")
     c.set_defaults(fn=cmd_close)
+
+    cf = sub.add_parser("conf", help="set per-session proxy/extensions config")
+    cf.add_argument("name")
+    cf.add_argument("--proxy", help="proxy e.g. 127.0.0.1:7890, or 'none'")
+    cf.add_argument("--ext", help="comma-separated extension dirs, or 'default'")
+    cf.set_defaults(fn=cmd_conf)
 
     a = ap.parse_args()
     return a.fn(a)

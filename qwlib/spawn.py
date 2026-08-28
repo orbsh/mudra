@@ -27,6 +27,10 @@ def profile_dir(name: str) -> pathlib.Path:
     return PROFILES / name
 
 
+EXT_ROOT = db.DB.parent / "extensions"
+DEFAULT_EXTENSIONS = [str(EXT_ROOT / "surfingkeys")]
+
+
 def normalize_url(url: str) -> str:
     """无 scheme 则补 https://。bare host/域名 → https；要 http/IP 请自写 scheme。"""
     if "://" not in url:
@@ -34,10 +38,11 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def launch(name: str, url: str, port: int | None) -> tuple[int, str]:
+def launch(name, url, port, *, proxy=None, extensions=None) -> tuple[int, str]:
     """拉起一个 chromium --app 窗口；返回 (pid, profile_dir).
 
     port 非 None → 新实例（带 remote-debugging）；port=None → 并入已有实例（无 debug 端口）。
+    proxy 非 None → --proxy-server；extensions=None 用默认(SurfingKeys)，否则按给定列表。
     """
     udir = profile_dir(name)
     udir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +56,12 @@ def launch(name: str, url: str, port: int | None) -> tuple[int, str]:
     ]
     if port is not None:
         cmd.append(f"--remote-debugging-port={port}")
+    if extensions is None:
+        extensions = DEFAULT_EXTENSIONS
+    if extensions:
+        cmd.append("--load-extension=" + ",".join(extensions))
+    if proxy:
+        cmd.append(f"--proxy-server={proxy}")
     proc = subprocess.Popen(
         cmd,
         env={k: v for k, v in os.environ.items()},
