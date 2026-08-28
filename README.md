@@ -41,6 +41,8 @@ python3 qw.py ls <name> --filter news     # filter by url/title substring
 |---|---|
 | `qw.py new <name>` | create a session (no instance) |
 | `qw.py open <name> <url>` | spawn an instance for the session and open the first page |
+| `qw.py add <name> <url> [--bg]` | add a page to a running session (`--bg` = keep focus) |
+| `qw.py close <name> [query]` | close a whole session, or one open tab (url filter) |
 | `qw.py ls [name] [-f FILTER]` | list sessions, or a session's pages (URL/title filter) |
 | `qw.py targets <name>` | list live page targets (CDP) |
 | `qw.py focus <name> <query>` | find a page by url/title and bring it to the front |

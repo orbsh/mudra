@@ -45,3 +45,26 @@ def focus_window(wid: int) -> None:
 
 def move_focused_to_workspace(workspace: str) -> None:
     _msg(["action", "move-window-to-workspace", workspace])
+
+
+def window_ids() -> set[int]:
+    return {w["id"] for w in windows()}
+
+
+def focused_window_id() -> int | None:
+    for w in windows():
+        if w.get("is_focused"):
+            return w["id"]
+    return None
+
+
+def wait_for_new_window(before: set[int], timeout: float = 8.0) -> int | None:
+    """等一个“开窗前不存在”的新窗口出现（后台打开用）。返回新窗口 id 或 None。"""
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        new = window_ids() - before
+        if new:
+            return sorted(new)[0]
+        time.sleep(0.3)
+    return None

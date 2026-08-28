@@ -247,8 +247,19 @@ def cmd_add(args: argparse.Namespace) -> int:
         print(f"session {args.name!r} not running; use `qw open` first")
         return 1
     url = spawn.normalize_url(args.url)
+    prev = niri.focused_window_id() if args.bg else None
+    before = niri.window_ids() if args.bg else None
     spawn.launch(args.name, url, None)  # 无 debug 端口 → 并入已有实例的新 --app 窗口
-    print(f"added {url!r} to session {args.name!r} (new window in instance)")
+    if args.bg:
+        assert before is not None
+        nwid = niri.wait_for_new_window(before)
+        if nwid is not None and prev is not None:
+            import time
+            time.sleep(0.5)  # 等新窗抢焦落定，再还给旧窗
+            niri.focus_window(prev)
+        print(f"added {url!r} to session {args.name!r} in BACKGROUND (focus kept on {prev})")
+    else:
+        print(f"added {url!r} to session {args.name!r} (new window in instance)")
     return 0
 
 
@@ -376,6 +387,7 @@ def main() -> int:
     a = sub.add_parser("add", help="add a page to a running session")
     a.add_argument("name")
     a.add_argument("url")
+    a.add_argument("--bg", action="store_true", help="open in background (keep current focus)")
     a.set_defaults(fn=cmd_add)
 
     c = sub.add_parser("close", help="close a tab (<query>) or a whole session")
