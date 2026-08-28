@@ -157,3 +157,11 @@ qw daemon start|stop|status
   interface (§5 Extensions); migrate `qw move` and focus onto the `WmExt` interface.
 
 Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutting: verify niri/CDP APIs against reality before wiring each phase (the "fabricated API" rule).
+
+## 8. Known issues (deferred)
+
+- **密码不记忆**：chromium `--app` 实例输入过的密码不会保存。根因：Linux 下 chromium 存密码依赖
+  OS keyring（gnome-keyring / libsecret），本机未起该 daemon → 不弹「保存密码」、不落地。候选修复
+  （未验证、以后再做）：① 起 `gnome-keyring`（正规 keychain）；② 或启动参数 `--password-store=basic`
+  （密码存进 profile、无 keyring 也能工作，安全性弱于 keychain）。需先核实该 flag 在 chromium 151 是否仍生效。
+  （2026-08 记录）
