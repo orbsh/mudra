@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# build artifacts
+dist/
+build/
+
+# editor / OS
+.DS_Store
+*.swp
+
+# local runtime state
+qw.sqlite
+*.sqlite3
