@@ -62,6 +62,19 @@ to core actions:
   browser's Alt+Tab is bound to a walker menu whose entries **exclude** browser windows
   (prefix filter). This is the "browser excluded from normal switching" behaviour.
 
+#### walker mode prefixes（`@s` / `@t`）
+
+walker 集成按**前缀**切模式（分成多个相关前缀：session 管理、tab 管理等）。
+
+- **`@s` session 模式**
+  - 切换 / 创建 / 删除 session；输入一个**不存在的名字 → 直接创建并切换**（k8s `ns` 语义）。
+  - 当前 session 持久化在 `state.current_session`；后续 tab 操作都基于当前 session（namespace 语义）。
+- **`@t` tab 模式**
+  - 搜索当前 session 的**打开窗口**；`Enter` 切过去（`activateTarget` + niri focus window）；
+    一个快捷键**关闭**（更多快捷操作后续）。
+- **关闭语义**：`qw` 主动关闭 → 从 session **删除**该页；通过 niri 关闭 / 意外（如崩溃）关闭 →
+  **保留**（仅标 `closed_at`，不删）——主动关不留痕，外部/意外关不丢。
+
 > ⚠️ walker's exact provider/plugin protocol is **to be verified against its real API**
 > before wiring (the "fabricated API" rule). The interface above is the contract qw
 > exposes; the provider code adapts to walker specifics.

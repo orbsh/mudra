@@ -51,6 +51,7 @@ sessions(id, name UNIQUE, workspace TEXT, instance_id FK,
 pages(id, session_id FK CASCADE, target_id, url, title,
       position INT, opened_at INT, closed_at INT NULL)
 site_widths(site TEXT PRIMARY KEY, proportion REAL)   -- site → column-width ratio (0..1)
+state(key TEXT PRIMARY KEY, value TEXT)                -- 全局状态: current_session, walker_mode
 ```
 
 - `pages.target_id` = CDP target of the window; `url` live-updated via CDP `infoChanged` → URL-filterable.
