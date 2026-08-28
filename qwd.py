@@ -86,8 +86,23 @@ class Qwd:
     # ---- 单 instance 监听 ----
     def _watch(self, inst: dict) -> None:
         iid, port = inst["id"], inst["port"]
+        # 竞态防护：chromium 刚 spawn，端口可能还没绑定。重试十多秒，真起不来才标 down。
+        ws = None
+        for attempt in range(12):
+            try:
+                ws = cdp.WsClient(cdp.get_browser_ws(port, timeout=2), timeout=60)
+                break
+            except Exception:
+                if attempt == 11:
+                    print(f"[qwd] instance {iid} never ready on :{port}; marking down")
+                    ws = None
+                else:
+                    time.sleep(1)
+        if ws is None:
+            self._mark_down(iid)
+            self._threads.pop(iid, None)
+            return
         try:
-            ws = cdp.WsClient(cdp.get_browser_ws(port), timeout=60)
             # 基线：先全量同步一次，再开发现
             r = cdp.call(ws, "Target.getTargets")
             self._sync_infos(iid, r["result"]["targetInfos"])

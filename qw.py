@@ -7,7 +7,7 @@ import sqlite3
 import sys
 import time
 
-from qwlib import ctl, db, spawn
+from qwlib import ctl, db, niri, spawn
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -41,6 +41,11 @@ def cmd_ls(args: argparse.Namespace) -> int:
                 " WHERE session_id=? ORDER BY position",
                 (s["id"],),
             ).fetchall()
+            if args.filter:
+                pages = [
+                    p for p in pages
+                    if args.filter in f"{p['url']} {p['title'] or ''}"
+                ]
             print(f"session {args.name!r} (ws={s['workspace'] or '-'}): {len(pages)} pages")
             for p in pages:
                 mark = "[closed]" if p["closed_at"] else "[open]"
@@ -150,6 +155,27 @@ def cmd_reload(args) -> int:
     return _on_current(args, lambda p, t: ctl.reload(p, t))
 
 
+def cmd_move(args) -> int:
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
+            " WHERE s.name=? AND i.running=1",
+            (args.name,),
+        ).fetchone()
+    if not row:
+        print(f"session {args.name!r} not running")
+        return 1
+    wids = [w["id"] for w in niri.windows_for_pid(row["pid"])]
+    if not wids:
+        print(f"no niri windows found for session {args.name!r}")
+        return 1
+    for wid in wids:
+        niri.focus_window(wid)
+        niri.move_focused_to_workspace(args.workspace)
+    print(f"moved {len(wids)} window(s) of {args.name!r} to workspace {args.workspace}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="qw", description="browser session manager")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -161,6 +187,7 @@ def main() -> int:
 
     l = sub.add_parser("ls", help="list sessions / pages")
     l.add_argument("name", nargs="?", help="list pages of a session")
+    l.add_argument("--filter", "-f", help="filter pages by url/title substring")
     l.set_defaults(fn=cmd_ls)
 
     o = sub.add_parser("open", help="open a session (spawn instance + first url)")
@@ -188,6 +215,11 @@ def main() -> int:
     rl = sub.add_parser("reload", help="reload current page")
     rl.add_argument("name")
     rl.set_defaults(fn=cmd_reload)
+
+    m = sub.add_parser("move", help="move a session's windows to a workspace")
+    m.add_argument("name")
+    m.add_argument("workspace", help="target niri workspace")
+    m.set_defaults(fn=cmd_move)
 
     a = ap.parse_args()
     return a.fn(a)
