@@ -71,6 +71,12 @@ def activate(port: int, target_id: str) -> None:
     ws.close()
 
 
+def close_target(port: int, target_id: str) -> None:
+    ws = _browser(port)
+    cdp.call(ws, "Target.closeTarget", {"targetId": target_id})
+    ws.close()
+
+
 def goto(port: int, target_id: str, url: str) -> None:
     ws = cdp.WsClient(_page_ws(port, target_id), timeout=8)
     cdp.call(ws, "Page.navigate", {"url": url})

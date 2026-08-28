@@ -267,14 +267,35 @@ def cmd_close(args: argparse.Namespace) -> int:
             if s["instance_id"]
             else None
         )
-        if inst and _pid_alive(inst["pid"]):
-            os.kill(inst["pid"], signal.SIGTERM)  # 主动关浏览器
-        # 主动关闭 → 删除该 session 的页（vs 外部/niri/意外关闭只标 close 保留）
-        conn.execute("DELETE FROM pages WHERE session_id=?", (s["id"],))
-        if inst:
-            conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst["id"],))
-        conn.commit()
-    print(f"closed session {args.name!r}")
+        if args.query:
+            # 按 tab 主动关闭：删除该页并关掉对应 target
+            if not inst or not _pid_alive(inst["pid"]):
+                print(f"session {args.name!r} not running")
+                return 1
+            cur = conn.execute(
+                "SELECT id,position,url,target_id FROM pages"
+                " WHERE session_id=? AND closed_at IS NULL AND url LIKE ?",
+                (s["id"], f"%{args.query}%"),
+            ).fetchone()
+            if not cur:
+                print(f"no open page in {args.name!r} matching {args.query!r}")
+                return 1
+            conn.execute("DELETE FROM pages WHERE id=?", (cur["id"],))  # 主动关 → 删除
+            conn.commit()
+            if cur["target_id"]:
+                ctl.close_target(inst["port"], cur["target_id"])
+            print(f"closed tab #{cur['position']} {cur['url']}")
+        else:
+            # 关整个 session
+            if inst and _pid_alive(inst["pid"]):
+                os.kill(inst["pid"], signal.SIGTERM)  # 主动关浏览器
+            conn.execute("DELETE FROM pages WHERE session_id=?", (s["id"],))
+            if inst:
+                conn.execute(
+                    "UPDATE instances SET running=0 WHERE id=?", (inst["id"],)
+                )
+            conn.commit()
+            print(f"closed session {args.name!r}")
     return 0
 
 
@@ -357,8 +378,9 @@ def main() -> int:
     a.add_argument("url")
     a.set_defaults(fn=cmd_add)
 
-    c = sub.add_parser("close", help="actively close a session (kills instance, deletes its pages)")
+    c = sub.add_parser("close", help="close a tab (<query>) or a whole session")
     c.add_argument("name")
+    c.add_argument("query", nargs="?", help="url filter → close just that open tab")
     c.set_defaults(fn=cmd_close)
 
     a = ap.parse_args()
