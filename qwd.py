@@ -15,8 +15,33 @@ import json
 import sys
 import threading
 import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from qwlib import cdp, db
+from qwlib import cdp, db, spawn
+
+# 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，qwd 拉起 --app 窗口。
+_INTERCEPT_PORT = 8899
+_INJECT_JS = r"""(() => {
+  if (window.__qwInjected) return; window.__qwInjected = true;
+  const SESSION = "__SESSION__";
+  const EP = "http://127.0.0.1:__PORT__/open";
+  function openUrl(u) {
+    if (!/^https?:/.test(u || "")) return;
+    try { navigator.sendBeacon(EP, new Blob([JSON.stringify({url:u, session:SESSION})], {type:"text/plain"})); } catch(e){}
+  }
+  const ow = window.open;
+  window.open = function(u, n, f) {
+    if (u && /^https?:/.test(u)) { openUrl(u); return null; }
+    return ow.call(window, u, n, f);
+  };
+  document.addEventListener("click", function(e) {
+    const a = e.target && e.target.closest ? e.target.closest("a") : null;
+    if (a && a.href && (a.target === "_blank" || e.ctrlKey || e.metaKey || e.button === 1)) {
+      e.preventDefault(); openUrl(a.href);
+    }
+  }, true);
+})();"""
 
 
 def _acquire_lock() -> None:
@@ -32,6 +57,24 @@ def _acquire_lock() -> None:
     globals()["_LOCK_FH"] = fh  # 持引用防 GC 释放锁
 
 
+class _InterceptHandler(BaseHTTPRequestHandler):
+    """页面注入脚本的 sendBeacon POST /open → qwd._open 拉 --app 窗口。"""
+    def do_POST(self):
+        qwd = self.server.qwd
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            qwd._open(body)
+        except Exception as e:
+            print(f"[qwd] intercept err: {e}")
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def log_message(self, *args):  # 静默
+        pass
+
+
 class Qwd:
     def __init__(self) -> None:
         self._threads: dict[int, threading.Thread] = {}
@@ -42,6 +85,42 @@ class Qwd:
             "SELECT id FROM sessions WHERE instance_id=?", (inst_id,)
         ).fetchone()
         return r["id"] if r else None
+
+    def _session_name(self, conn, inst_id: int) -> str | None:
+        r = conn.execute(
+            "SELECT name FROM sessions WHERE instance_id=?", (inst_id,)
+        ).fetchone()
+        return r["name"] if r else None
+
+    # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 qwd 拉 --app ----
+    def _inject_page(self, port: int, target_id: str, session: str) -> None:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/json", timeout=5
+            ) as r:
+                targets = json.loads(r.read())
+            wsurl = next(
+                t["webSocketDebuggerUrl"] for t in targets
+                if t["id"] == target_id and t.get("type") == "page"
+            )
+            ws = cdp.WsClient(wsurl, timeout=8)
+            src = _INJECT_JS.replace("__SESSION__", session).replace("__PORT__", str(_INTERCEPT_PORT))
+            cdp.call(ws, "Page.addScriptToEvaluateOnNewDocument", {"source": src})
+            cdp.call(ws, "Runtime.evaluate", {"expression": src})  # 已加载页立即注入
+            ws.close()
+        except Exception as e:
+            print(f"[qwd] inject {session}/{target_id} err: {e}")
+
+    def _open(self, data: dict) -> None:
+        """拦截到的“新开 tab” → 在该会话拉起 --app 窗口（并入已有实例）。"""
+        url, session = (data or {}).get("url"), (data or {}).get("session")
+        if not url or not session:
+            return
+        try:
+            spawn.launch(session, spawn.normalize_url(url), None)
+            print(f"[qwd] new-window -> --app: {url} (session {session})")
+        except Exception as e:
+            print(f"[qwd] open err: {e}")
 
     def _sync_infos(self, inst_id: int, infos: list[dict]) -> None:
         with db.connect() as conn:
@@ -119,9 +198,16 @@ class Qwd:
             self._threads.pop(iid, None)
             return
         try:
-            # 基线：先全量同步一次，再开发现
+            # 基线：先全量同步一次，再开发现；并给每个页面注入新窗口拦截脚本
             r = cdp.call(ws, "Target.getTargets")
-            self._sync_infos(iid, r["result"]["targetInfos"])
+            infos = r["result"]["targetInfos"]
+            self._sync_infos(iid, infos)
+            with db.connect() as conn:
+                sname = self._session_name(conn, iid)
+            if sname:
+                for t in infos:
+                    if t.get("type") == "page":
+                        self._inject_page(port, t["targetId"], sname)
             cdp.call(ws, "Target.setDiscoverTargets", {"discover": True})
             while True:
                 msg = json.loads(ws.recv_text())
@@ -131,6 +217,8 @@ class Qwd:
                     info = p.get("targetInfo", {})
                     if info.get("type") == "page":
                         self._sync_infos(iid, [info])
+                        if sname:
+                            self._inject_page(port, info["targetId"], sname)
                 elif method == "Target.targetInfoChanged":
                     info = p.get("targetInfo", {})
                     if info.get("type") == "page":
@@ -144,8 +232,15 @@ class Qwd:
             self._threads.pop(iid, None)
 
     # ---- 主循环 ----
+    def _start_intercept_server(self) -> None:
+        srv = ThreadingHTTPServer(("127.0.0.1", _INTERCEPT_PORT), _InterceptHandler)
+        srv.qwd = self
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        print(f"[qwd] intercept server http://127.0.0.1:{_INTERCEPT_PORT}")
+
     def run(self) -> None:
         print("[qwd] started")
+        self._start_intercept_server()
         while True:
             with db.connect() as conn:
                 insts = conn.execute(
