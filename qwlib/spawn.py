@@ -34,19 +34,23 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def launch(name: str, url: str, port: int) -> tuple[int, str]:
-    """拉一个 chromium --app 实例；返回 (pid, profile_dir)."""
+def launch(name: str, url: str, port: int | None) -> tuple[int, str]:
+    """拉起一个 chromium --app 窗口；返回 (pid, profile_dir).
+
+    port 非 None → 新实例（带 remote-debugging）；port=None → 并入已有实例（无 debug 端口）。
+    """
     udir = profile_dir(name)
     udir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "chromium",
         f"--app={url}",
         f"--user-data-dir={udir}",
-        f"--remote-debugging-port={port}",
         "--no-first-run",
         "--no-default-browser-check",
         "--enable-extensions",
     ]
+    if port is not None:
+        cmd.append(f"--remote-debugging-port={port}")
     proc = subprocess.Popen(
         cmd,
         env={k: v for k, v in os.environ.items()},

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sqlite3
 import sys
 import time
@@ -199,6 +200,54 @@ def cmd_use(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        s = conn.execute(
+            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
+        ).fetchone()
+        inst = None
+        if s and s["instance_id"]:
+            inst = conn.execute(
+                "SELECT * FROM instances WHERE id=? AND running=1", (s["instance_id"],)
+            ).fetchone()
+    if not s:
+        print(f"no session {args.name!r}")
+        return 1
+    if not inst or not _pid_alive(inst["pid"]):
+        print(f"session {args.name!r} not running; use `qw open` first")
+        return 1
+    url = spawn.normalize_url(args.url)
+    spawn.launch(args.name, url, None)  # 无 debug 端口 → 并入已有实例的新 --app 窗口
+    print(f"added {url!r} to session {args.name!r} (new window in instance)")
+    return 0
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        s = conn.execute(
+            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
+        ).fetchone()
+        if not s:
+            print(f"no session {args.name!r}")
+            return 1
+        inst = (
+            conn.execute(
+                "SELECT * FROM instances WHERE id=? AND running=1", (s["instance_id"],)
+            ).fetchone()
+            if s["instance_id"]
+            else None
+        )
+        if inst and _pid_alive(inst["pid"]):
+            os.kill(inst["pid"], signal.SIGTERM)  # 主动关浏览器
+        # 主动关闭 → 删除该 session 的页（vs 外部/niri/意外关闭只标 close 保留）
+        conn.execute("DELETE FROM pages WHERE session_id=?", (s["id"],))
+        if inst:
+            conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst["id"],))
+        conn.commit()
+    print(f"closed session {args.name!r}")
+    return 0
+
+
 def cmd_move(args) -> int:
     with db.connect() as conn:
         row = conn.execute(
@@ -268,6 +317,15 @@ def main() -> int:
     u = sub.add_parser("use", help="set / show current session (k8s-ns like)")
     u.add_argument("name", nargs="?", help="session to switch to (creates if missing)")
     u.set_defaults(fn=cmd_use)
+
+    a = sub.add_parser("add", help="add a page to a running session")
+    a.add_argument("name")
+    a.add_argument("url")
+    a.set_defaults(fn=cmd_add)
+
+    c = sub.add_parser("close", help="actively close a session (kills instance, deletes its pages)")
+    c.add_argument("name")
+    c.set_defaults(fn=cmd_close)
 
     a = ap.parse_args()
     return a.fn(a)
