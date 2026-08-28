@@ -10,11 +10,26 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import sys
 import threading
 import time
 
 from qwlib import cdp, db
+
+
+def _acquire_lock() -> None:
+    """单例锁：同一时间只允许一个 qwd 运行（flock 随进程退出自动释放）。"""
+    db.DB.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(db.DB.parent / "qwd.lock", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("[qwd] another daemon is already running")
+        sys.exit(1)
+        return
+    globals()["_LOCK_FH"] = fh  # 持引用防 GC 释放锁
 
 
 class Qwd:
@@ -53,7 +68,8 @@ class Qwd:
                         (sid,),
                     ).fetchone()["p"]
                     conn.execute(
-                        "INSERT INTO pages(session_id,target_id,url,title,position,opened_at)"
+                        "INSERT OR IGNORE INTO pages"
+                        "(session_id,target_id,url,title,position,opened_at)"
                         " VALUES(?,?,?,?,?,?)",
                         (sid, tid, t.get("url", ""), t.get("title", ""), pos,
                          int(time.time())),
@@ -155,6 +171,7 @@ def main() -> None:
     ap.add_argument("act", nargs="?", default="run", help="run (default)")
     args = ap.parse_args()
     if args.act == "run":
+        _acquire_lock()
         Qwd().run()
     else:
         print("P1: only 'run' supported")

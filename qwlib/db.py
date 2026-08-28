@@ -59,6 +59,15 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # 迁移：去重 pages(session_id,target_id) 并加唯一约束（防御多 daemon/并发竞态重复插入）
+    conn.execute(
+        "DELETE FROM pages WHERE id NOT IN"
+        " (SELECT MIN(id) FROM pages GROUP BY session_id, target_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_session_target"
+        " ON pages(session_id, target_id)"
+    )
     conn.commit()
     return conn
 
