@@ -47,6 +47,7 @@ python3 qw.py ls <name> --filter news     # filter by url/title substring
 | `qw.py goto <name> <url>` | navigate the current page of a session |
 | `qw.py back / forward / reload <name>` | history back/forward, reload |
 | `qw.py move <name> <workspace>` | move the session's windows to a workspace (niri) |
+| `qw.py use [name]` | set (creates if missing) / show current session (`*` in `ls`) |
 | `qwd.py run` | daemon: connect each running instance, sync Target→sqlite |
 
 ## How sessions/instances work

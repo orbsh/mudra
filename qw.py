@@ -52,11 +52,13 @@ def cmd_ls(args: argparse.Namespace) -> int:
                 mark = "[closed]" if p["closed_at"] else "[open]"
                 print(f"  {mark} #{p['position']} {p['url']}  {p['title'] or ''}")
         else:
+            cur_session = db.get_state(conn, "current_session")
             rows = conn.execute(
                 "SELECT id,name,workspace,created_at FROM sessions ORDER BY id"
             ).fetchall()
             for s in rows:
-                print(f"{s['id']:>2}  {s['name']:<20} ws={s['workspace'] or ''}")
+                mark = "*" if s["name"] == cur_session else " "
+                print(f"{mark}{s['id']:>2}  {s['name']:<20} ws={s['workspace'] or ''}")
     return 0
 
 
@@ -176,6 +178,27 @@ def cmd_reload(args) -> int:
     return _on_current(args, lambda p, t: ctl.reload(p, t))
 
 
+def cmd_use(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        if args.name:
+            s = conn.execute(
+                "SELECT id FROM sessions WHERE name=?", (args.name,)
+            ).fetchone()
+            if not s:
+                conn.execute(
+                    "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
+                    (args.name, f"web:{args.name}", int(time.time())),
+                )
+                print(f"created session {args.name!r}")
+            db.set_state(conn, "current_session", args.name)
+            conn.commit()
+            print(f"current session -> {args.name}")
+        else:
+            cur = db.get_state(conn, "current_session")
+            print(f"current session: {cur or '(none)'}")
+    return 0
+
+
 def cmd_move(args) -> int:
     with db.connect() as conn:
         row = conn.execute(
@@ -241,6 +264,10 @@ def main() -> int:
     m.add_argument("name")
     m.add_argument("workspace", help="target niri workspace")
     m.set_defaults(fn=cmd_move)
+
+    u = sub.add_parser("use", help="set / show current session (k8s-ns like)")
+    u.add_argument("name", nargs="?", help="session to switch to (creates if missing)")
+    u.set_defaults(fn=cmd_use)
 
     a = ap.parse_args()
     return a.fn(a)

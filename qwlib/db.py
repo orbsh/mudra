@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS site_widths(
     site       TEXT PRIMARY KEY,
     proportion REAL
 );
+
+CREATE TABLE IF NOT EXISTS state(
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -56,3 +61,16 @@ def connect() -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
+
+
+def get_state(conn: sqlite3.Connection, key: str) -> str | None:
+    r = conn.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+    return r["value"] if r else None
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO state(key,value) VALUES(?,?)"
+        " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
