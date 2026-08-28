@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 import time
@@ -59,6 +60,16 @@ def cmd_ls(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # 信号 0 = 只探存活
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return os.path.exists(f"/proc/{pid}")
+
+
 def cmd_open(args: argparse.Namespace) -> int:
     now = int(time.time())
     with db.connect() as conn:
@@ -81,10 +92,20 @@ def cmd_open(args: argparse.Namespace) -> int:
             )
             sid, inst = cur.lastrowid, None
     if inst:
-        print(f"session {args.name!r} already running (port {inst['port']})")
-        return 0
+        if _pid_alive(inst["pid"]):
+            print(f"session {args.name!r} already running (port {inst['port']})")
+            return 0
+        # 实例 chromium 已死但 DB 还标 running(如 daemon 缺席时) → 复位后重新拉起
+        with db.connect() as conn:
+            conn.execute("UPDATE instances SET running=0 WHERE id=?", (s["instance_id"],))
+            conn.execute(
+                "UPDATE pages SET closed_at=? WHERE session_id=? AND closed_at IS NULL",
+                (int(time.time()), sid),
+            )
+            conn.commit()
     port = spawn.free_port(9200)
-    pid, udir = spawn.launch(args.name, args.url, port)
+    url = spawn.normalize_url(args.url)
+    pid, udir = spawn.launch(args.name, url, port)
     with db.connect() as conn:
         cur = conn.execute(
             "INSERT INTO instances(profile,port,pid,running) VALUES(?,?,?,1)",
@@ -140,7 +161,7 @@ def _on_current(args, fn) -> int:
 
 
 def cmd_goto(args) -> int:
-    return _on_current(args, lambda p, t: ctl.goto(p, t, args.url))
+    return _on_current(args, lambda p, t: ctl.goto(p, t, spawn.normalize_url(args.url)))
 
 
 def cmd_back(args) -> int:
