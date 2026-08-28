@@ -75,6 +75,12 @@ class Qwd:
     def _mark_down(self, inst_id: int) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst_id,))
+            sid = self._session_id(conn, inst_id)
+            if sid is not None:
+                conn.execute(
+                    "UPDATE pages SET closed_at=? WHERE session_id=? AND closed_at IS NULL",
+                    (int(time.time()), sid),
+                )
             conn.commit()
 
     # ---- 单 instance 监听 ----
