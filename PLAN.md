@@ -24,6 +24,8 @@ Why (motivation): qutebrowser's modal input-method problem (`#3444`) → seek a 
 - Command name `qw`; daemon `qwd`.
 - SurfingKeys loaded via `--load-extension` (verified working in chromium 151).
 - New-window opening routed through an injected content script → local HTTP server → new `--app`.
+- **Global instance & global tabs**: RSS / IM 等非 session 窗口由**单独常驻全局实例**承载；它们不属于任何
+  session，所有 session 内都可访问/显示。模型：`pages.session_id` 为 NULL 表示全局 tab。
 - **WM-control constraint**: the whole mode depends on fine-grained WM control via interface/CLI (move / focus / set-column-width / workspace routing). niri & hyprland satisfy; **cosmic-de does not yet**.
 
 ## 3. Architecture
@@ -48,8 +50,8 @@ instances(id, profile TEXT, port INT, pid INT, running INT,
          proxy TEXT, extensions TEXT)            -- 1 session ↔ 1 instance
 sessions(id, name UNIQUE, workspace TEXT, instance_id FK,
          created_at, last_opened_at)
-pages(id, session_id FK CASCADE, target_id, url, title,
-      position INT, opened_at INT, closed_at INT NULL)
+pages(id, session_id FK CASCADE NULL, target_id, url, title,
+      position INT, opened_at INT, closed_at INT NULL)   -- session_id NULL = 全局 tab
 site_widths(site TEXT PRIMARY KEY, proportion REAL)   -- site → column-width ratio (0..1)
 state(key TEXT PRIMARY KEY, value TEXT)                -- 全局状态: current_session, walker_mode
 ```
