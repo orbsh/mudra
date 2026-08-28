@@ -1,0 +1,1 @@
+"""qw — browser session manager package."""

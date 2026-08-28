@@ -69,6 +69,7 @@ qw close <name>             close the instance (windows + workspace collapse)
 qw rm <name>                delete session (+ its profile/workspace)
 qw goto <url> | back | forward | reload
 qw focus <page>
+qw yank                 copy focused window URL to clipboard
 qw quit                     close all instances
 qw daemon start|stop|status
 ```
@@ -109,6 +110,7 @@ qw daemon start|stop|status
   clicks → preventDefault → Image beacon to local server `http://127.0.0.1:<port>/open?url=...` →
   server spawns a new `--app` window in the same profile.
 - Caveat: error/built-in pages aren't injectable (rarely open windows). niri window-rule can catch leaks.
+- **Cascade**: the interception must be (re)injected on **every** new page target (`Target.targetCreated` → `Page.addScriptToEvaluateOnNewDocument`); otherwise a window that `qwd` itself spawns carries no script, and a further `_blank` there reverts to a chrome-default (non-`--app`) window.
 
 ## 6. Verified vs pending (facts)
 
