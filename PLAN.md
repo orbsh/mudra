@@ -191,10 +191,17 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
   window mapping) + `LauncherExt` (walker session/page menus + hotkeys) behind the pluggable
   interface (§5 Extensions); migrate `mudra move` and focus onto the `WmExt` interface.
   **[P7a done 2026-08: `mudralib/wm.py` `WmExt`+`NiriExt`, move/add migrated]**
-  **P7b (walker LauncherExt)**: 已核实走 **elephant menus** 而非 walker provider 插件（provider
-  编译进二进制）；walker **支持多字符前缀**（`data.rs` `starts_with`, long prefix 排前）+ `argument_delimiter`。
-  交互模型草案 **t/s/a/o** 单字符前缀（tab/session/action/sort，见 docs/EXTENSIONS.md，**待定稿**）；
-  需 mudra 补数据能力：星级/bookmark、排序偏好 state、当前聚焦 tab 识别。
+  **P7b (walker LauncherExt)**: 交互模型**已定稿 p/t/a/s**（p=Page 默认切换+移动/交换/关闭；t=tag 默认
+  situation、跨树多选/树内单选；a=Action 评分/复制/隔离；s=排序，见 docs/EXTENSIONS.md）。tag 多选 =
+  **累积缓冲(A, keyboardShortcut)** / **文本分隔(B 兜底)**。走 **elephant menus**（非 walker provider 插件）；
+  walker 已核实支持多字符前缀（`data.rs` `starts_with`）+ `argument_delimiter`。需补数据能力：星级/bookmark、
+  排序偏好 state、当前聚焦页识别。**前置：核实 walker `keyboardShortcut` 能否"触发后保持窗口、缓冲不散"**。
+
+- **P8 转 MD + 全文检索**（§10 ①）：html→md（reader-mode）提取正文 + sqlite FTS，无 LLM、是信息流精炼基础。
+- **P9 parent_id 分拣**：页面树 → workspace 移动（整棵子树归类，消费既有 `parent_id`）。
+- **P10 NB 评分实现**：importance/urgency 5 级有序 NB（特征=域名/URL token/title+正文+标题党一致性；sqlite `nb_class`/`nb_feat` 增量+预测，见 §10 NB 数据模型）。
+- **P11 RSS 捕获**：订阅源 → inbox，幂等去重（材料在 wiki `infoflow-refinement.md`）。
+- **P12 LLM 总结 / 聚合摘要 → 态势感知**：高价值页单页/聚合摘要，作为更大监督系统输入侧。
 
 Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutting: verify niri/CDP APIs against reality before wiring each phase (the "fabricated API" rule).
 

@@ -47,6 +47,26 @@ CREATE TABLE IF NOT EXISTS site_widths(
     site       TEXT PRIMARY KEY,
     proportion REAL
 );
+CREATE TABLE IF NOT EXISTS tag(
+    id         INTEGER PRIMARY KEY,
+    parent_id  INTEGER,                      -- -1 = 根哨兵（无真实父），见 tag-forest
+    name       TEXT NOT NULL,
+    alias      TEXT,
+    isolated   INTEGER NOT NULL DEFAULT 0,   -- 命中 → 独立实例/工作区
+    required   INTEGER NOT NULL DEFAULT 0,   -- 树内必选（如 situation）
+    rank       INTEGER,                      -- 同父内排序（评分树叶 ☆..☆☆☆☆☆）
+    hidden     INTEGER NOT NULL DEFAULT 0,
+    note       TEXT,
+    deleted    INTEGER NOT NULL DEFAULT 0,   -- 软删
+    created    INTEGER,
+    updated    INTEGER,
+    UNIQUE(parent_id, name)
+);
+CREATE TABLE IF NOT EXISTS page_tag(
+    page_id  INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    tag_id   INTEGER NOT NULL REFERENCES tag(id),
+    PRIMARY KEY(page_id, tag_id)
+);
 
 CREATE TABLE IF NOT EXISTS state(
     key   TEXT PRIMARY KEY,

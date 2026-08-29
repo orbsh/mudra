@@ -458,6 +458,145 @@ def cmd_conf(args: argparse.Namespace) -> int:
     return 0
 
 
+def _menu_pages(conn, query: str) -> int:
+    """Page 模式(p) 菜单数据：当前 session 的开页，TAB 三列（title / url / target_id）。
+    elephant menus 脚本按这行格式解析成 Text/Subtext/Value。"""
+    cur = db.get_state(conn, "current_session")
+    if not cur:
+        return 0
+    q = query.lower()
+    rows = conn.execute(
+        "SELECT id,url,title,target_id,position FROM pages"
+        " WHERE closed_at IS NULL"
+        " AND session_id = (SELECT id FROM sessions WHERE name=?)"
+        " ORDER BY position",
+        (cur,),
+    ).fetchall()
+    for p in rows:
+        disp = p["title"] or p["url"]
+        if q and q not in f"{disp} {p['url']}".lower():
+            continue
+        vid = p["target_id"] or str(p["id"])
+        print("\t".join([disp, p["url"], vid]))
+    return 0
+
+
+def _menu_sort(conn, query: str) -> int:
+    """排序(s) 菜单数据：排序偏好选项 → 写 state.sort（由 lua action 调 mudra 命令落地）。"""
+    rows = [("MRU", "recently used", "mru"),
+            ("时间", "opened time", "mtime"),
+            ("星序", "star rating", "rating")]
+    return _emit(rows, query)
+
+
+def _menu_actions(conn, query: str) -> int:
+    """动作(a) 菜单数据：针对当前聚焦页的动作集。执行由 lua action 调 mudra 命令（需当前聚焦页识别，集成时补）。"""
+    rows = [("关闭", "close current page", "close"),
+            ("复制链接", "copy current page url", "copy"),
+            ("移动到本窗口", "move current page to this workspace", "move-here"),
+            ("交换", "swap with current window", "swap"),
+            ("星级", "star / unstar current page", "star")]
+    return _emit(rows, query)
+
+
+def _emit(rows, query: str) -> int:
+    q = query.lower()
+    for text, sub, val in rows:
+        if q and q not in f"{text} {sub}".lower():
+            continue
+        print("\t".join([text, sub, val]))
+    return 0
+
+
+def _seed_tags(conn):
+    """幂等 seed 初始 tag 森林（situation 单选树 / importance·urgency 评分树 / topic 多选树）。"""
+    import time as _t
+    now = int(_t.time())
+    created = 0
+    by_name = {}
+
+    def root(name, note=None, hidden=0):
+        nonlocal created
+        r = conn.execute("SELECT id FROM tag WHERE parent_id=-1 AND name=?", (name,)).fetchone()
+        if r:
+            return r["id"]
+        cur = conn.execute(
+            "INSERT INTO tag(parent_id,name,note,hidden,created,updated) VALUES(-1,?,?,?,?,?)",
+            (name, note, hidden, now, now),
+        )
+        created += 1
+        return cur.lastrowid
+
+    def child(pid, name, note=None, isolated=0, required=0, rank=None, hidden=0, alias=None):
+        nonlocal created
+        r = conn.execute("SELECT id FROM tag WHERE parent_id=? AND name=?", (pid, name)).fetchone()
+        if r:
+            return r["id"]
+        conn.execute(
+            "INSERT INTO tag(parent_id,name,alias,note,isolated,required,rank,hidden,created,updated)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (pid, name, alias, note, isolated, required, rank, hidden, now, now),
+        )
+        created += 1
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    sit = root("situation", "当前上下文（树内单选）")
+    importance = root("importance", "内容质量/价值（评分树）")
+    urgency = root("urgency", "时效性（评分树）")
+    topic = root("topic", "主题（可多选）")
+
+    child(sit, "inbox", "默认收入箱", isolated=1, required=1, alias="待处理")
+    child(sit, "work", "工作", isolated=1, alias="工作上下文")
+    child(sit, "personal", "个人", isolated=1, alias="生活")
+    child(sit, "privacy", "隐私", isolated=1, alias="隔离")
+    for i, star in enumerate(["☆", "☆☆", "☆☆☆", "☆☆☆☆", "☆☆☆☆☆"], 1):
+        child(importance, star, rank=i)
+        child(urgency, star, rank=i)
+    return created
+
+
+def cmd_tag(args: argparse.Namespace) -> int:
+    with db.connect() as conn:
+        if args.action == "init":
+            n = _seed_tags(conn)
+            conn.commit()
+            print(f"tag 森林 seed 完成（新增 {n} 节点，幂等）")
+            return 0
+        return 0
+
+
+def _menu_tags(conn, query: str) -> int:
+    """tag 模式(t) 菜单数据：默认 situation 树（当前上下文候选）。"""
+    q = query.lower()
+    rows = conn.execute(
+        "SELECT id,name,alias FROM tag"
+        " WHERE parent_id=(SELECT id FROM tag WHERE parent_id=-1 AND name='situation')"
+        " AND deleted=0 ORDER BY id"
+    ).fetchall()
+    for r in rows:
+        text, sub = r["name"], r["alias"] or "situation"
+        if q and q not in f"{text} {sub}".lower():
+            continue
+        print("\t".join([text, sub, str(r["id"])]))
+    return 0
+
+
+def cmd_menu(args: argparse.Namespace) -> int:
+    """launcher 菜单数据出口（TAB 三列，供 elephant/walker menus provider）。
+    kind: pages / tags / actions / sort — p/t/a/s 四模式菜单数据。
+    落地：pages / sort / actions / tags ✓（tags 依赖 tag 森林 seed）。"""
+    with db.connect() as conn:
+        if args.kind == "pages":
+            return _menu_pages(conn, args.query)
+        if args.kind == "sort":
+            return _menu_sort(conn, args.query)
+        if args.kind == "actions":
+            return _menu_actions(conn, args.query)
+        if args.kind == "tags":
+            return _menu_tags(conn, args.query)
+        return 0
+
+
 def cmd_move(args) -> int:
     with db.connect() as conn:
         row = conn.execute(
@@ -557,6 +696,15 @@ def main() -> int:
     )
     col.add_argument("site", nargs="?", help="filter by site in show")
     col.set_defaults(fn=cmd_col)
+
+    t = sub.add_parser("tag", help="tag 森林：init seed 初始树")
+    t.add_argument("action", choices=["init"])
+    t.set_defaults(fn=cmd_tag)
+
+    m = sub.add_parser("menu", help="launcher menu data (TAB columns for elephant/walker)")
+    m.add_argument("kind", choices=["pages", "tags", "actions", "sort"])
+    m.add_argument("query", nargs="?", default="")
+    m.set_defaults(fn=cmd_menu)
 
     a = ap.parse_args()
     return a.fn(a)
