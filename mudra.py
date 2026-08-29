@@ -498,11 +498,23 @@ def _menu_pages(conn, query: str) -> int:
 
 
 def _menu_sort(conn, query: str) -> int:
-    """排序(s) 菜单数据：排序偏好选项 → 写 state.sort（由 lua action 调 mudra 命令落地）。"""
-    rows = [("MRU", "recently used", "mru"),
-            ("时间", "opened time", "mtime"),
-            ("星序", "star rating", "rating")]
-    return _emit(rows, query)
+    """排序(s) 菜单数据：当前 sort 项打前缀标记 + 排到列表最后。"""
+    cur = db.get_state(conn, "sort")
+    q = query.lower()
+    listed, cur_item = [], None
+    for text, sub, val in [("MRU", "recently used", "mru"),
+                           ("时间", "opened time", "mtime"),
+                           ("星序", "star rating", "rating")]:
+        if q and q not in f"{text} {sub}".lower():
+            continue
+        it = (text, sub, val)
+        if val == cur:
+            cur_item = (f"* {text}", sub, val)
+        else:
+            listed.append(it)
+    for it in listed + ([cur_item] if cur_item else []):
+        print("\t".join(it))
+    return 0
 
 
 def _menu_actions(conn, query: str) -> int:
@@ -582,18 +594,27 @@ def cmd_tag(args: argparse.Namespace) -> int:
 
 
 def _menu_tags(conn, query: str) -> int:
-    """tag 模式(t) 菜单数据：默认 situation 树（当前上下文候选）。"""
+    """tag 模式(t) 菜单数据：situation 树候选。当前 context 项打前缀标记 + 排到列表最后。"""
+    cur = db.get_state(conn, "current_context")
+    cur_id = int(cur) if cur and str(cur).isdigit() else None
     q = query.lower()
     rows = conn.execute(
         "SELECT id,name,alias FROM tag"
         " WHERE parent_id=(SELECT id FROM tag WHERE parent_id=-1 AND name='situation')"
         " AND deleted=0 ORDER BY id"
     ).fetchall()
+    listed, cur_item = [], None
     for r in rows:
         text, sub = r["name"], r["alias"] or "situation"
         if q and q not in f"{text} {sub}".lower():
             continue
-        print("\t".join([text, sub, str(r["id"])]))
+        it = (text, sub, str(r["id"]))
+        if r["id"] == cur_id:
+            cur_item = (f"* {text}", sub, str(r["id"]))
+        else:
+            listed.append(it)
+    for it in listed + ([cur_item] if cur_item else []):
+        print("\t".join(it))
     return 0
 
 
@@ -611,6 +632,23 @@ def cmd_menu(args: argparse.Namespace) -> int:
         if args.kind == "tags":
             return _menu_tags(conn, args.query)
         return 0
+
+def cmd_sort(args: argparse.Namespace) -> int:
+    """排序偏好 → state.sort（s 模式菜单落地）。"""
+    with db.connect() as conn:
+        db.set_state(conn, "sort", args.kind)
+        conn.commit()
+        print(f"sort -> {args.kind}")
+    return 0
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    """当前 situation → state.current_context（t 模式菜单落地；§9 消费）。"""
+    with db.connect() as conn:
+        db.set_state(conn, "current_context", args.value)
+        conn.commit()
+        print(f"current context -> {args.value}")
+    return 0
 
 
 def cmd_move(args) -> int:
@@ -721,6 +759,14 @@ def main() -> int:
     m.add_argument("kind", choices=["pages", "tags", "actions", "sort"])
     m.add_argument("query", nargs="?", default="")
     m.set_defaults(fn=cmd_menu)
+
+    so = sub.add_parser("sort", help="set sort preference (MRU/time/rating)")
+    so.add_argument("kind", choices=["mru", "mtime", "rating"])
+    so.set_defaults(fn=cmd_sort)
+
+    cx = sub.add_parser("context", help="set current situation (tag); §9 consumes it")
+    cx.add_argument("value")
+    cx.set_defaults(fn=cmd_context)
 
     a = ap.parse_args()
     return a.fn(a)
