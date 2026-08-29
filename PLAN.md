@@ -209,3 +209,22 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 ### 后续
 - ML（朴素贝叶斯 / 逻辑回归，非 LLM）从手动评分学「该选哪个值」，生成规则供审。
 - 域名/子域名规则 → 自动打 importance/urgency 默认分。
+
+## 10. 信息流精炼扩展路线（2026-08，方向）
+
+> 通用管道设计（捕获→属性化→精炼→消费）见 wiki `infoflow-refinement.md`；内容组织轴
+> 见 wiki `tag-forest.md`。本节是 mudra 落地路线。
+
+**属性化 — NB 评分（importance/urgency）**：
+- 朴素贝叶斯（手写，纯 stdlib），规则先行 + ML 建议规则，非黑箱替代。
+- 特征：域名层级 + URL token + **正文特征**（不只标题）。5 级有序分类 → 加权期望求分。
+- **标题-正文一致性分**（`|标题核心词 ∩ 正文前两段| / |标题核心词|`）检测标题党、下调 importance。
+- **正文需 html→md** 提取工具（`trafilatura`/`readability-lxml`/`html2text`，实现时核实）；可同时拿页内链接做**链接挖掘**（被高价值页引用的页 → inbox/建议分）。
+
+**捕获 — RSS/订阅监控**：订阅源进 `inbox`，幂等去重。
+
+**精炼/消费 — LLM 总结 / 转 MD**：reader-mode 提取正文 → MD 存档；高价值页 LLM 单页/聚合摘要。
+**聚合摘要 / 态势感知**：按 situation/importance 聚合 → 关键信息态势，作为更大监督系统的输入侧模块。
+
+**优先级建议**：① 转 MD + 全文检索（轻量、无 LLM、是后续基础）→ ② NB 评分 + 标题党（属性化）→ ③ RSS → ④ LLM 总结/态势感知。
+工程顺序独立于方向；`importance/urgency` 评分即 `tag-forest` 的树，先规则底座可无 ML 即时盈利。
