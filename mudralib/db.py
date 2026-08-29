@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS pages(
     title      TEXT,
     position   INTEGER,
     opened_at  INTEGER,
-    closed_at  INTEGER
+    closed_at  INTEGER,
+    parent_id  INTEGER REFERENCES pages(id)   -- 子页：由谁(target)打开（CDP openerId）
 );
 
 CREATE TABLE IF NOT EXISTS site_widths(
@@ -59,6 +60,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # 原型阶段不做 ALTER 迁移：schema 变更删 mudra.sqlite 重建（见 PLAN §4 迁移策略）
     # 迁移：去重 pages(session_id,target_id) 并加唯一约束（防御多 daemon/并发竞态重复插入）
     conn.execute(
         "DELETE FROM pages WHERE id NOT IN"

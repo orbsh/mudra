@@ -75,7 +75,7 @@ class _InterceptHandler(BaseHTTPRequestHandler):
         pass
 
 
-class Qwd:
+class Mudrad:
     def __init__(self) -> None:
         self._threads: dict[int, threading.Thread] = {}
 
@@ -127,18 +127,20 @@ class Qwd:
             sid = self._session_id(conn, inst_id)
             if sid is None:
                 return
-            for t in infos:
-                if t.get("type") != "page":
-                    continue
+            pages = [t for t in infos if t.get("type") == "page"]
+            # CDP openerId = 由哪个页面打开（window.open / _blank / 新窗拦截），即父页
+            t2id: dict[str, int] = {}
+            for t in pages:
                 tid = t["targetId"]
                 row = conn.execute(
                     "SELECT id FROM pages WHERE session_id=? AND target_id=?",
                     (sid, tid),
                 ).fetchone()
                 if row:
+                    pid = row["id"]
                     conn.execute(
                         "UPDATE pages SET url=?, title=?, closed_at=NULL WHERE id=?",
-                        (t.get("url", ""), t.get("title", ""), row["id"]),
+                        (t.get("url", ""), t.get("title", ""), pid),
                     )
                 else:
                     pos = conn.execute(
@@ -152,6 +154,31 @@ class Qwd:
                         " VALUES(?,?,?,?,?,?)",
                         (sid, tid, t.get("url", ""), t.get("title", ""), pos,
                          int(time.time())),
+                    )
+                    pid = conn.execute(
+                        "SELECT id FROM pages WHERE session_id=? AND target_id=?",
+                        (sid, tid),
+                    ).fetchone()["id"]
+                t2id[tid] = pid
+            # 回填父子关系：子页 parent_id = 打开它的页（仅首次设置，不覆盖人工值）
+            for t in pages:
+                oid = t.get("openerId")
+                if not oid:
+                    continue
+                cid = t2id.get(t["targetId"])
+                if cid is None:
+                    continue
+                p_id = t2id.get(oid)
+                if p_id is None:  # opener 不在本批，回查库
+                    r = conn.execute(
+                        "SELECT id FROM pages WHERE session_id=? AND target_id=?",
+                        (sid, oid),
+                    ).fetchone()
+                    p_id = r["id"] if r else None
+                if p_id is not None:
+                    conn.execute(
+                        "UPDATE pages SET parent_id=? WHERE id=? AND parent_id IS NULL",
+                        (p_id, cid),
                     )
             conn.commit()
 
@@ -267,7 +294,7 @@ def main() -> None:
     args = ap.parse_args()
     if args.act == "run":
         _acquire_lock()
-        Qwd().run()
+        Mudrad().run()
     else:
         print("P1: only 'run' supported")
 

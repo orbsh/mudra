@@ -51,15 +51,27 @@ instances(id, profile TEXT, port INT, pid INT, running INT,
 sessions(id, name UNIQUE, workspace TEXT, instance_id FK,
          created_at, last_opened_at)
 pages(id, session_id FK CASCADE NULL, target_id, url, title,
-      position INT, opened_at INT, closed_at INT NULL)   -- session_id NULL = 全局 tab
+      position INT, opened_at INT, closed_at INT NULL,
+      parent_id INT REFERENCES pages(id))        -- 页面树：子页 = 由它打开的页(CDP openerId)
+tag(id, parent_id, name, alias, isolated, required, rank, hidden, note)  -- tag 森林(见 wiki tag-forest)
+page_tag(page_id, tag_id)                        -- 树间多选；树内单选/required 为 app 层约束
 site_widths(site TEXT PRIMARY KEY, proportion REAL)   -- site → column-width ratio (0..1)
-state(key TEXT PRIMARY KEY, value TEXT)                -- 全局状态: current_session, walker_mode(session|tab), op_mod(1|0)
+state(key TEXT PRIMARY KEY, value TEXT)                -- current_context, walker_mode(session|tab), op_mod, sort
 ```
 
 - `pages.target_id` = CDP target of the window; `url` live-updated via CDP `infoChanged` → URL-filterable.
+- `pages.parent_id` = **页面树**：页面 B 在 A 中打开（`window.open`/`_blank`/新窗拦截 → CDP `openerId`）→ `parent_id = A`。
+  页面树用于**链接挖掘**与**分拣**：整棵子树可整体查看/移动。`tag` 森林是内容组织轴（`importance`/`urgency` 即其评分树，见 wiki `tag-forest.md`）。
+- **DB 迁移策略（原型阶段）**：schema 变更直接**删除 `mudra.sqlite` 重建**，不做 ALTER 迁移——原型数据无持久价值，省去迁移逻辑。
 - `instances.proxy` / `.extensions` = per-process proxy and preload extension list.
 
 ## 5. Components & mechanisms
+
+### 交互分层（设计主线）
+交互分三层，职责分离、各自可脚本化/接入：
+1. **接口 / CLI（核心操作）**：`mudra.py` 命令 —— 数据与页面操作的事实源（open / ls / focus / tag / star / col），无 UI 假设。
+2. **Launcher（实际的页面管理操作）**：walker 菜单 —— 把页面操作做成列选动作（`s` / `t` / `a` / `o`：situation 分流 / 页面 / 动作 / 排序），选中回调 `mudra CLI`。
+3. **WM（展示相关）**：niri —— workspace 布局、列宽、窗口映射；**页面树 → workspace 移动**（整棵子树搬到某工作区，用于分拣）。
 
 ### CLI verbs (v1)
 ```
@@ -131,6 +143,9 @@ mudra daemon start|stop|status
   `menus/*.lua` + Python 数据脚本读 mudra.sqlite，动作回调 `mudra` CLI）。已核实：walker **支持多字符
   前缀**（`data.rs` `starts_with`）+ `argument_delimiter`（前缀+分隔符+参数）。详见 docs/EXTENSIONS.md。
 - 启用清单由配置决定（如 `extensions: [niri, walker]`）；核心不感知具体实现。
+- **walker `s`/`t`/`a`/`o` 交互**（LauncherExt 落地）：`t` = 页面列表 → 聚焦 / 关闭；`s` = situation / 当前上下文
+  切换（inbox / work / personal / privacy）；`a` = 当前页动作（关闭 / 复制链接 / 打标）；`o` = 排序
+  （MRU / 时间 / 星 → 写 `state.sort`）。动作回调 `mudra CLI`；按 tag 过滤列选。详见 `docs/EXTENSIONS.md`。
 
 **BrowserEngine backend（可选延伸）**：控制协议同样按此抽象——`BrowserEngine` 接口
 （launch / list_targets / navigate / inject / close），chromium 走 CDP backend。
