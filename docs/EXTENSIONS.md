@@ -1,15 +1,16 @@
-# qw extensions — WM & launcher integration
+# mudra extensions — WM & launcher integration
 
-`qw` core is **WM/launcher-agnostic**: it manages sessions, instances, pages and CDP.
+`mudra` core is **WM/launcher-agnostic**: it manages sessions, instances, pages and CDP.
 Environment-specific integrations are **pluggable extension modules** loaded behind a
 small interface, so the same core works on any WM / launcher that can satisfy it
 (hard constraint in the wiki: WM must offer interface/CLI fine-grained control —
 niri & hyprland qualify; cosmic-de does not yet).
 
 This document specifies the *integration approach* (P7). **P7a is live**: the `WmExt` interface
-+ `NiriExt` backend (`qwlib/wm.py`) are implemented and `qw move` / `add` run on it. P7b
-(`LauncherExt` walker menus) is pending the real walker provider API. P0–P6 implement core + the
-niri bits; the interface below is the target shape.
++ `NiriExt` backend (`mudralib/wm.py`) are implemented and `mudra move` / `add` run on it. P7b
+(`LauncherExt` walker menus) 走 elephant `menus` provider（见下）；walker provider 不能外部插件。
+交互模型草案（t/s/a/o）待定稿，需 mudra 补星级/排序/当前聚焦 tab 数据能力。P0–P6 implement core +
+the niri bits; the interface below is the target shape.
 
 ## Interface: WM extension (`WmExt`)
 
@@ -42,7 +43,7 @@ Core calls these operations on an enabled WM module (it never touches `niri` dir
 
 ### hyprland (future)
 Same `WmExt` interface, implemented over hyprctl IPC. Include once core consumers
-(`qw move`, focus, column-width) have fully migrated onto the interface.
+(`mudra move`, focus, column-width) have fully migrated onto the interface.
 
 ## Interface: Launcher extension (`LauncherExt`)
 
@@ -54,51 +55,64 @@ to core actions:
 - actions: `open_session(name)`, `focus_page(query)`, `open_url(url)`,
   `move_session(name, ws)`, `new_session(name, url)`
 
-### walker implementation
+### walker implementation (elephant menus)
 
-- **Menu source**: a launcher plugin/provider that lists sessions + their live pages
-  (from `pages` / `Target.*` data) as entries; typing filters by url/title (reuse the
-  `ls --filter` logic).
-- **Selection**: dispatch to core actions (spawn/activate via CDP, move via `WmExt`).
-- **Alt+Tab replacement**: niri has no native window-switcher filter (verified), so the
-  browser's Alt+Tab is bound to a walker menu whose entries **exclude** browser windows
-  (prefix filter). This is the "browser excluded from normal switching" behaviour.
+walker 的 provider 是 **编译进二进制的**（apps/files/windows…），不能从外部加插件。mudra 的动态
+菜单走 **elephant `menus` provider**（本机 cwdhist/windowsmru 已验证的模式）：
 
-#### walker 模式与切换（`@` / `#`）
+```
+用户输入 → 前缀路由(或 `;` providerlist / `-m` 直达) → `menus:<x>` provider
+         → Lua `GetEntries(query)` → `io.popen("python3 scripts/mudra_menus.py list <x> <query>")`
+         → TAB 三列 `text<TAB>subtext<TAB>value`
+         → 选中 → Lua `Action` / walker `[providers.actions."menus:<x>"]` → 回调 `mudra` CLI
+```
 
-不用多个前缀；两个键 + 全局状态（`walker_mode`、`op_mod`）即可切换：
+- **数据层**：`scripts/mudra_menus.py` 读 `mudra.sqlite`（`sessions`/`pages`/`state`），零第三方依赖。
+- **动作层**：优先复用现有 `mudra` CLI（`focus`/`close`/`open`/`move`/`use`）；action 命令名与
+  Lua entry 的 `Actions` map 键一致。
+- **多字符前缀已核实**（`walker src/data.rs` `text.starts_with(&prefix.prefix)`，任意长 String）：
+  前缀不限于单字符。`argument_delimiter`（全局 + per-provider `HashMap<String,String>`，
+  `config.rs`）支持「前缀+分隔符+参数」如 `t foo`。
+  - 坑①：前缀按 config 声明顺序 `find` 第一个匹配 → 配多长度前缀时**长前缀排在短前缀前**。
+  - 坑②：前缀触发是**持续模式**（输入持续过滤该 provider）；「选中即返回」用 Action `after="Close"`。
 
-- **`@`**：在 **session ↔ tab** 之间翻转（`state.walker_mode` 已记录当前模式，直接翻到另一种，无需多个前缀）。
-- **`#`**：切换**操作模式** `state.op_mod = 1/0` —— 仅当**当前激活窗口是 tab** 时有效：
-  - 激活窗口不是 tab → `#` **无效**。
-  - 是 tab → `#` 进入操作模式（对当前 tab 展示操作：关闭、导航等）；再按一次回到原 session/tab 模式。
-  - 当前是 session、按 `#` → 进入操作模式；按 `@` → 直接进入 tab 模式。
+#### 交互模型草案（t/s/a/o，待定稿）
+替代早前 `@`/`#` 单状态机：显式模式前缀 + 每个模式一个 menus provider。这些字符未被 walker
+默认前缀表（`; > / . ! % = @ : $`）占用，零冲突：
 
-各模式行为：
-- **session**：切换 / 创建 / 删除 session；输入**不存在的名字 → 直接创建并切换**（k8s `ns` 语义）；
-  `state.current_session` 持久化，后续 tab 操作都基于它（namespace 语义）。
-- **tab**：搜索当前 session 的**打开窗口**；`Enter` 切过去（`activateTarget` + niri focus window）。
-- **op_mod=true**：对当前激活 tab 提供操作（关闭等，可再扩）。
-- **全局 tab**（RSS / IM 等非 session 内）：在**所有 session 里都可显示/访问**，属一个单独的常驻
-  全局实例（`session_id` 为 NULL），不随 `current_session` 改变。
-- **关闭语义**：`qw` 主动关闭 → 从 session **删除**该页；通过 niri 关闭 / 意外（如崩溃）关闭 →
-  **保留**（仅标 `closed_at`，不删）——主动关不留痕，外部/意外关不丢。
+| 前缀 | 模式 | menus provider | 动作 |
+|---|---|---|---|
+| `t` | tab（默认唤起 Mod+Spc） | `menus:mudratabs` | 当前 session 的 open pages → focus / close |
+| `s` | session（一次性切换） | `menus:mudrasessions` | sessions → open / use / move，选后 `after=Close` |
+| `a` | 动作 | `menus:mudraactions` | 当前聚焦 tab：关闭 / 复制链接 / 星级 |
+| `o` | 排序切换 | `menus:mudrasort` | MRU / 时间 / 星级 → 写 `mudra state` 排序偏好 |
 
-> ⚠️ walker's exact provider/plugin protocol is **to be verified against its real API**
-> before wiring (the "fabricated API" rule). The interface above is the contract qw
-> exposes; the provider code adapts to walker specifics.
+需 mudra 侧补的数据能力（草案依赖）：
+- **星级 / 收藏**：mudra 目前无 bookmark — 需新建（`site_stars` 或并入 state）。
+- **排序偏好**：存 `state` 表（`mudra use`/`mudra mode` 已有写入机制），tabs/sessions 脚本按它排序。
+- **当前聚焦 tab 识别**：`pid→instance→title 匹配 target`（同 `mudra col remember`，机制已通）。
+
+#### Alt+Tab
+浏览器窗口已出现在 `menus:windowsmru`（所有窗口 MRU 切换）。LauncherExt 的价值是**按 session
+组织** + session/tab 级操作；niri 无原生切换器，浏览器窗口默认混在正常切换中（不动）。
 
 ## NixOS / config coupling
 
-- Optional: niri config declares `web:*` named workspaces + a `qw open`/`qw move` binding
-  (NixOS-managed, not inside the qw repo).
+- Optional: niri config declares `web:*` named workspaces + a `mudra open`/`mudra move` binding
+  (NixOS-managed, not inside the mudra repo).
 - Launch binding / Mod+Space reserved for the launcher menu entry.
 
 ## Verification status
 
 **Done**: PID window↔instance mapping; `move` via `focus-window --id` + `move-window-to-workspace`;
-**P7a**: `WmExt` interface + `NiriExt` backend live (`qwlib/wm.py`), move/add migrated to it;
-column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `qw col
+**P7a**: `WmExt` interface + `NiriExt` backend live (`mudralib/wm.py`), move/add migrated to it;
+column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `mudra col
 remember/show` + `open`/`add` auto-apply (P5).
-**Pending (P7b)**: `LauncherExt` walker provider API to verify; named `web:*` workspace config;
-hyprland backend.
+**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定）+ t/s/a/o
+交互模型定稿；mudra 侧补星级/bookmark、排序偏好 state、当前聚焦 tab 识别；named `web:*` workspace
+config；hyprland backend.
+
+### 重构影响（tag 森林 → PLAN §9 / wiki `tag-forest.md`）
+LauncherExt 从 session/page 视角向 **tag 森林** 演进：walker 菜单将支持按 tag 维度过滤
+（situation 默认 inbox；importance/urgency 为两级树 + rank 排星序）。`current_session` → situation。
+t/s/a/o 单字符前缀在 tag 森林多维度模型下的映射待定稿，P7b 落地时收敛。

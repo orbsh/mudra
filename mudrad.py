@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""qwd — qw 守护进程。
+"""mudrad — mudra 守护进程。
 
 常驻：对每个 running=1 的 instance 连它的 browser-level CDP WebSocket，
 订阅 Target.setDiscoverTargets 的 targetCreated / infoChanged / Destroyed，
 把页面的开/关/URL 变化实时同步进 sqlite 的 pages 表（单一数据源 = CDP）。
 
-用法：qwd start | stop | status  （P1 先支持直接前台跑，start/stop 后续加）
+用法：mudrad start | stop | status  （P1 先支持直接前台跑，start/stop 后续加）
 """
 
 from __future__ import annotations
@@ -18,12 +18,12 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from qwlib import cdp, db, spawn
+from mudralib import cdp, db, spawn
 
-# 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，qwd 拉起 --app 窗口。
+# 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，mudrad 拉起 --app 窗口。
 _INTERCEPT_PORT = 8899
 _INJECT_JS = r"""(() => {
-  if (window.__qwInjected) return; window.__qwInjected = true;
+  if (window.__mudraInjected) return; window.__mudraInjected = true;
   const SESSION = "__SESSION__";
   const EP = "http://127.0.0.1:__PORT__/open";
   function openUrl(u) {
@@ -45,28 +45,28 @@ _INJECT_JS = r"""(() => {
 
 
 def _acquire_lock() -> None:
-    """单例锁：同一时间只允许一个 qwd 运行（flock 随进程退出自动释放）。"""
+    """单例锁：同一时间只允许一个 mudrad 运行（flock 随进程退出自动释放）。"""
     db.DB.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(db.DB.parent / "qwd.lock", "w")
+    fh = open(db.DB.parent / "mudrad.lock", "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("[qwd] another daemon is already running")
+        print("[mudrad] another daemon is already running")
         sys.exit(1)
         return
     globals()["_LOCK_FH"] = fh  # 持引用防 GC 释放锁
 
 
 class _InterceptHandler(BaseHTTPRequestHandler):
-    """页面注入脚本的 sendBeacon POST /open → qwd._open 拉 --app 窗口。"""
+    """页面注入脚本的 sendBeacon POST /open → mudrad._open 拉 --app 窗口。"""
     def do_POST(self):
-        qwd = self.server.qwd
+        mudrad = self.server.mudrad
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
-            qwd._open(body)
+            mudrad._open(body)
         except Exception as e:
-            print(f"[qwd] intercept err: {e}")
+            print(f"[mudrad] intercept err: {e}")
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -92,7 +92,7 @@ class Qwd:
         ).fetchone()
         return r["name"] if r else None
 
-    # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 qwd 拉 --app ----
+    # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
     def _inject_page(self, port: int, target_id: str, session: str) -> None:
         try:
             with urllib.request.urlopen(
@@ -109,7 +109,7 @@ class Qwd:
             cdp.call(ws, "Runtime.evaluate", {"expression": src})  # 已加载页立即注入
             ws.close()
         except Exception as e:
-            print(f"[qwd] inject {session}/{target_id} err: {e}")
+            print(f"[mudrad] inject {session}/{target_id} err: {e}")
 
     def _open(self, data: dict) -> None:
         """拦截到的“新开 tab” → 在该会话拉起 --app 窗口（并入已有实例）。"""
@@ -118,9 +118,9 @@ class Qwd:
             return
         try:
             spawn.launch(session, spawn.normalize_url(url), None)
-            print(f"[qwd] new-window -> --app: {url} (session {session})")
+            print(f"[mudrad] new-window -> --app: {url} (session {session})")
         except Exception as e:
-            print(f"[qwd] open err: {e}")
+            print(f"[mudrad] open err: {e}")
 
     def _sync_infos(self, inst_id: int, infos: list[dict]) -> None:
         with db.connect() as conn:
@@ -189,7 +189,7 @@ class Qwd:
                 break
             except Exception:
                 if attempt == 11:
-                    print(f"[qwd] instance {iid} never ready on :{port}; marking down")
+                    print(f"[mudrad] instance {iid} never ready on :{port}; marking down")
                     ws = None
                 else:
                     time.sleep(1)
@@ -226,7 +226,7 @@ class Qwd:
                 elif method == "Target.targetDestroyed":
                     self._close_target(iid, p.get("targetId", ""))
         except Exception as e:  # 连接断开/崩 = instance 掉了
-            print(f"[qwd] instance {iid} disconnected: {e}")
+            print(f"[mudrad] instance {iid} disconnected: {e}")
         finally:
             self._mark_down(iid)
             self._threads.pop(iid, None)
@@ -234,12 +234,12 @@ class Qwd:
     # ---- 主循环 ----
     def _start_intercept_server(self) -> None:
         srv = ThreadingHTTPServer(("127.0.0.1", _INTERCEPT_PORT), _InterceptHandler)
-        srv.qwd = self
+        srv.mudrad = self
         threading.Thread(target=srv.serve_forever, daemon=True).start()
-        print(f"[qwd] intercept server http://127.0.0.1:{_INTERCEPT_PORT}")
+        print(f"[mudrad] intercept server http://127.0.0.1:{_INTERCEPT_PORT}")
 
     def run(self) -> None:
-        print("[qwd] started")
+        print("[mudrad] started")
         self._start_intercept_server()
         while True:
             with db.connect() as conn:
@@ -262,7 +262,7 @@ class Qwd:
 def main() -> None:
     import argparse
 
-    ap = argparse.ArgumentParser(prog="qwd", description="qw daemon")
+    ap = argparse.ArgumentParser(prog="mudrad", description="mudra daemon")
     ap.add_argument("act", nargs="?", default="run", help="run (default)")
     args = ap.parse_args()
     if args.act == "run":

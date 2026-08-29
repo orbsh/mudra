@@ -1,4 +1,4 @@
-"""qw 浏览器会话管理——命令行入口 (P0: new / ls)."""
+"""mudra 浏览器会话管理——命令行入口 (P0: new / ls)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 import time
 from urllib.parse import urlparse
 
-from qwlib import ctl, db, spawn, wm
+from mudralib import ctl, db, spawn, wm
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -143,7 +143,7 @@ def cmd_open(args: argparse.Namespace) -> int:
         conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
     print(f"opened {args.url!r} in session {args.name!r} (port {port}, pid {pid})"
           + (f" proxy={proxy}" if proxy else ""))
-    print("pages 由 qwd daemon 实时同步")
+    print("pages 由 mudrad daemon 实时同步")
     return 0
 
 
@@ -270,7 +270,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         print(f"no session {args.name!r}")
         return 1
     if not inst or not _pid_alive(inst["pid"]):
-        print(f"session {args.name!r} not running; use `qw open` first")
+        print(f"session {args.name!r} not running; use `mudra open` first")
         return 1
     url = spawn.normalize_url(args.url)
     mgr = wm.get()
@@ -361,7 +361,7 @@ def cmd_col(args: argparse.Namespace) -> int:
                 (win["pid"],),
             ).fetchone()
         if not inst:
-            print("focused window is not a running qw instance")
+            print("focused window is not a running mudra instance")
             return 1
         title = win.get("title") or ""
         page = next(
@@ -481,7 +481,7 @@ def cmd_move(args) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="qw", description="browser session manager")
+    ap = argparse.ArgumentParser(prog="mudra", description="browser session manager")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("new", help="create a session")

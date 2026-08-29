@@ -1,4 +1,4 @@
-"""WM 扩展接口：qw 核心只经 WmExt 调用窗口/列宽操作，不感知具体 WM。
+"""WM 扩展接口：mudra 核心只经 WmExt 调用窗口/列宽操作，不感知具体 WM。
 
 niri 实现走 `niri msg` IPC（socket 自动发现）。hyprland 未来按同一接口补实现。
 启用清单由配置决定（默认 niri），接口与选型见 docs/EXTENSIONS.md。

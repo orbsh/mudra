@@ -136,4 +136,4 @@ def call(ws: WsClient, method: str, params: dict | None = None, _id: int = 0):
         msg = json.loads(ws.recv_text())
         if msg.get("id") == _id:
             return msg
-        # 其他消息（事件 / 别的响应）在这里丢弃；事件流由 qwd 自行接管
+        # 其他消息（事件 / 别的响应）在这里丢弃；事件流由 mudrad 自行接管

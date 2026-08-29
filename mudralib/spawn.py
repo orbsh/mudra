@@ -68,6 +68,6 @@ def launch(name, url, port, *, proxy=None, extensions=None) -> tuple[int, str]:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,  # 脱离父进程组 + 不占父管道，避免 qw CLI 退出时被连带或挂起
+        start_new_session=True,  # 脱离父进程组 + 不占父管道，避免 mudra CLI 退出时被连带或挂起
     )
     return proc.pid, str(udir)

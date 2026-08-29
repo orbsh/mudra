@@ -14,5 +14,5 @@ build/
 *.swp
 
 # local runtime state
-qw.sqlite
+mudra.sqlite
 *.sqlite3

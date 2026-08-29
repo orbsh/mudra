@@ -1,4 +1,4 @@
-"""qw 浏览器会话管理 sqlite 存储层.
+"""mudra 浏览器会话管理 sqlite 存储层.
 
 schema 见 PLAN.md §4:
 instances(1 session ↔ 1 chromium 实例), sessions, pages, site_widths.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import pathlib
 import sqlite3
 
-DB = pathlib.Path.home() / ".local" / "share" / "qw" / "qw.sqlite"
+DB = pathlib.Path.home() / ".local" / "share" / "mudra" / "mudra.sqlite"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instances(
