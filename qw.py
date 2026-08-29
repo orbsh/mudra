@@ -8,8 +8,9 @@ import signal
 import sqlite3
 import sys
 import time
+from urllib.parse import urlparse
 
-from qwlib import ctl, db, niri, spawn
+from qwlib import ctl, db, spawn, wm
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -123,6 +124,8 @@ def cmd_open(args: argparse.Namespace) -> int:
         proxy=proxy,
         extensions=ext.split(",") if ext else None,
     )
+    if args.url:
+        _apply_site_width(url, pid)
     with db.connect() as conn:
         if irow:
             conn.execute(
@@ -270,8 +273,9 @@ def cmd_add(args: argparse.Namespace) -> int:
         print(f"session {args.name!r} not running; use `qw open` first")
         return 1
     url = spawn.normalize_url(args.url)
-    prev = niri.focused_window_id() if args.bg else None
-    before = niri.window_ids() if args.bg else None
+    mgr = wm.get()
+    prev = mgr.focused_window_id() if args.bg else None
+    before = mgr.window_ids() if args.bg else None
     ext = inst["extensions"] if inst["extensions"] else None
     spawn.launch(
         args.name, url, None,  # 无 debug 端口 → 并入已有实例的新 --app 窗口
@@ -280,13 +284,14 @@ def cmd_add(args: argparse.Namespace) -> int:
     )
     if args.bg:
         assert before is not None
-        nwid = niri.wait_for_new_window(before)
+        nwid = mgr.wait_for_new_window(before)
         if nwid is not None and prev is not None:
             import time
             time.sleep(0.5)  # 等新窗抢焦落定，再还给旧窗
-            niri.focus_window(prev)
+            mgr.focus_window(prev)
         print(f"added {url!r} to session {args.name!r} in BACKGROUND (focus kept on {prev})")
     else:
+        _apply_site_width(url, inst["pid"])
         print(f"added {url!r} to session {args.name!r} (new window in instance)")
     return 0
 
@@ -338,6 +343,86 @@ def cmd_close(args: argparse.Namespace) -> int:
     return 0
 
 
+def _domain(url: str) -> str:
+    return urlparse(url).netloc
+
+
+def cmd_col(args: argparse.Namespace) -> int:
+    """列宽记忆：remember 捕获聚焦窗口宽度→site_widths；show 列出。"""
+    mgr = wm.get()
+    if args.action == "remember":
+        win = mgr.focused_window()
+        if win is None:
+            print("no focused window")
+            return 1
+        with db.connect() as conn:
+            inst = conn.execute(
+                "SELECT port FROM instances WHERE pid=? AND running=1",
+                (win["pid"],),
+            ).fetchone()
+        if not inst:
+            print("focused window is not a running qw instance")
+            return 1
+        title = win.get("title") or ""
+        page = next(
+            (t for t in ctl.list_pages(inst["port"]) if t.get("title") == title),
+            None,
+        )
+        if page is None:
+            print(f"no CDP page matching focused window title {title!r}")
+            return 1
+        prop = mgr.current_col_width()
+        band, frac = wm.snap_column_width(prop)
+        domain = _domain(page["url"])
+        if not domain:
+            print(f"cannot derive domain from url {page['url']!r}")
+            return 1
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO site_widths(site, proportion) VALUES(?,?)"
+                " ON CONFLICT(site) DO UPDATE SET proportion=excluded.proportion",
+                (domain, band),
+            )
+            conn.commit()
+        print(f"remembered {domain}: {prop:.3f} -> {frac}")
+        return 0
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT site, proportion FROM site_widths ORDER BY site"
+        ).fetchall()
+    if args.site:
+        rows = [r for r in rows if args.site in r["site"]]
+    if not rows:
+        print("no remembered column widths")
+        return 0
+    for r in rows:
+        _, frac = wm.snap_column_width(r["proportion"])
+        print(f"  {r['site']:<28} {frac}")
+    return 0
+
+
+def _apply_site_width(url: str, pid: int) -> None:
+    """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用。"""
+    domain = _domain(url)
+    if not domain:
+        return
+    with db.connect() as conn:
+        w = conn.execute(
+            "SELECT proportion FROM site_widths WHERE site=?", (domain,)
+        ).fetchone()
+    if not w:
+        return
+    mgr = wm.get()
+    for _ in range(30):  # 等新窗落地并聚焦（新窗抢焦）
+        win = mgr.focused_window()
+        if win is not None and win.get("pid") == pid:
+            break
+        time.sleep(0.1)
+    time.sleep(0.2)
+    mgr.set_column_width(w["proportion"])
+    print(f"  applied remembered width {w['proportion']:.3f} for {domain}")
+
+
 def cmd_conf(args: argparse.Namespace) -> int:
     """per-session 代理/扩展配置；预建 running=0 的实例行，open 时复用。"""
     with db.connect() as conn:
@@ -383,13 +468,14 @@ def cmd_move(args) -> int:
     if not row:
         print(f"session {args.name!r} not running")
         return 1
-    wids = [w["id"] for w in niri.windows_for_pid(row["pid"])]
+    mgr = wm.get()
+    wids = [w["id"] for w in mgr.windows_for_instance(row["pid"])]
     if not wids:
         print(f"no niri windows found for session {args.name!r}")
         return 1
     for wid in wids:
-        niri.focus_window(wid)
-        niri.move_focused_to_workspace(args.workspace)
+        mgr.focus_window(wid)
+        mgr.move_to_workspace(args.workspace)
     print(f"moved {len(wids)} window(s) of {args.name!r} to workspace {args.workspace}")
     return 0
 
@@ -463,6 +549,14 @@ def main() -> int:
     cf.add_argument("--proxy", help="proxy e.g. 127.0.0.1:7890, or 'none'")
     cf.add_argument("--ext", help="comma-separated extension dirs, or 'default'")
     cf.set_defaults(fn=cmd_conf)
+
+    col = sub.add_parser("col", help="column-width memory: remember|show")
+    col.add_argument(
+        "action", nargs="?", default="show", choices=["remember", "show"],
+        help="remember capture focused window width; show list",
+    )
+    col.add_argument("site", nargs="?", help="filter by site in show")
+    col.set_defaults(fn=cmd_col)
 
     a = ap.parse_args()
     return a.fn(a)
