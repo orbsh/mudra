@@ -192,10 +192,27 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
   interface (§5 Extensions); migrate `mudra move` and focus onto the `WmExt` interface.
   **[P7a done 2026-08: `mudralib/wm.py` `WmExt`+`NiriExt`, move/add migrated]**
   **P7b (walker LauncherExt)**: 交互模型**已定稿 p/t/a/s**（p=Page 默认切换+移动/交换/关闭；t=tag 默认
-  situation、跨树多选/树内单选；a=Action 评分/复制/隔离；s=排序，见 docs/EXTENSIONS.md）。tag 多选 =
-  **累积缓冲(A, keyboardShortcut)** / **文本分隔(B 兜底)**。走 **elephant menus**（非 walker provider 插件）；
-  walker 已核实支持多字符前缀（`data.rs` `starts_with`）+ `argument_delimiter`。需补数据能力：星级/bookmark、
-  排序偏好 state、当前聚焦页识别。**前置：核实 walker `keyboardShortcut` 能否"触发后保持窗口、缓冲不散"**。
+    situation、跨树多选/树内单选；a=Action 评分/复制/隔离；s=排序，见 docs/EXTENSIONS.md）。tag 多选 =
+    **累积缓冲(A, keyboardShortcut)** / **文本分隔(B 兜底)**。走 **elephant menus**（非 walker provider 插件）；
+    walker 已核实支持多字符前缀（`data.rs` `starts_with`）+ `argument_delimiter`。
+    **开发态已跑通 p / s / t 三模式**（2026-08）：elephant lua + walker 前缀 + providers.actions 全链路验证过；剩 **a Action 模式**待攻坚。
+
+    **开发态文件**（尚未落 NixOS 资产源）：
+    - `~/.config/elephant/menus/mudra{pages,sort,tags}.lua`（lua 调 `python3 ~/world/mudra/mudra.py menu <kind>`）；
+    - `~/.config/walker/config.toml`（手改成真实文件，原 nix store 版备份于 `config.toml.nix-bak`）：前缀 `` `p / `s / `t `` → 对应 provider +
+      `[providers.actions]` 键绑定（default→lua `Actions` 表名）。
+
+    **已证机制 / 坑**（新会话避免重踩）：
+    1. elephant 是**独立 `elephant.service`**（walker 连接它），改 `menus/*.lua` 必须 `systemctl --user restart elephant`；改 walker config 需 `restart walker`。
+    2. **前缀触发用特殊字符**（`` `p `` 反引号风格，仿 cwdhist 的 `[`）——裸字母 `p` 被当搜索 query，不触发。
+    3. **Enter 默认动作依赖 walker `providers.actions`**（`default=true` 映射 lua `Actions` 表 key，`after="Close"`）；只有 lua `Action` 字段则 Enter 无反应。`%VALUE%` 由 elephant 替换为项 Value。
+    4. **当前项标记**：lua 菜单项 `State` 字段会传给 walker 但**无 UI 渲染**（实测 State={"history"} 无视觉变化）；菜单项**无 per-item 颜色/背景**（字段全集 Text/Subtext/Value/State/Icon/Actions/Preview 无 color）。→ 当前项用数据端 `* 前缀 + 置底`（`menu tags`/`sort` 输出时当前项打 `* ` 并排列表最后）。
+    5. **chromium CDP / daemon 状态残留**：mudrad 曾 "never ready, marking down" → 菜单空、`targets` 报 "not running"。`mudrad` 重启干净重连即恢复（chromium CDP 本身通）。
+
+    **剩余攻坚**：
+    - **a Action 模式** = "当前聚焦页识别"（niri focused window → 对应页作为动作对象）+ 动作集（close/copy/move/swap/star）+ `mudraactions.lua` + `` `a `` 前缀。`cmd_focus` 已含 CDP activate + niri `focus-window`（WmExt.focus_window），可复用 WmExt 定位聚焦实例/页。
+    - **落 `Configuration/nixos` 资产源**：上述 lua/config/daemon 正式化，切 systemd 管理、免手改配置。
+    - **tag 多选 A′**：打开后 keep 窗口（`AfterAction::KeepOpen`）+ 自建 provider 缓冲累积。
 
 - **P8 转 MD + 全文检索**（§10 ①）：html→md（reader-mode）提取正文 + sqlite FTS，无 LLM、是信息流精炼基础。
 - **P9 parent_id 分拣**：页面树 → workspace 移动（整棵子树归类，消费既有 `parent_id`）。
