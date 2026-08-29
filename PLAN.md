@@ -96,10 +96,14 @@ qw daemon start|stop|status
 ### URL record & filter
 - CDP `infoChanged` live-updates `pages.url`; list/filter by URL substring in `qw ls` / walker.
 
-### column-width memory (Win+R)
+### column-width memory (`qw col`, P5 done)
 - niri column width **is** an output-ratio (`preset-column-widths`, `switch-preset-column-width`/Mod+R cycles 1/3 1/2 2/3 1).
-- niri exposes **no direct getter** → capture `proportion = window_width / output_width`, snap to nearest band, store with the focused URL's domain in `site_widths`.
-- On open: focus the column → `set-column-width <proportion>` (fraction syntax `1/2` to confirm at impl).
+- **Read back** (verified): focused window `layout.tile_size[0]` ÷ output `logical.width`. e.g.
+  1162.86/1755 ≈ 0.66 → band **2/3**.
+- **Set** (verified): `set-column-width <N%>` — percent; the `1/2` fraction syntax **errors**.
+  Emit integer percent of the snapped band. Bands {1/3, 1/2, 2/3, 1}.
+- `qw col remember` captures the focused window's domain + width into `site_widths`;
+  `qw col show` lists; `open`/`add` auto-apply by domain (wait for the instance's window to focus).
 
 ### proxy & extension list
 - per-instance `proxy` → `--proxy-server`; `extensions` → `--load-extension=<built dirs>`.
@@ -124,7 +128,12 @@ qw daemon start|stop|status
   由具体实现提供（`niri` 现成；`hyprland` 未来可加）。niri 实现走 `niri msg` IPC。
 - **Launcher 扩展**（菜单提供 + 动作处理）：核心暴露 session/page 数据，`LauncherExt` 把数据
   渲染成 launcher（walker）菜单项并处理选中动作。
-- **启用清单**由配置决定（如 `extensions: [niri, walker]`）；核心不感知具体实现。
+- 启用清单由配置决定（如 `extensions: [niri, walker]`）；核心不感知具体实现。
+
+**BrowserEngine backend（可选延伸）**：控制协议同样按此抽象——`BrowserEngine` 接口
+（launch / list_targets / navigate / inject / close），chromium 走 CDP backend。
+替代引擎（Ladybird / Servo）的控制协议是 **Firefox RDP 非 CDP** 且不成熟（核实见
+wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 backend，而非现在改包。
 
 对接方式、接口定义、walker/niri 具体接法见 `docs/EXTENSIONS.md`。
 
@@ -140,7 +149,6 @@ qw daemon start|stop|status
 **Pending** (confirm at impl):
 - CDP control of error pages (`chrome-error`).
 - Deterministic per-instance window landing on its workspace.
-- Current column-width read field in `niri msg -j windows`; `set-column-width` fraction grammar.
 - `--load-extension` behavior with a second extension (e.g. Bitwarden) reliably.
 
 ## 7. Implementation phases
@@ -150,11 +158,12 @@ qw daemon start|stop|status
 - **P2 CDP verbs**: `goto / back / forward / reload / focus <page>`; find-by-URL activate.
 - **P3 workspace & move**: window↔process map; `qw move`; per-instance workspace routing; URL filter in `ls`.
 - **P4 proxy & extensions**: `--proxy-server`; `--load-extension` list; build+ship SurfingKeys bundle.
-- **P5 column-width memory**: Win+R capture → `site_widths`; auto-apply on open.
-- **P6 new-window interception**: `inject.js` + local `/open` server in `qwd`.
+- **P5 column-width memory**: Win+R capture → `site_widths`; auto-apply on open. **[done 2026-08]**
+- **P6 new-window interception**: `inject.js` + local `/open` server in `qwd`. [done]
 - **P7 extension modules**: build `WmExt` (niri move / column-width / workspace routing /
   window mapping) + `LauncherExt` (walker session/page menus + hotkeys) behind the pluggable
   interface (§5 Extensions); migrate `qw move` and focus onto the `WmExt` interface.
+  **[P7a done 2026-08: `qwlib/wm.py` `WmExt`+`NiriExt`, move/add migrated; P7b 待 walker 实现]**
 
 Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutting: verify niri/CDP APIs against reality before wiring each phase (the "fabricated API" rule).
 

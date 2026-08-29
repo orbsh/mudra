@@ -6,8 +6,10 @@ small interface, so the same core works on any WM / launcher that can satisfy it
 (hard constraint in the wiki: WM must offer interface/CLI fine-grained control —
 niri & hyprland qualify; cosmic-de does not yet).
 
-This document specifies the *integration approach* (P7). P0–P5 implement core + the
-niri bits that `move` already needs; the interface below is the target shape.
+This document specifies the *integration approach* (P7). **P7a is live**: the `WmExt` interface
++ `NiriExt` backend (`qwlib/wm.py`) are implemented and `qw move` / `add` run on it. P7b
+(`LauncherExt` walker menus) is pending the real walker provider API. P0–P6 implement core + the
+niri bits; the interface below is the target shape.
 
 ## Interface: WM extension (`WmExt`)
 
@@ -32,9 +34,9 @@ Core calls these operations on an enabled WM module (it never touches `niri` dir
 - **Focus** requires the flag form: `niri msg action focus-window --id <ID>`.
 - **Move**: `niri msg action move-window-to-workspace <ref>` where `<ref>` is a
   workspace **index or name** (numeric args are indexes, not ids — verified).
-- **Column width**: `set-column-width <fraction>` is pending grammar confirmation;
-  reading it back is `proportion = window_width / output_width` snapped to a band
-  (no direct field — see PLAN §5).
+- **Column width**: `set-column-width <N%>` (percent; the `1/2` fraction grammar **errors**).
+  Read back = focused window `layout.tile_size[0]` ÷ focused-output `logical.width`, snapped to a
+  band {1/3, 1/2, 2/3, 1} (both verified). See PLAN §5.
 - **Per-session named workspaces** (`web:<name>`) need niri to declare named
   workspaces (config change, deferred); until then `move` takes an index/name ref.
 
@@ -94,6 +96,9 @@ to core actions:
 
 ## Verification status
 
-**Done**: PID window↔instance mapping; `move` via `focus-window --id` + `move-window-to-workspace`.
-**Pending (P7)**: `set-column-width` grammar; column-width read field; exact walker provider API;
-named `web:*` workspace config.
+**Done**: PID window↔instance mapping; `move` via `focus-window --id` + `move-window-to-workspace`;
+**P7a**: `WmExt` interface + `NiriExt` backend live (`qwlib/wm.py`), move/add migrated to it;
+column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `qw col
+remember/show` + `open`/`add` auto-apply (P5).
+**Pending (P7b)**: `LauncherExt` walker provider API to verify; named `web:*` workspace config;
+hyprland backend.
