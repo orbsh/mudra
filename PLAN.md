@@ -143,9 +143,19 @@ mudra daemon start|stop|status
   `menus/*.lua` + Python 数据脚本读 mudra.sqlite，动作回调 `mudra` CLI）。已核实：walker **支持多字符
   前缀**（`data.rs` `starts_with`）+ `argument_delimiter`（前缀+分隔符+参数）。详见 docs/EXTENSIONS.md。
 - 启用清单由配置决定（如 `extensions: [niri, walker]`）；核心不感知具体实现。
-- **walker `s`/`t`/`a`/`o` 交互**（LauncherExt 落地）：`t` = 页面列表 → 聚焦 / 关闭；`s` = situation / 当前上下文
-  切换（inbox / work / personal / privacy）；`a` = 当前页动作（关闭 / 复制链接 / 打标）；`o` = 排序
-  （MRU / 时间 / 星 → 写 `state.sort`）。动作回调 `mudra CLI`；按 tag 过滤列选。详见 `docs/EXTENSIONS.md`。
+- **walker 交互（LauncherExt 落地）**（键位：`p` = Page / `t` = tag / `a` = Action / `s` = 排序）：
+  - `p` = **Page 模式**（页面列表）：默认动作 = 切换（focus）+ 快捷动作 = **移动到当前窗口 / 交换 / 关闭**；
+  - `t` = **tag 模式**：默认 situation 树（单选、即当前上下文）；**跨树可多选 / 树内单选**（situation/importance/urgency 单选、topic 可多选）；
+  - `a` = **Action 模式**：评分 / 复制链接 / 隔离 / 收藏；
+  - `s` = 排序（MRU / 时间 / 星 → 写 `state.sort`）。
+  动作回调 `mudra CLI`；按 tag 过滤列选。详见 `docs/EXTENSIONS.md`。
+
+  **tag 模式多选实现（优先 A，B 兜底）**：walker 原生单选、无勾选多选。tag 的「多选」是提交层动作：
+  - **A（优先）累积缓冲**：每个 tag 项绑 walker `keyboardShortcut`（如 `M-a`）="加入选择集"，选中累积到 mudrad 持有的 buffer，最后统一应用整组 tag。**需核实 walker 能否「触发后保持窗口打开、缓冲不散」**（不编造能力，动手前对 walker 文档/源码核实）。
+  - **B（兜底）文本分隔**：tag 模块文本输入补全，逗号/空格分隔多个 tag 一次 Enter 提交 → 脚本 split 应用；零依赖、walker 原生，无视觉勾选。
+
+  **Page 模式动作策略**：Page 承载「轻量高频」动作集——默认切换 + 快捷动作仅「移动到本窗口 / 交换 / 关闭」三个；
+  **其余一切（打 tag、评分、隔离、收藏…）进 Action 模式**——避免 Page 列表被动作键位塞爆、保持列选即达。
 
 **BrowserEngine backend（可选延伸）**：控制协议同样按此抽象——`BrowserEngine` 接口
 （launch / list_targets / navigate / inject / close），chromium 走 CDP backend。
@@ -235,6 +245,16 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 - 特征：域名层级 + URL token + **正文特征**（不只标题）。5 级有序分类 → 加权期望求分。
 - **标题-正文一致性分**（`|标题核心词 ∩ 正文前两段| / |标题核心词|`）检测标题党、下调 importance。
 - **正文需 html→md** 提取工具（`trafilatura`/`readability-lxml`/`html2text`，实现时核实）；可同时拿页内链接做**链接挖掘**（被高价值页引用的页 → inbox/建议分）。
+- **NB 数据模型（存 sqlite）**：朴素贝叶斯模型 = 两组计数，天然关系型：
+  ```sql
+  CREATE TABLE nb_class(model TEXT, class INTEGER, n INT, PRIMARY KEY(model,class));  -- 先验
+  CREATE TABLE nb_feat (model TEXT, class INTEGER, feature TEXT, n INT,
+                        PRIMARY KEY(model,class,feature));                            -- 条件计数
+  ```
+  - 平滑（拉普拉斯 α）只在预测时加、不入存储；模型 **可增量、可回溯、非黑箱**。
+  - **增量更新（无重训）**：人工标注改 importance/urgency → 该 doc 特征集 `nb_class[model][c]+=1`、每特征 `nb_feat[model][c][f]+=1`。
+  - **预测**：doc 特征集（带前缀 `domain:`/`url:`/`tok:`/`sd:`）→ `WHERE model=? AND feature IN (...)` → 5 class 各算 `log P(c)+Σlog P(f|c)` → softmax → **加权期望 → snap ☆**。
+  - 查询模式可预测 → 未来换 Fjall 亦可用 KV（`nb:{model}:{class}:{feat}→count`）。
 
 **捕获 — RSS/订阅监控**：订阅源进 `inbox`，幂等去重。
 

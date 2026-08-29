@@ -76,16 +76,21 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
   - 坑①：前缀按 config 声明顺序 `find` 第一个匹配 → 配多长度前缀时**长前缀排在短前缀前**。
   - 坑②：前缀触发是**持续模式**（输入持续过滤该 provider）；「选中即返回」用 Action `after="Close"`。
 
-#### 交互模型草案（t/s/a/o，待定稿）
-替代早前 `@`/`#` 单状态机：显式模式前缀 + 每个模式一个 menus provider。这些字符未被 walker
-默认前缀表（`; > / . ! % = @ : $`）占用，零冲突：
+#### 交互模型（p/t/a/s，键位定稿）
+显式模式前缀 + 每个模式一个 menus provider。这些字符未被 walker
+默认前缀表（`; > / . ! % = @ : $`）占用，零冲突。`s`/`t`/`a`/`o` → 定稿为 `p`/`t`/`a`/`s`
+（Page / tag / Action / sort；原 `t`=page 归 `p`，原 `s`=situation 并入 tag 模式 `t`，排序由 `o` 改 `s`）：
 
 | 前缀 | 模式 | menus provider | 动作 |
 |---|---|---|---|
-| `t` | tab（默认唤起 Mod+Spc） | `menus:mudratabs` | 当前 session 的 open pages → focus / close |
-| `s` | session（一次性切换） | `menus:mudrasessions` | sessions → open / use / move，选后 `after=Close` |
-| `a` | 动作 | `menus:mudraactions` | 当前聚焦 tab：关闭 / 复制链接 / 星级 |
-| `o` | 排序切换 | `menus:mudrasort` | MRU / 时间 / 星级 → 写 `mudra state` 排序偏好 |
+| `p` | Page（默认唤起 Mod+Spc） | `menus:mudrapages` | 页面列表 → focus / close / 移动本窗口 / 交换 |
+| `t` | tag（默认 situation 树） | `menus:mudratags` | 跨树可多选 / 树内单选（situation/importance/urgency 单选、topic 多选）；批量打标/评分 |
+| `a` | 动作 | `menus:mudraactions` | 当前聚焦页：关闭 / 复制链接 / 星级 / 隔离 / 收藏 |
+| `s` | 排序切换 | `menus:mudrasort` | MRU / 时间 / 星级 → 写 `state.sort` 排序偏好 |
+
+**tag 多选实现（优先 A，B 兜底）**：walker 原生单选、无勾选多选。tag 的「多选」是提交层动作——
+**A（优先）累积缓冲**：每 tag 项绑 `keyboardShortcut`（如 `M-a`）="加入选择集"，累积到 mudrad buffer、最后统一应用整组 tag（**需核实 walker 能否"触发后保持窗口打开、缓冲不散"**，动手前核实、不编造）
+；**B（兜底）文本分隔**：逗号/空格分隔多 tag 一次 Enter 提交，脚本 split 应用。
 
 需 mudra 侧补的数据能力（草案依赖）：
 - **星级 / 收藏**：mudra 目前无 bookmark — 需新建（`site_stars` 或并入 state）。
@@ -108,11 +113,11 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
 **P7a**: `WmExt` interface + `NiriExt` backend live (`mudralib/wm.py`), move/add migrated to it;
 column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `mudra col
 remember/show` + `open`/`add` auto-apply (P5).
-**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定）+ t/s/a/o
+**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定）+ p/t/a/s
 交互模型定稿；mudra 侧补星级/bookmark、排序偏好 state、当前聚焦 tab 识别；named `web:*` workspace
 config；hyprland backend.
 
 ### 重构影响（tag 森林 → PLAN §9 / wiki `tag-forest.md`）
 LauncherExt 从 session/page 视角向 **tag 森林** 演进：walker 菜单将支持按 tag 维度过滤
 （situation 默认 inbox；importance/urgency 为两级树 + rank 排星序）。`current_session` → situation。
-t/s/a/o 单字符前缀在 tag 森林多维度模型下的映射待定稿，P7b 落地时收敛。
+键位已定稿：`p`=Page / `t`=tag（默认 situation）/ `a`=Action / `s`=排序；tag 多选 = 累积缓冲（A）/ 文本分隔（B 兜底），落地时核实 walker `keyboardShortcut` 能力。
