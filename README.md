@@ -16,8 +16,9 @@ just showing webpages.
 
 **Status**: core (spawn / realtime CDP sync / navigation / niri window mapping+move /
 proxy+extensions / column-width memory) works as CLI+daemon `mudra` / `mudrad`.
-**Architecture shift to tag forest** (replace `session`) is in progress — see
-`PLAN.md` §9 and below.
+**Tag-forest architecture** (replace `session`) is the current direction — a **solidjs
+management panel** (`mudra ui`) is the main tag-forest interaction surface; the launcher
+keeps only the `p` (Page) hot-path. See `PLAN.md` §9, `docs/PANEL.md`, and below.
 
 ---
 
@@ -71,6 +72,11 @@ slot.
 
 **Terminology**: *tab → page* (the strip-less browser has no tabs; everything is a
 `page`), and *tag* (not label) for the tree nodes.
+
+**Interaction surface**: the tag-forest rich operations (scoring axes, capsule tag
+switching, batch assign) live in a solidjs management panel — `mudra ui`. The launcher
+keeps only the `p` (Page) hot-path. Panel architecture & tag-forest abstraction roadmap:
+`docs/PANEL.md`.
 
 ## Data model
 
@@ -152,6 +158,7 @@ python3 mudra.py ls <name> --filter news
 | `mudra.py mode [session\|tab\|flip\|op]` | current-context / op-mode state machine |
 | `mudra.py conf <name> [--proxy <p>] [--ext <csv>]` | per-session proxy/extensions (applied on next open/add) |
 | `mudra.py col remember\|show` | remember/per-site apply column width (niri) |
+| `mudra.py ui` | open the solidjs management panel (`mudra ui`) — the tag-forest interaction surface |
 | `mudrad.py run` | daemon: connect running instances, sync Target→sqlite |
 
 > The `session` verbs above are the *current* surface; the tag-forest migration moves

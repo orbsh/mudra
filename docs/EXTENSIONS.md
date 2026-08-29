@@ -9,7 +9,7 @@ niri & hyprland qualify; cosmic-de does not yet).
 This document specifies the *integration approach* (P7). **P7a is live**: the `WmExt` interface
 + `NiriExt` backend (`mudralib/wm.py`) are implemented and `mudra move` / `add` run on it. P7b
 (`LauncherExt` walker menus) 走 elephant `menus` provider（见下）；walker provider 不能外部插件。
-交互模型草案（t/s/a/o）待定稿，需 mudra 补星级/排序/当前聚焦 tab 数据能力。P0–P6 implement core +
+交互模型已定稿：面板（`mudra ui`）承担 tag 富交互，launcher 只留 `p`（见下）。P0–P6 implement core +
 the niri bits; the interface below is the target shape.
 
 ## Interface: WM extension (`WmExt`)
@@ -77,20 +77,20 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
   - 坑②：前缀触发是**持续模式**（输入持续过滤该 provider）；「选中即返回」用 Action `after="Close"`。
 
 #### 交互模型（p/t/a/s，键位定稿）
-显式模式前缀 + 每个模式一个 menus provider。这些字符未被 walker
-默认前缀表（`; > / . ! % = @ : $`）占用，零冲突。`s`/`t`/`a`/`o` → 定稿为 `p`/`t`/`a`/`s`
-（Page / tag / Action / sort；原 `t`=page 归 `p`，原 `s`=situation 并入 tag 模式 `t`，排序由 `o` 改 `s`）：
+**关键交互演进（2026-08 定稿）**：面板取代了 launcher 的 tag/sort/action 模式。tag
+多选批量、评分轴、排序这些**富操作**交给 solidjs 面板（`mudra ui`）；launcher 只保留
+**Page 热路径单动作**。前缀收敛为单字符 `p`（不再需要 `t`/`a`/`s`——它们被面板吸收）：
 
 | 前缀 | 模式 | menus provider | 动作 |
 |---|---|---|---|
 | `p` | Page（默认唤起 Mod+Spc） | `menus:mudrapages` | 页面列表 → focus / close / 移动本窗口 / 交换 |
-| `t` | tag（默认 situation 树） | `menus:mudratags` | 跨树可多选 / 树内单选（situation/importance/urgency 单选、topic 多选）；批量打标/评分 |
-| `a` | 动作 | `menus:mudraactions` | 当前聚焦页：关闭 / 复制链接 / 星级 / 隔离 / 收藏 |
-| `s` | 排序切换 | `menus:mudrasort` | MRU / 时间 / 星级 → 写 `state.sort` 排序偏好 |
 
-**tag 多选实现（优先 A，B 兜底）**：walker 原生单选、无勾选多选。tag 的「多选」是提交层动作——
-**A（优先）累积缓冲**：每 tag 项绑 `keyboardShortcut`（如 `M-a`）="加入选择集"，累积到 mudrad buffer、最后统一应用整组 tag（**需核实 walker 能否"触发后保持窗口打开、缓冲不散"**，动手前核实、不编造）
-；**B（兜底）文本分隔**：逗号/空格分隔多 tag 一次 Enter 提交，脚本 split 应用。
+> 早期草案的 `t`（tag）/`a`（action）/`s`（sort）三模式已**移交面板**：面板提供评分
+> 轴 + 胶囊 tag + 批量指派（见 `docs/PANEL.md`）。launcher 不再承担富交互。
+
+**tag 多选（面板内实现）**：面板的批量指派是**提交层动作**——勾选多个 page → 选 tag
+→ 整组替换。这绕开了 walker 单选无多选的限制（面板是独立界面，非 walker provider）。
+launcher 侧如需 tag 过滤，用 `p` 模式的过滤参数即可，无需多选。
 
 需 mudra 侧补的数据能力（草案依赖）：
 - **星级 / 收藏**：mudra 目前无 bookmark — 需新建（`site_stars` 或并入 state）。
@@ -113,11 +113,12 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
 **P7a**: `WmExt` interface + `NiriExt` backend live (`mudralib/wm.py`), move/add migrated to it;
 column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `mudra col
 remember/show` + `open`/`add` auto-apply (P5).
-**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定）+ p/t/a/s
-交互模型定稿；mudra 侧补星级/bookmark、排序偏好 state、当前聚焦 tab 识别；named `web:*` workspace
+**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定 + `p`
+热路径交互）；mudra 侧补星级/bookmark、排序偏好 state、当前聚焦 tab 识别；named `web:*` workspace
 config；hyprland backend.
 
 ### 重构影响（tag 森林 → PLAN §9 / wiki `tag-forest.md`）
-LauncherExt 从 session/page 视角向 **tag 森林** 演进：walker 菜单将支持按 tag 维度过滤
-（situation 默认 inbox；importance/urgency 为两级树 + rank 排星序）。`current_session` → situation。
-键位已定稿：`p`=Page / `t`=tag（默认 situation）/ `a`=Action / `s`=排序；tag 多选 = 累积缓冲（A）/ 文本分隔（B 兜底），落地时核实 walker `keyboardShortcut` 能力。
+LauncherExt 从 session/page 视角向 **tag 森林** 演进：`p` 模式按 tag 维度过滤
+（situation 默认 inbox；importance/urgency 为两级树 + rank 排星序）。`current_session` →
+situation。**富交互（tag 多选批量、评分轴、排序）已移交面板**（`mudra ui`，见
+`docs/PANEL.md`），launcher 只保留 `p` 热路径；tag 过滤走 `p` 模式过滤参数。
