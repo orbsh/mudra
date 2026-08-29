@@ -166,15 +166,32 @@ def cmd_targets(args) -> int:
 
 
 def cmd_focus(args) -> int:
+    if not getattr(args, "name", None):
+        with db.connect() as conn:
+            args.name = db.get_state(conn, "current_session")
     got = _require_port(args)
     if isinstance(got, int):
         return got
-    port, _ = got
+    port, name = got
     hits = ctl.find(port, args.query)
     if not hits:
         print(f"no page matching {args.query!r}")
         return 1
     ctl.activate(port, hits[0]["targetId"])
+    # CDP 只激活 tab；把该 session 实例的 niri 窗口带到前台，才算"切换"
+    try:
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
+                " WHERE s.name=? AND i.running=1", (name,)
+            ).fetchone()
+        pid = row["pid"] if row else None
+        if pid:
+            wins = wm.get().windows_for_instance(pid)
+            if wins:
+                wm.get().focus_window(wins[0]["id"])
+    except Exception:
+        pass  # niri 不可用不阻塞 CDP activate
     print(f"focused: {hits[0].get('title') or hits[0].get('url')}")
     return 0
 
@@ -476,8 +493,7 @@ def _menu_pages(conn, query: str) -> int:
         disp = p["title"] or p["url"]
         if q and q not in f"{disp} {p['url']}".lower():
             continue
-        vid = p["target_id"] or str(p["id"])
-        print("\t".join([disp, p["url"], vid]))
+        print("\t".join([disp, p["url"], p["url"]]))
     return 0
 
 
@@ -641,8 +657,8 @@ def main() -> int:
     t = sub.add_parser("targets", help="list live page targets (CDP)")
     t.add_argument("name")
     t.set_defaults(fn=cmd_targets)
-    f = sub.add_parser("focus", help="find page by url/title and activate")
-    f.add_argument("name")
+    f = sub.add_parser("focus", help="find page by url/title and activate (name optional → current session)")
+    f.add_argument("name", nargs="?", help="session name (default: current)")
     f.add_argument("query")
     f.set_defaults(fn=cmd_focus)
     g = sub.add_parser("goto", help="navigate current page to url")
