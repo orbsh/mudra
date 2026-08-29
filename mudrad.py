@@ -18,7 +18,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from mudralib import cdp, db, spawn
+from mudralib import cdp, db, spawn, ui
 
 # 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，mudrad 拉起 --app 窗口。
 _INTERCEPT_PORT = 8899
@@ -268,6 +268,7 @@ class Mudrad:
     def run(self) -> None:
         print("[mudrad] started")
         self._start_intercept_server()
+        ui._start_services()
         while True:
             with db.connect() as conn:
                 insts = conn.execute(

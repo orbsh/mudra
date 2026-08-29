@@ -57,6 +57,18 @@ class WmExt(abc.ABC):
         """切到/创建工作区 ref。"""
 
     @abc.abstractmethod
+    def active_workspace(self) -> int:
+        """当前活动工作区 idx（move-window-to-workspace 的 ref 接受 idx）。"""
+
+    @abc.abstractmethod
+    def workspace_of_window(self, wid: int) -> int | None:
+        """窗口所在工作区 idx。"""
+
+    @abc.abstractmethod
+    def float_and_center(self) -> None:
+        """把聚焦窗口转浮动并居中（管理面板用）。"""
+
+    @abc.abstractmethod
     def wait_for_new_window(self, before: set[int], timeout: float = 8.0) -> int | None:
         """等一个(开窗前不存在)的新窗口出现，返回其 id(后台打开用)。"""
 
@@ -122,6 +134,27 @@ class NiriExt(WmExt):
 
     def focus_workspace(self, ref: str) -> None:
         _niri_msg(["action", "focus-workspace", ref])
+
+    def float_and_center(self) -> None:
+        _niri_msg(["action", "move-window-to-floating"])
+        _niri_msg(["action", "center-window"])
+
+    def active_workspace(self) -> int:
+        """当前活动工作区的 idx（供 move-window-to-workspace 用，ref 接受 idx）。"""
+        r = _niri_msg(["-j", "workspaces"])
+        if r.returncode != 0:
+            raise RuntimeError(f"niri workspaces: {r.stderr.strip()}")
+        for w in json.loads(r.stdout):
+            if w.get("is_focused"):
+                return w["idx"]
+        raise RuntimeError("no focused workspace")
+
+    def workspace_of_window(self, wid: int) -> int | None:
+        """窗口所在工作区的 idx；查不到返回 None。"""
+        for w in self.windows():
+            if w["id"] == wid:
+                return w.get("workspace_id")
+        return None
 
     def wait_for_new_window(self, before: set[int], timeout: float = 8.0) -> int | None:
         end = time.monotonic() + timeout

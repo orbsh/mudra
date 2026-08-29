@@ -102,3 +102,16 @@ def reload(port: int, target_id: str) -> None:
     ws = cdp.WsClient(_page_ws(port, target_id), timeout=8)
     cdp.call(ws, "Page.reload", {"ignoreCache": False})
     ws.close()
+
+
+def screenshot(port: int, target_id: str) -> str | None:
+    """抓目标页内容截图，返回 base64 PNG（'data:image/png;base64,...'）；失败返回 None。"""
+    try:
+        ws = cdp.WsClient(_page_ws(port, target_id), timeout=10)
+        r = cdp.call(ws, "Page.captureScreenshot", {"format": "png"})
+        ws.close()
+        data = r["result"].get("data")
+        return f"data:image/png;base64,{data}" if data else None
+    except Exception as e:
+        print(f"[ctl] screenshot err: {e}")
+        return None

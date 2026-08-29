@@ -10,7 +10,7 @@ import sys
 import time
 from urllib.parse import urlparse
 
-from mudralib import ctl, db, spawn, wm
+from mudralib import ctl, db, spawn, ui, wm
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -418,6 +418,33 @@ def cmd_col(args: argparse.Namespace) -> int:
     return 0
 
 
+def _focused_page(conn) -> dict | None:
+    """解析当前聚焦 niri 窗口 → 对应 mudra 页（共享动作对象）。
+
+    Action(act copy) / tag 指派都以此为目标页。返回 pages 行（含 session_id/title/url/target_id）。
+    focused 窗口非 mudra 实例、或找不到匹配 CDP 页时返回 None。
+    """
+    win = wm.get().focused_window()
+    if not win:
+        return None
+    inst = conn.execute(
+        "SELECT id,port,pid FROM instances WHERE pid=? AND running=1", (win["pid"],)
+    ).fetchone()
+    if not inst or not inst["port"]:
+        return None
+    title = win.get("title") or ""
+    page = next(
+        (t for t in ctl.list_pages(inst["port"]) if t.get("title") == title),
+        None,
+    )
+    if page is None:
+        return None
+    return conn.execute(
+        "SELECT * FROM pages WHERE target_id=? LIMIT 1",
+        (page.get("targetId"),),
+    ).fetchone()
+
+
 def _apply_site_width(url: str, pid: int) -> None:
     """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用。"""
     domain = _domain(url)
@@ -476,14 +503,15 @@ def cmd_conf(args: argparse.Namespace) -> int:
 
 
 def _menu_pages(conn, query: str) -> int:
-    """Page 模式(p) 菜单数据：当前 session 的开页，TAB 三列（title / url / target_id）。
-    elephant menus 脚本按这行格式解析成 Text/Subtext/Value。"""
+    """Page 模式(p) 菜单数据：当前 session 的开页，TAB 三列（title / url / url）。
+    elephant menus 脚本按这行格式解析成 Text/Subtext/Value。
+    """
     cur = db.get_state(conn, "current_session")
     if not cur:
         return 0
     q = query.lower()
     rows = conn.execute(
-        "SELECT id,url,title,target_id,position FROM pages"
+        "SELECT id,url,title,position FROM pages"
         " WHERE closed_at IS NULL"
         " AND session_id = (SELECT id FROM sessions WHERE name=?)"
         " ORDER BY position",
@@ -494,45 +522,6 @@ def _menu_pages(conn, query: str) -> int:
         if q and q not in f"{disp} {p['url']}".lower():
             continue
         print("\t".join([disp, p["url"], p["url"]]))
-    return 0
-
-
-def _menu_sort(conn, query: str) -> int:
-    """排序(s) 菜单数据：当前 sort 项打前缀标记 + 排到列表最后。"""
-    cur = db.get_state(conn, "sort")
-    q = query.lower()
-    listed, cur_item = [], None
-    for text, sub, val in [("MRU", "recently used", "mru"),
-                           ("时间", "opened time", "mtime"),
-                           ("星序", "star rating", "rating")]:
-        if q and q not in f"{text} {sub}".lower():
-            continue
-        it = (text, sub, val)
-        if val == cur:
-            cur_item = (f"* {text}", sub, val)
-        else:
-            listed.append(it)
-    for it in listed + ([cur_item] if cur_item else []):
-        print("\t".join(it))
-    return 0
-
-
-def _menu_actions(conn, query: str) -> int:
-    """动作(a) 菜单数据：针对当前聚焦页的动作集。执行由 lua action 调 mudra 命令（需当前聚焦页识别，集成时补）。"""
-    rows = [("关闭", "close current page", "close"),
-            ("复制链接", "copy current page url", "copy"),
-            ("移动到本窗口", "move current page to this workspace", "move-here"),
-            ("交换", "swap with current window", "swap"),
-            ("星级", "star / unstar current page", "star")]
-    return _emit(rows, query)
-
-
-def _emit(rows, query: str) -> int:
-    q = query.lower()
-    for text, sub, val in rows:
-        if q and q not in f"{text} {sub}".lower():
-            continue
-        print("\t".join([text, sub, val]))
     return 0
 
 
@@ -569,8 +558,10 @@ def _seed_tags(conn):
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     sit = root("situation", "当前上下文（树内单选）")
-    importance = root("importance", "内容质量/价值（评分树）")
+    importance = root("importance", "重要性（评分树）")
     urgency = root("urgency", "时效性（评分树）")
+    quality = root("quality", "内容质量（评分树，重要≠质量高）")
+    state = root("state", "处理状态（树内单选）")
     topic = root("topic", "主题（可多选）")
 
     child(sit, "inbox", "默认收入箱", isolated=1, required=1, alias="待处理")
@@ -580,6 +571,10 @@ def _seed_tags(conn):
     for i, star in enumerate(["☆", "☆☆", "☆☆☆", "☆☆☆☆", "☆☆☆☆☆"], 1):
         child(importance, star, rank=i)
         child(urgency, star, rank=i)
+        child(quality, star, rank=i)
+    for name, alias in [("未读", "unread"), ("在读", "reading"),
+                        ("已提炼", "distilled"), ("已归档", "archived")]:
+        child(state, name, alias=alias)
     return created
 
 
@@ -590,51 +585,61 @@ def cmd_tag(args: argparse.Namespace) -> int:
             conn.commit()
             print(f"tag 森林 seed 完成（新增 {n} 节点，幂等）")
             return 0
+        if args.action in ("add", "remove"):
+            return _tag_set(conn, args.tag_id, on=args.action == "add", page_id=args.page_id)
         return 0
 
 
-def _menu_tags(conn, query: str) -> int:
-    """tag 模式(t) 菜单数据：situation 树候选。当前 context 项打前缀标记 + 排到列表最后。"""
-    cur = db.get_state(conn, "current_context")
-    cur_id = int(cur) if cur and str(cur).isdigit() else None
-    q = query.lower()
-    rows = conn.execute(
-        "SELECT id,name,alias FROM tag"
-        " WHERE parent_id=(SELECT id FROM tag WHERE parent_id=-1 AND name='situation')"
-        " AND deleted=0 ORDER BY id"
-    ).fetchall()
-    listed, cur_item = [], None
-    for r in rows:
-        text, sub = r["name"], r["alias"] or "situation"
-        if q and q not in f"{text} {sub}".lower():
-            continue
-        it = (text, sub, str(r["id"]))
-        if r["id"] == cur_id:
-            cur_item = (f"* {text}", sub, str(r["id"]))
-        else:
-            listed.append(it)
-    for it in listed + ([cur_item] if cur_item else []):
-        print("\t".join(it))
+def _tag_set(conn, tag_id: str, on: bool, page_id: str | None = None) -> int:
+    """指派/移除 tag 到页（写 page_tag）。page_id 省略时用当前聚焦页（面板批量/单页都可）。
+
+    返回 (0 成功 / 1 失败)。
+    """
+    if not str(tag_id).lstrip("-").isdigit():
+        print(f"invalid tag_id {tag_id!r}")
+        return 1
+    row = conn.execute("SELECT id,name FROM tag WHERE id=?", (tag_id,)).fetchone()
+    if not row:
+        print(f"no tag {tag_id!r}")
+        return 1
+    if page_id is not None:
+        page = conn.execute("SELECT * FROM pages WHERE id=?", (page_id,)).fetchone()
+    else:
+        page = _focused_page(conn)
+    if page is None:
+        print("no page to tag (聚焦窗不是 mudra 页，或 page_id 无效)")
+        return 1
+    if on:
+        conn.execute(
+            "INSERT OR IGNORE INTO page_tag(page_id,tag_id) VALUES(?,?)",
+            (page["id"], tag_id),
+        )
+    else:
+        conn.execute(
+            "DELETE FROM page_tag WHERE page_id=? AND tag_id=?",
+            (page["id"], tag_id),
+        )
+    conn.commit()
+    verb = "指派" if on else "移除"
+    print(f"{verb} tag {row['name']} -> {page['title'] or page['url']} (page#{page['id']})")
     return 0
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    """拉起管理面板：mudrad 服务 /ui + /ws，再开一个浮动居中窗口载入它。"""
+    return ui.launch(args)
 
 
 def cmd_menu(args: argparse.Namespace) -> int:
     """launcher 菜单数据出口（TAB 三列，供 elephant/walker menus provider）。
-    kind: pages / tags / actions / sort — p/t/a/s 四模式菜单数据。
-    落地：pages / sort / actions / tags ✓（tags 依赖 tag 森林 seed）。"""
+    kind: pages（p 模式菜单数据）。tag 森林管理已交管理面板。"""
     with db.connect() as conn:
         if args.kind == "pages":
             return _menu_pages(conn, args.query)
-        if args.kind == "sort":
-            return _menu_sort(conn, args.query)
-        if args.kind == "actions":
-            return _menu_actions(conn, args.query)
-        if args.kind == "tags":
-            return _menu_tags(conn, args.query)
         return 0
 
-def cmd_sort(args: argparse.Namespace) -> int:
-    """排序偏好 → state.sort（s 模式菜单落地）。"""
+def cmd_sort(args) -> int:
+    # 保留（面板排序可选）；MRU/时间默认在 page 列表走 position。
     with db.connect() as conn:
         db.set_state(conn, "sort", args.kind)
         conn.commit()
@@ -642,13 +647,84 @@ def cmd_sort(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_context(args: argparse.Namespace) -> int:
-    """当前 situation → state.current_context（t 模式菜单落地；§9 消费）。"""
+def _page_for_url(conn, name: str, url: str) -> dict | None:
+    """在某 session 里按 url 找 open 页行（page 模式的选中项）。"""
+    return conn.execute(
+        "SELECT p.* FROM pages p JOIN sessions s ON s.id=p.session_id"
+        " WHERE s.name=? AND p.closed_at IS NULL AND p.url=?"
+        " ORDER BY p.position LIMIT 1",
+        (name, url),
+    ).fetchone()
+
+
+def _window_for_page(pid: int, page: dict) -> int | None:
+    """某实例 pid 下、标题匹配给定页（来自 CDP list_pages）的 niri 窗口 id。"""
+    title = page.get("title") or ""
+    domain = (page.get("url") or "").split("//")[-1].split("/")[0]
+    for w in wm.get().windows_for_instance(pid):
+        wt = w.get("title") or ""
+        if title and wt == title:
+            return w["id"]
+        if domain and domain in wt:
+            return w["id"]
+    return None
+
+
+def cmd_page(args) -> int:
+    """Page 模式动作：对选中页执行 move-here / swap / close（选中项=url）。
+    move-here: 移到当前活动工作区; swap: 与当前聚焦窗交换工作区; close: 关该页。
+    """
+    if not getattr(args, "name", None):
+        with db.connect() as conn:
+            args.name = db.get_state(conn, "current_session")
+    got = _require_port(args)
+    if isinstance(got, int):
+        return got
+    port, name = got
     with db.connect() as conn:
-        db.set_state(conn, "current_context", args.value)
+        page = _page_for_url(conn, name, args.url)
+        if not page:
+            print(f"no open page matching {args.url!r} in {name!r}")
+            return 1
+        row = conn.execute(
+            "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
+            " WHERE s.name=? AND i.running=1", (name,)
+        ).fetchone()
+    if not row:
+        print(f"session {name!r} not running")
+        return 1
+    mgr = wm.get()
+    wid = _window_for_page(row["pid"], page)
+    if args.op == "close":
+        conn = db.connect()
+        conn.execute("DELETE FROM pages WHERE id=?", (page["id"],))
         conn.commit()
-        print(f"current context -> {args.value}")
-    return 0
+        if page["target_id"]:
+            ctl.close_target(port, page["target_id"])
+        print(f"closed page {page['url']}")
+        return 0
+    if wid is None:
+        print("no niri window matches that page (page 未聚焦成独立窗口?)")
+        return 1
+    if args.op == "move-here":
+        mgr.focus_window(wid)
+        mgr.move_to_workspace(str(mgr.active_workspace()))
+        print(f"moved {page['url']} to active workspace")
+        return 0
+    if args.op == "swap":
+        mgr.focus_window(wid)
+        wsrc = mgr.workspace_of_window(wid)
+        fwin = mgr.focused_window()
+        fsrc = fwin["workspace_id"] if fwin else None
+        src_ws = fsrc if fsrc is not None else mgr.active_workspace()
+        mgr.move_to_workspace(str(src_ws))
+        if fwin is not None and fwin["id"] != wid and wsrc is not None:
+            mgr.focus_window(fwin["id"])
+            mgr.move_to_workspace(str(wsrc))
+        print(f"swapped {page['url']} with focused window")
+        return 0
+    print(f"unknown op {args.op!r}")
+    return 1
 
 
 def cmd_move(args) -> int:
@@ -713,6 +789,12 @@ def main() -> int:
     rl.add_argument("name")
     rl.set_defaults(fn=cmd_reload)
 
+    pg = sub.add_parser("page", help="page 模式动作：对选中页 move-here / swap / close")
+    pg.add_argument("op", choices=["move-here", "swap", "close"])
+    pg.add_argument("url")
+    pg.add_argument("name", nargs="?", help="session name (default: current)")
+    pg.set_defaults(fn=cmd_page)
+
     m = sub.add_parser("move", help="move a session's windows to a workspace")
     m.add_argument("name")
     m.add_argument("workspace", help="target niri workspace")
@@ -751,22 +833,23 @@ def main() -> int:
     col.add_argument("site", nargs="?", help="filter by site in show")
     col.set_defaults(fn=cmd_col)
 
-    t = sub.add_parser("tag", help="tag 森林：init seed 初始树")
-    t.add_argument("action", choices=["init"])
-    t.set_defaults(fn=cmd_tag)
+    tag = sub.add_parser("tag", help="tag 森林：init seed / add|remove 指派到页")
+    tag.add_argument("action", choices=["init", "add", "remove"])
+    tag.add_argument("tag_id", nargs="?", help="tag id（add/remove）")
+    tag.add_argument("page_id", nargs="?", help="目标页 id（省略=当前聚焦页，供面板批量）")
+    tag.set_defaults(fn=cmd_tag)
+
+    ui = sub.add_parser("ui", help="launch the management panel (floating window + ws)")
+    ui.set_defaults(fn=cmd_ui)
 
     m = sub.add_parser("menu", help="launcher menu data (TAB columns for elephant/walker)")
-    m.add_argument("kind", choices=["pages", "tags", "actions", "sort"])
+    m.add_argument("kind", choices=["pages"])
     m.add_argument("query", nargs="?", default="")
     m.set_defaults(fn=cmd_menu)
 
     so = sub.add_parser("sort", help="set sort preference (MRU/time/rating)")
     so.add_argument("kind", choices=["mru", "mtime", "rating"])
     so.set_defaults(fn=cmd_sort)
-
-    cx = sub.add_parser("context", help="set current situation (tag); §9 consumes it")
-    cx.add_argument("value")
-    cx.set_defaults(fn=cmd_context)
 
     a = ap.parse_args()
     return a.fn(a)
