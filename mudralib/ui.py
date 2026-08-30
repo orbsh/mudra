@@ -16,6 +16,7 @@ launcher 的 `` p `` 只管「热路径单动作」；tag 森林的一切（多�
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import pathlib
@@ -111,43 +112,62 @@ def _reply(msg, **kw):
     return json.dumps(resp)
 
 
+def _handle(msg: dict) -> str:
+    """同步处理单个 WS 请求：DB 连接 + 操作 + 关闭，全程在同一线程。
+    返回 _reply 生成的 JSON 字符串；所有阻塞 IO（CDP/niri）也在此线程，不冻结 asyncio loop。"""
+    op = msg.get("op")
+    try:
+        conn = db.connect()
+        try:
+            if op == "forest":
+                return _reply(msg, ok=True, forest=_forest(conn),
+                              sessions=_sessions(conn))
+            elif op == "pages":
+                return _reply(msg, ok=True,
+                              pages=_pages(conn, msg.get("session", "")))
+            elif op == "set_tags":
+                _set_tags(conn, msg.get("page_id"), msg.get("tag_ids", []))
+                conn.commit()
+                return _reply(msg, ok=True)
+            elif op == "focus":
+                _focus(conn, msg.get("page_id"))
+                return _reply(msg, ok=True)
+            elif op == "close":
+                _close(conn, msg.get("page_id"))
+                return _reply(msg, ok=True)
+            elif op == "create_tag":
+                nid = _create_tag(conn, msg.get("parent_id"), msg.get("name"))
+                return _reply(msg, ok=True, id=nid)
+            elif op == "shot":
+                data = _shot(conn, msg.get("page_id"))
+                return _reply(msg, ok=True, data=data)
+            return _reply(msg, err=f"unknown op {op}")
+        except Exception as e:
+            return _reply(msg, err=str(e))
+        finally:
+            conn.close()
+    except Exception as e:
+        return _reply(msg, err=f"db connect: {e}")
+
+
 async def _ws_handler(ws) -> None:
     async for raw in ws:
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        op = msg.get("op")
-        conn = db.connect()
         try:
-            if op == "forest":
-                await ws.send(_reply(msg, ok=True, forest=_forest(conn),
-                                     sessions=_sessions(conn)))
-            elif op == "pages":
-                await ws.send(_reply(msg, ok=True,
-                                     pages=_pages(conn, msg.get("session", ""))))
-            elif op == "set_tags":
-                _set_tags(conn, msg.get("page_id"), msg.get("tag_ids", []))
-                conn.commit()
-                await ws.send(_reply(msg, ok=True))
-            elif op == "focus":
-                _focus(conn, msg.get("page_id"))
-                await ws.send(_reply(msg, ok=True))
-            elif op == "close":
-                _close(conn, msg.get("page_id"))
-                await ws.send(_reply(msg, ok=True))
-            elif op == "create_tag":
-                nid = _create_tag(conn, msg.get("parent_id"), msg.get("name"))
-                await ws.send(_reply(msg, ok=True, id=nid))
-            elif op == "shot":
-                data = _shot(conn, msg.get("page_id"))
-                await ws.send(_reply(msg, ok=True, data=data))
-            else:
-                await ws.send(_reply(msg, err=f"unknown op {op}"))
-        except Exception as e:
-            await ws.send(_reply(msg, err=str(e)))
-        finally:
-            conn.close()
+            async with asyncio.timeout(15):
+                reply = await asyncio.to_thread(_handle, msg)
+            await ws.send(reply)
+        except asyncio.TimeoutError:
+            try:
+                await ws.send(_reply(msg, err="handler timeout"))
+            except Exception:
+                pass
+        except (asyncio.CancelledError, ConnectionError, RuntimeError, OSError):
+            # 客户端断开/连接失效：清理退出，不让 handler 卡在 CLOSE-WAIT
+            break
 
 
 def _set_tags(conn, page_id, tag_ids) -> None:
@@ -282,7 +302,10 @@ def _start_services() -> None:
 
         async def main():
             async with websockets.serve(
-                _ws_handler, "127.0.0.1", PANEL_PORT + 1
+                _ws_handler, "127.0.0.1", PANEL_PORT + 1,
+                ping_interval=15,   # 每个连接周期性 ping，探测死连接
+                ping_timeout=10,    # ping 无响应 → 判定死连接 → 服务端回收（治 CLOSE-WAIT 堆积）
+                max_queue=64,       # 单连接读队列上限，防慢客户端无限堆积
             ):
                 await asyncio.Future()  # run forever
 
