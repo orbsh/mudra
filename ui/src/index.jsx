@@ -275,10 +275,10 @@ function PageNode(props) {
              onMouseLeave={() => hover(p, false)}>
             {p.title}
           </a>
-        </div>
-        {/* 行2：元信息 + rank + 普通胶囊 + 添加 */}
-        <div class="row2">
           <span class="meta">{timeAgo(p.opened_at)}</span>
+        </div>
+        {/* 行2：rank + 普通胶囊 + 添加 */}
+        <div class="row2">
           <For each={rankRoots}>
             {(root) => <RankAxis page={p} root={root} />}
           </For>
