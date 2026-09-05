@@ -121,6 +121,27 @@ class Mudrad:
         ).fetchone()
         return r["profile"] if r else None
 
+    def _ctx_for_tab(self, tab_id: str | int | None) -> str | None:
+        """按 CDP targetId（SK sender tab）反查其所属实例 → ctx（跨实例全量查）。"""
+        if not tab_id:
+            return None
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, port, running FROM instances WHERE running=1"
+            ).fetchall()
+        for row in rows:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{row['port']}/json", timeout=2
+                ) as r:
+                    targets = json.loads(r.read())
+                if any(t.get("id") == tab_id for t in targets):
+                    with db.connect() as conn:
+                        return self._ctx_of_instance(conn, row["id"])
+            except Exception:
+                continue
+        return None
+
     # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
     def _inject_page(self, port: int, target_id: str, ctx: str) -> None:
         try:
@@ -159,12 +180,18 @@ class Mudrad:
         return {"ctx": ctx}
 
     def ctl_open(self, data: dict) -> dict:
-        """上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（debug 端口 + 复用 proxy/extensions）。"""
+        """上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（debug 端口 + 复用 proxy/extensions）。
+
+        ctx 缺省：先按 tabId（SK background 上报的 sender tab）反查所属实例 → ctx；
+        再兜底当前上下文。
+        """
         url = spawn.normalize_url((data or {}).get("url") or "")
         if not url:
             raise ValueError("need url")
         with db.connect() as conn:
-            ctx = (data or {}).get("ctx") or db.current_context(conn)
+            ctx = (data or {}).get("ctx")
+            if not ctx:
+                ctx = self._ctx_for_tab((data or {}).get("tabId")) or db.current_context(conn)
             inst = self._inst_for_ctx(conn, ctx)
         if inst and inst["running"] and self._pid_alive(inst["pid"]):
             # 并入已有实例

@@ -27,8 +27,10 @@ def profile_dir(name: str) -> pathlib.Path:
     return PROFILES / name
 
 
+# 自带扩展：仓库内维护（extension/），chromium 直接从源码目录加载（纯 JS 零构建）
 EXT_ROOT = db.DB.parent / "extensions"
-DEFAULT_EXTENSIONS = [str(EXT_ROOT / "surfingkeys")]
+REPO_EXTENSIONS = pathlib.Path(__file__).resolve().parent.parent / "extension"
+DEFAULT_EXTENSIONS = [str(REPO_EXTENSIONS / "mudra-keys")]
 
 
 def normalize_url(url: str) -> str:
