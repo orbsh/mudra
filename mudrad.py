@@ -26,11 +26,11 @@ from mudralib import cdp, ctl, db, spawn, ui, wm
 _INTERCEPT_PORT = 8899
 _INJECT_JS = r"""(() => {
   if (window.__mudraInjected) return; window.__mudraInjected = true;
-  const SESSION = "__SESSION__";
+  const CTX = "__CTX__";
   const EP = "http://127.0.0.1:__PORT__/open";
   function openUrl(u) {
     if (!/^https?:/.test(u || "")) return;
-    try { navigator.sendBeacon(EP, new Blob([JSON.stringify({url:u, session:SESSION})], {type:"text/plain"})); } catch(e){}
+    try { navigator.sendBeacon(EP, new Blob([JSON.stringify({url:u, ctx:CTX})], {type:"text/plain"})); } catch(e){}
   }
   const ow = window.open;
   window.open = function(u, n, f) {
@@ -61,10 +61,12 @@ def _acquire_lock() -> None:
 
 class _InterceptHandler(BaseHTTPRequestHandler):
     """控制接口（唯一执行点：窗口/实例/页面生命周期全部在此完成）：
-    POST /open   {session,url}     实例活着 → 并入 --app 窗口；死了 → 新建实例（带 debug 端口）
-    POST /add    {session,url,bg}  并入 --app 窗口（会话必须活着）
-    POST /close_page   {session,query}   关一个 tab（target 关闭事件触发统一收尾）
-    POST /close_session {session}        关整个实例（kill → _mark_down 收尾）
+    POST /open        {url, ctx?}  上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（带 debug 端口）
+    POST /add         {url, ctx?}  并入 --app 窗口（实例必须活着）
+    POST /close_page  {query, ctx?}   关一个 tab（target 关闭事件触发统一收尾）
+    POST /close_ctx   {ctx?}          关整个实例（kill → _mark_down 收尾）
+    POST /ctx         {ctx}           切换当前上下文（situation 叶）
+    ctx 缺省 = 当前上下文（state.current_context）。
     """
     def do_POST(self):
         mudrad = self.server.mudrad
@@ -78,8 +80,10 @@ class _InterceptHandler(BaseHTTPRequestHandler):
                 out = mudrad.ctl_add(body)
             elif self.path == "/close_page":
                 out = mudrad.ctl_close_page(body)
-            elif self.path == "/close_session":
-                out = mudrad.ctl_close_session(body)
+            elif self.path == "/close_ctx":
+                out = mudrad.ctl_close_ctx(body)
+            elif self.path == "/ctx":
+                out = mudrad.ctl_ctx(body)
             else:
                 ok, err = False, f"unknown endpoint {self.path}"
         except Exception as e:
@@ -111,20 +115,14 @@ class Mudrad:
         self._threads: dict[int, threading.Thread] = {}
 
     # ---- sqlite 同步 ----
-    def _session_id(self, conn, inst_id: int) -> int | None:
+    def _ctx_of_instance(self, conn, inst_id: int) -> str | None:
         r = conn.execute(
-            "SELECT id FROM sessions WHERE instance_id=?", (inst_id,)
+            "SELECT profile FROM instances WHERE id=?", (inst_id,)
         ).fetchone()
-        return r["id"] if r else None
-
-    def _session_name(self, conn, inst_id: int) -> str | None:
-        r = conn.execute(
-            "SELECT name FROM sessions WHERE instance_id=?", (inst_id,)
-        ).fetchone()
-        return r["name"] if r else None
+        return r["profile"] if r else None
 
     # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
-    def _inject_page(self, port: int, target_id: str, session: str) -> None:
+    def _inject_page(self, port: int, target_id: str, ctx: str) -> None:
         try:
             with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/json", timeout=5
@@ -135,74 +133,69 @@ class Mudrad:
                 if t["id"] == target_id and t.get("type") == "page"
             )
             ws = cdp.WsClient(wsurl, timeout=8)
-            src = _INJECT_JS.replace("__SESSION__", session).replace("__PORT__", str(_INTERCEPT_PORT))
+            src = _INJECT_JS.replace("__CTX__", ctx).replace("__PORT__", str(_INTERCEPT_PORT))
             cdp.call(ws, "Page.addScriptToEvaluateOnNewDocument", {"source": src})
             cdp.call(ws, "Runtime.evaluate", {"expression": src})  # 已加载页立即注入
             ws.close()
         except Exception as e:
-            print(f"[mudrad] inject {session}/{target_id} err: {e}")
+            print(f"[mudrad] inject {ctx}/{target_id} err: {e}")
 
     # ---- 控制接口动词（唯一执行点：窗口 spawn / 进程 kill / 实例与页面生命周期写库都在这里）----
-    def _inst_for_session(self, conn, session: str) -> dict | None:
+    def _inst_for_ctx(self, conn, ctx: str) -> dict | None:
+        """上下文（situation 叶）对应实例；沿用旧实例行（profile 存叶名）复用 proxy/extensions。"""
         return conn.execute(
-            "SELECT i.*, s.id AS sid FROM sessions s"
-            " LEFT JOIN instances i ON i.id=s.instance_id WHERE s.name=?",
-            (session,),
+            "SELECT * FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
+            (ctx,),
         ).fetchone()
 
-    def _ensure_session(self, conn, session: str) -> int:
-        """会话不存在则建（open 语义允许隐式创建）。"""
-        r = conn.execute("SELECT id FROM sessions WHERE name=?", (session,)).fetchone()
-        if r:
-            return r["id"]
-        cur = conn.execute(
-            "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
-            (session, f"web:{session}", int(time.time())),
-        )
-        return cur.lastrowid
+    def ctl_ctx(self, data: dict) -> dict:
+        """切换当前上下文（situation 叶）。"""
+        ctx = (data or {}).get("ctx") or ""
+        with db.connect() as conn:
+            if not db.set_context(conn, ctx):
+                raise ValueError(f"not a situation leaf: {ctx!r}")
+        ui._broadcast({"event": "context_changed", "ctx": ctx})
+        print(f"[mudrad] ctx -> {ctx}")
+        return {"ctx": ctx}
 
     def ctl_open(self, data: dict) -> dict:
-        """会话活着 → 并入 --app 窗口；死了/不存在 → 新建实例（debug 端口 + 复用 conf 配置）。"""
-        session = (data or {}).get("session")
+        """上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（debug 端口 + 复用 proxy/extensions）。"""
         url = spawn.normalize_url((data or {}).get("url") or "")
-        if not session or not url:
-            raise ValueError("need session and url")
+        if not url:
+            raise ValueError("need url")
         with db.connect() as conn:
-            inst = self._inst_for_session(conn, session)
-            sid = self._ensure_session(conn, session)
+            ctx = (data or {}).get("ctx") or db.current_context(conn)
+            inst = self._inst_for_ctx(conn, ctx)
         if inst and inst["running"] and self._pid_alive(inst["pid"]):
             # 并入已有实例
-            spawn.launch(session, url, None,
+            spawn.launch(ctx, url, None,
                          proxy=inst["proxy"],
                          extensions=inst["extensions"].split(",") if inst["extensions"] else None)
-            print(f"[mudrad] open -> --app joined: {url} (session {session})")
-            return {"mode": "joined", "port": inst["port"]}
-        # 新实例：复用 conf 预建行（proxy/extensions），否则新建
+            print(f"[mudrad] open -> --app joined: {url} (ctx {ctx})")
+            return {"mode": "joined", "port": inst["port"], "ctx": ctx}
+        # 新实例：复用旧行（proxy/extensions），否则新建
         port = spawn.free_port(9200)
         proxy = inst["proxy"] if inst else None
         ext = (inst["extensions"] if inst else None) or None
-        pid, udir = spawn.launch(session, url, port,
+        pid, udir = spawn.launch(ctx, url, port,
                                  proxy=proxy,
                                  extensions=ext.split(",") if ext else None)
         with db.connect() as conn:
             if inst and inst["id"]:
                 conn.execute(
-                    "UPDATE instances SET profile=?,port=?,pid=?,running=1 WHERE id=?",
-                    (udir, port, pid, inst["id"]),
+                    "UPDATE instances SET port=?,pid=?,running=1 WHERE id=?",
+                    (port, pid, inst["id"]),
                 )
-                iid = inst["id"]
             else:
-                cur = conn.execute(
+                conn.execute(
                     "INSERT INTO instances(profile,port,pid,running,proxy,extensions)"
                     " VALUES(?,?,?,1,?,?)",
-                    (udir, port, pid, proxy, ext),
+                    (ctx, port, pid, proxy, ext),
                 )
-                iid = cur.lastrowid
-            conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
             conn.commit()
-        print(f"[mudrad] open -> new instance :{port} pid {pid} (session {session})")
+        print(f"[mudrad] open -> new instance :{port} pid {pid} (ctx {ctx})")
         self._apply_site_width(url, pid)
-        return {"mode": "new", "port": port, "pid": pid}
+        return {"mode": "new", "port": port, "pid": pid, "ctx": ctx}
 
     def _apply_site_width(self, url: str, pid: int) -> None:
         """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用（开窗副作用统一在后端）。"""
@@ -236,82 +229,76 @@ class Mudrad:
             return os.path.exists(f"/proc/{pid}")
 
     def ctl_add(self, data: dict) -> dict:
-        """并入已有实例的 --app 窗口（会话必须活着，否则报错而非静默新开）。"""
-        session = (data or {}).get("session")
+        """并入已有实例的 --app 窗口（上下文实例必须活着，否则报错而非静默新开）。"""
         url = spawn.normalize_url((data or {}).get("url") or "")
-        if not session or not url:
-            raise ValueError("need session and url")
+        if not url:
+            raise ValueError("need url")
         with db.connect() as conn:
-            inst = self._inst_for_session(conn, session)
+            ctx = (data or {}).get("ctx") or db.current_context(conn)
+            inst = self._inst_for_ctx(conn, ctx)
         if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
-            raise ValueError(f"session {session!r} not running; use open first")
+            raise ValueError(f"ctx {ctx!r} not running; use open first")
         ext = inst["extensions"] or None
-        spawn.launch(session, url, None,
+        spawn.launch(ctx, url, None,
                      proxy=inst["proxy"],
                      extensions=ext.split(",") if ext else None)
-        print(f"[mudrad] add -> --app joined: {url} (session {session})")
-        return {"mode": "joined", "port": inst["port"]}
+        print(f"[mudrad] add -> --app joined: {url} (ctx {ctx})")
+        return {"mode": "joined", "port": inst["port"], "ctx": ctx}
 
     def ctl_close_page(self, data: dict) -> dict:
         """关一个 tab：只关 CDP target，标 closed 由 targetDestroyed 事件统一走后端收尾。"""
-        session = (data or {}).get("session")
         query = (data or {}).get("query") or ""
-        if not session or not query:
-            raise ValueError("need session and query")
+        if not query:
+            raise ValueError("need query")
         with db.connect() as conn:
-            inst = self._inst_for_session(conn, session)
+            ctx = (data or {}).get("ctx") or db.current_context(conn)
+            inst = self._inst_for_ctx(conn, ctx)
             if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
-                raise ValueError(f"session {session!r} not running")
-            sid = self._ensure_session(conn, session)
+                raise ValueError(f"ctx {ctx!r} not running")
             cur = conn.execute(
                 "SELECT id,position,url,target_id FROM pages"
-                " WHERE session_id=? AND closed_at IS NULL AND url LIKE ?",
-                (sid, f"%{query}%"),
+                " WHERE instance_id=? AND closed_at IS NULL AND url LIKE ?",
+                (inst["id"], f"%{query}%"),
             ).fetchone()
             if not cur:
-                raise ValueError(f"no open page in {session!r} matching {query!r}")
+                raise ValueError(f"no open page in ctx {ctx!r} matching {query!r}")
         if cur["target_id"]:
             ctl.close_target(inst["port"], cur["target_id"])
-        print(f"[mudrad] close page #{cur['position']} {cur['url']} (session {session})")
+        print(f"[mudrad] close page #{cur['position']} {cur['url']} (ctx {ctx})")
         return {"closed": cur["url"]}
 
-    def ctl_close_session(self, data: dict) -> dict:
-        """关整个会话实例：kill 浏览器进程；running=0 / pages closed 由 _mark_down 统一收尾。"""
-        session = (data or {}).get("session")
-        if not session:
-            raise ValueError("need session")
+    def ctl_close_ctx(self, data: dict) -> dict:
+        """关整个上下文实例：kill 浏览器进程；running=0 / pages closed 由 _mark_down 统一收尾。"""
         with db.connect() as conn:
-            inst = self._inst_for_session(conn, session)
+            ctx = (data or {}).get("ctx") or db.current_context(conn)
+            inst = self._inst_for_ctx(conn, ctx)
         if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
-            raise ValueError(f"session {session!r} not running")
+            raise ValueError(f"ctx {ctx!r} not running")
         os.kill(inst["pid"], signal.SIGTERM)
-        print(f"[mudrad] close session {session} (pid {inst['pid']})")
-        return {"closed": session}
+        print(f"[mudrad] close ctx {ctx} (pid {inst['pid']})")
+        return {"closed": ctx}
 
     def _open(self, data: dict) -> None:
-        """拦截到的“新开 tab” → 在该会话拉起 --app 窗口（并入已有实例）。"""
-        url, session = (data or {}).get("url"), (data or {}).get("session")
-        if not url or not session:
+        """拦截到的“新开 tab” → 在该上下文拉起 --app 窗口（并入已有实例）。"""
+        url, ctx = (data or {}).get("url"), (data or {}).get("ctx")
+        if not url or not ctx:
             return
         try:
-            spawn.launch(session, spawn.normalize_url(url), None)
-            print(f"[mudrad] new-window -> --app: {url} (session {session})")
+            spawn.launch(ctx, spawn.normalize_url(url), None)
+            print(f"[mudrad] new-window -> --app: {url} (ctx {ctx})")
         except Exception as e:
             print(f"[mudrad] open err: {e}")
 
     def _sync_infos(self, inst_id: int, infos: list[dict]) -> None:
         with db.connect() as conn:
-            sid = self._session_id(conn, inst_id)
-            if sid is None:
-                return
             pages = [t for t in infos if t.get("type") == "page"]
             # CDP openerId = 由哪个页面打开（window.open / _blank / 新窗拦截），即父页
             t2id: dict[str, int] = {}
             for t in pages:
                 tid = t["targetId"]
                 row = conn.execute(
-                    "SELECT id FROM pages WHERE session_id=? AND target_id=?",
-                    (sid, tid),
+                    "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
+                    (inst_id, tid),
                 ).fetchone()
                 if row:
                     pid = row["id"]
@@ -322,20 +309,20 @@ class Mudrad:
                 else:
                     pos = conn.execute(
                         "SELECT COALESCE(MAX(position),-1)+1 AS p FROM pages"
-                        " WHERE session_id=?",
-                        (sid,),
+                        " WHERE instance_id=?",
+                        (inst_id,),
                     ).fetchone()["p"]
                     conn.execute(
                         "INSERT OR IGNORE INTO pages"
-                        "(session_id,target_id,url,title,position,opened_at)"
+                        "(instance_id,target_id,url,title,position,opened_at)"
                         " VALUES(?,?,?,?,?,?)",
-                        (sid, tid, t.get("url", ""), t.get("title", ""), pos,
+                        (inst_id, tid, t.get("url", ""), t.get("title", ""), pos,
                          int(time.time())),
                     )
-                    pid = conn.execute(
-                        "SELECT id FROM pages WHERE session_id=? AND target_id=?",
-                        (sid, tid),
-                    ).fetchone()["id"]
+                pid = conn.execute(
+                    "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
+                    (inst_id, tid),
+                ).fetchone()["id"]
                 t2id[tid] = pid
             # 回填父子关系：子页 parent_id = 打开它的页（仅首次设置，不覆盖人工值）
             for t in pages:
@@ -348,8 +335,8 @@ class Mudrad:
                 p_id = t2id.get(oid)
                 if p_id is None:  # opener 不在本批，回查库
                     r = conn.execute(
-                        "SELECT id FROM pages WHERE session_id=? AND target_id=?",
-                        (sid, oid),
+                        "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
+                        (inst_id, oid),
                     ).fetchone()
                     p_id = r["id"] if r else None
                 if p_id is not None:
@@ -358,30 +345,25 @@ class Mudrad:
                         (p_id, cid),
                     )
             conn.commit()
-        ui._broadcast({"event": "pages_changed", "session_id": sid})
+        ui._broadcast({"event": "pages_changed", "instance_id": inst_id})
 
     def _close_target(self, inst_id: int, target_id: str) -> None:
         with db.connect() as conn:
-            sid = self._session_id(conn, inst_id)
-            if sid is None:
-                return
             conn.execute(
-                "UPDATE pages SET closed_at=? WHERE session_id=? AND target_id=?"
+                "UPDATE pages SET closed_at=? WHERE instance_id=? AND target_id=?"
                 " AND closed_at IS NULL",
-                (int(time.time()), sid, target_id),
+                (int(time.time()), inst_id, target_id),
             )
             conn.commit()
-        ui._broadcast({"event": "pages_changed", "session_id": sid})
+        ui._broadcast({"event": "pages_changed", "instance_id": inst_id})
 
     def _mark_down(self, inst_id: int) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst_id,))
-            sid = self._session_id(conn, inst_id)
-            if sid is not None:
-                conn.execute(
-                    "UPDATE pages SET closed_at=? WHERE session_id=? AND closed_at IS NULL",
-                    (int(time.time()), sid),
-                )
+            conn.execute(
+                "UPDATE pages SET closed_at=? WHERE instance_id=? AND closed_at IS NULL",
+                (int(time.time()), inst_id),
+            )
             conn.commit()
 
     # ---- 单 instance 监听 ----
@@ -409,11 +391,11 @@ class Mudrad:
             infos = r["result"]["targetInfos"]
             self._sync_infos(iid, infos)
             with db.connect() as conn:
-                sname = self._session_name(conn, iid)
-            if sname:
+                ctx = self._ctx_of_instance(conn, iid)
+            if ctx:
                 for t in infos:
                     if t.get("type") == "page":
-                        self._inject_page(port, t["targetId"], sname)
+                        self._inject_page(port, t["targetId"], ctx)
             cdp.call(ws, "Target.setDiscoverTargets", {"discover": True})
             while True:
                 msg = json.loads(ws.recv_text())
@@ -423,8 +405,8 @@ class Mudrad:
                     info = p.get("targetInfo", {})
                     if info.get("type") == "page":
                         self._sync_infos(iid, [info])
-                        if sname:
-                            self._inject_page(port, info["targetId"], sname)
+                        if ctx:
+                            self._inject_page(port, info["targetId"], ctx)
                 elif method == "Target.targetInfoChanged":
                     info = p.get("targetInfo", {})
                     if info.get("type") == "page":

@@ -8,7 +8,7 @@ launcher 的 `` p `` 只管「热路径单动作」；tag 森林的一切（多�
   载入面板 URL，niri 转浮动并居中。面板窗口与 launcher 类型无关。
 - WS 协议（JSON，请求/响应）：op in
     forest        → tag 森林（根 + 完整路径 children）
-    pages [session] → 某会话开页（含其 tag 集与 special 轴值）
+    pages [ctx] → 某上下文开页（含其 tag 集与 special 轴值）
     set_tags {page_id, tag_ids} → 整组替换该页 tag（面板批量指派用）
     focus/close {page_id}
 """
@@ -36,18 +36,35 @@ PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
 DIST = pathlib.Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
-def ctl_open(session: str, url: str) -> None:
-    """POST mudrad 控制接口 /open —— 开窗口统一由 mudrad 执行。"""
+def ctl_open(url: str, ctx: str | None = None) -> None:
+    """POST mudrad 控制接口 /open —— 开窗口统一由 mudrad 执行（ctx 缺省=当前上下文）。"""
     import urllib.request
+    body = {"url": url}
+    if ctx:
+        body["ctx"] = ctx
     req = urllib.request.Request(
         "http://127.0.0.1:8899/open",
-        data=json.dumps({"session": session, "url": url}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=10) as r:
-        body = json.loads(r.read())
-    if not body.get("ok"):
-        raise RuntimeError(body.get("err", "open failed"))
+        resp = json.loads(r.read())
+    if not resp.get("ok"):
+        raise RuntimeError(resp.get("err", "open failed"))
+
+
+def ctl_ctx(ctx: str) -> None:
+    """POST mudrad /ctx —— 切换当前上下文。"""
+    import urllib.request
+    req = urllib.request.Request(
+        "http://127.0.0.1:8899/ctx",
+        data=json.dumps({"ctx": ctx}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        resp = json.loads(r.read())
+    if not resp.get("ok"):
+        raise RuntimeError(resp.get("err", "ctx switch failed"))
 
 
 # ---------------------------------------------------------------- 数据查询
@@ -90,12 +107,13 @@ def _forest(conn) -> list[dict]:
     return list(roots.values())
 
 
-def _pages(conn, session: str) -> list[dict]:
+def _pages(conn, ctx: str) -> list[dict]:
+    """某上下文（situation 叶 → 实例）的打开页。"""
     rows = conn.execute(
         "SELECT p.id,p.url,p.title,p.position,p.target_id,p.parent_id,p.opened_at"
-        " FROM pages p JOIN sessions s ON s.id=p.session_id"
-        " WHERE p.closed_at IS NULL AND s.name=?"
-        " ORDER BY p.position", (session,)
+        " FROM pages p JOIN instances i ON i.id=p.instance_id"
+        " WHERE p.closed_at IS NULL AND i.profile=?"
+        " ORDER BY p.position", (ctx,)
     ).fetchall()
     result = []
     for p in rows:
@@ -111,10 +129,13 @@ def _pages(conn, session: str) -> list[dict]:
     return result
 
 
-def _sessions(conn) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT id,name,workspace FROM sessions ORDER BY id"
-    )]
+def _contexts(conn) -> list[str]:
+    """situation 树的叶名列表（面板顶部上下文切换）。"""
+    rows = conn.execute(
+        "SELECT t.name FROM tag t WHERE t.parent_id="
+        " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation') ORDER BY t.id"
+    ).fetchall()
+    return [r["name"] for r in rows]
 
 
 # ---------------------------------------------------------------- WS 循环
@@ -135,14 +156,18 @@ def _handle(msg: dict) -> str:
         try:
             if op == "forest":
                 return _reply(msg, ok=True, forest=_forest(conn),
-                              sessions=_sessions(conn))
+                              contexts=_contexts(conn),
+                              current=db.current_context(conn))
             elif op == "pages":
                 return _reply(msg, ok=True,
-                              pages=_pages(conn, msg.get("session", "")))
+                              pages=_pages(conn, msg.get("ctx") or db.current_context(conn)))
             elif op == "open":
                 # 开新 page 不在面板进程做——统一走 mudrad 控制接口：
                 # mudrad 是唯一开窗口者，开完经 CDP 同步写库并广播。
-                ctl_open(msg.get("session", ""), msg.get("url", ""))
+                ctl_open(msg.get("url", ""), msg.get("ctx"))
+                return _reply(msg, ok=True)
+            elif op == "set_ctx":
+                ctl_ctx(msg.get("ctx", ""))
                 return _reply(msg, ok=True)
             elif op == "set_tags":
                 _set_tags(conn, msg.get("page_id"), msg.get("tag_ids", []))
@@ -241,8 +266,7 @@ def _focus(conn, page_id) -> None:
     """聚焦某页：CDP 激活目标 + 定位其 niri 窗口（按 title/域名）并聚焦。"""
     row = conn.execute(
         "SELECT i.port,p.target_id,p.url,p.title FROM pages p"
-        " JOIN sessions s ON s.id=p.session_id"
-        " JOIN instances i ON i.id=s.instance_id"
+        " JOIN instances i ON i.id=p.instance_id"
         " WHERE p.id=? AND p.closed_at IS NULL", (int(page_id),)
     ).fetchone()
     if not row or not row["port"] or not row["target_id"]:
@@ -250,8 +274,7 @@ def _focus(conn, page_id) -> None:
     port, tid = row["port"], row["target_id"]
     ctl.activate(port, tid)
     rid = conn.execute(
-        "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
-        " WHERE i.port=?", (port,)
+        "SELECT pid FROM instances WHERE port=?", (port,)
     ).fetchone()
     if not rid:
         return
@@ -272,8 +295,7 @@ def _focus(conn, page_id) -> None:
 def _close(conn, page_id) -> None:
     row = conn.execute(
         "SELECT i.port,p.target_id FROM pages p"
-        " JOIN sessions s ON s.id=p.session_id"
-        " JOIN instances i ON i.id=s.instance_id"
+        " JOIN instances i ON i.id=p.instance_id"
         " WHERE p.id=?", (int(page_id),)
     ).fetchone()
     conn.execute("DELETE FROM pages WHERE id=?", (int(page_id),))
@@ -307,8 +329,7 @@ def _shot(conn, page_id) -> str | None:
     """抓页窗口截图（CDP Page.captureScreenshot）→ base64 data URL。"""
     row = conn.execute(
         "SELECT i.port,p.target_id FROM pages p"
-        " JOIN sessions s ON s.id=p.session_id"
-        " JOIN instances i ON i.id=s.instance_id"
+        " JOIN instances i ON i.id=p.instance_id"
         " WHERE p.id=? AND p.closed_at IS NULL", (int(page_id),)
     ).fetchone()
     if not row or not row["port"] or not row["target_id"]:
@@ -329,6 +350,7 @@ def _serve_static() -> None:
 
         def end_headers(self):
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")  # dist 每次构建都换，禁缓存免硬刷新
             super().end_headers()
 
         def do_GET(self):

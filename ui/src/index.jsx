@@ -46,8 +46,8 @@ function makeClient() {
 const client = makeClient();
 
 // ---- state ----
-const [sessions, setSessions] = createSignal([]);
-const [session, setSession] = createSignal("");
+const [contexts, setContexts] = createSignal([]);   // situation 叶名列表
+const [ctx, setCtx] = createSignal("");             // 当前查看/切换的上下文
 const [pages, setPages] = createSignal([]);   // flat
 const [roots, setRoots] = createSignal([]);   // deep tag tree
 const [sortNew, setSortNew] = createSignal(true);
@@ -55,6 +55,7 @@ const [filters, setFilters] = createSignal(new Set());
 const [collapsed, setCollapsed] = createSignal(new Set());
 const [shot, setShot] = createSignal(null);   // {x,y,url}
 const [popup, setPopup] = createSignal(null); // 胶囊切换菜单 {x,y,items[],cb}
+const [urlInput, setUrlInput] = createSignal(""); // 底部地址栏输入
 
 let byId = new Map();
 let rankRoots = [];
@@ -79,14 +80,20 @@ async function load() {
   await client.ready;           // 等 WS 连上再取数（避免初次 Forest 调用被拒）
   const r = await client.call("forest");
   setRoots(r.forest);
-  setSessions(r.sessions);
+  setContexts(r.contexts);
   indexTagTree(r.forest);
-  if (!session() && r.sessions.length) setSession(r.sessions[0].name);
+  if (!ctx() && r.current) setCtx(r.current);
+  else if (!ctx() && r.contexts.length) setCtx(r.contexts[0]);
 }
 async function loadPages() {
-  if (!session()) { setPages([]); return; }
-  const r = await client.call("pages", { session: session() });
+  if (!ctx()) { setPages([]); return; }
+  const r = await client.call("pages", { ctx: ctx() });
   setPages(r.pages);
+}
+async function switchCtx(name) {
+  setCtx(name);
+  // 切换走后端（mudrad /ctx），后端广播 context_changed → 广播回来时已一致
+  try { await client.call("set_ctx", { ctx: name }); } catch (e) { console.warn(e); }
 }
 createEffect(() => {
   indexTagTree(roots());
@@ -95,9 +102,10 @@ createEffect(() => {
 load().catch((e) => console.warn(e));
 
 // 服务端推送：mudrad 在 page 集变化（新开/关闭/标题更新）时广播 pages_changed，
-// 前端收到后重取当前会话页面——不做轮询。
+// 前端收到后重取当前上下文页面——不做轮询。
 client.onEvent = (ev) => {
   if (ev.event === "pages_changed") loadPages().catch(() => {});
+  else if (ev.event === "context_changed" && ev.ctx) setCtx(ev.ctx);
 };
 
 // ---- page 树 ----
@@ -216,6 +224,16 @@ function hover(page, on, e) {
   }, 250);
 }
 
+async function openUrl(e) {
+  e.preventDefault();
+  const url = urlInput().trim();
+  if (!url) return;
+  setUrlInput("");
+  try {
+    await client.call("open", { ctx: ctx(), url });
+  } catch (err) { alert("打开失败 " + err.message); }
+}
+
 function App() {
   const pageSet = () => pages();
   const toggleFilter = (id) => setFilters((s) => {
@@ -224,11 +242,11 @@ function App() {
 
   return (
     <div class="panel" onClick={() => popup() && popup().place === undefined && setPopup(null)}>
-      {/* 头部：会话 + 排序 + 过滤 */}
+      {/* 头部：上下文 + 排序 + 过滤 */}
       <header class="hdr">
         <div class="hdr-row">
-          <select value={session()} onChange={(e) => setSession(e.currentTarget.value)}>
-            <For each={sessions()}>{(s) => <option value={s.name}>{s.name}</option>}</For>
+          <select value={ctx()} onChange={(e) => switchCtx(e.currentTarget.value)}>
+            <For each={contexts()}>{(c) => <option value={c}>{c}</option>}</For>
           </select>
           <button class="b" onClick={() => setSortNew(!sortNew())}>{sortNew() ? "新→旧" : "旧→新"}</button>
           <span class="count">{pageSet().length} 页</span>
@@ -248,6 +266,13 @@ function App() {
           {(nd) => <PageNode nd={nd} />}
         </For>
       </main>
+
+      {/* 底部地址栏：在当前会话开新窗口（走后端 /open） */}
+      <form class="urlbar" onSubmit={openUrl}>
+        <input type="text" placeholder="输入地址，回车在当前会话打开"
+               value={urlInput()}
+               onInput={(e) => setUrlInput(e.currentTarget.value)} />
+      </form>
 
       <Show when={popup()}>
         <div class="menu" onClick={(e) => e.stopPropagation()}

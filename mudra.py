@@ -11,54 +11,43 @@ from urllib.parse import urlparse
 from mudralib import ctl, db, spawn, ui, wm
 
 
-def cmd_new(args: argparse.Namespace) -> int:
-    ws = args.workspace or f"web:{args.name}"
-    now = int(time.time())
-    try:
-        with db.connect() as conn:
-            cur = conn.execute(
-                "INSERT INTO sessions(name, workspace, created_at) VALUES(?,?,?)",
-                (args.name, ws, now),
-            )
-            sid = cur.lastrowid
-    except sqlite3.IntegrityError:
-        print(f"session {args.name!r} already exists")
-        return 1
-    print(f"session {args.name!r} created (id={sid}, workspace={ws})")
-    return 0
-
-
 def cmd_ls(args: argparse.Namespace) -> int:
     with db.connect() as conn:
-        if args.name:
-            s = conn.execute(
-                "SELECT id,name,workspace FROM sessions WHERE name=?", (args.name,)
+        if args.ctx:
+            # 某上下文的页列表（situation 叶 → 实例 → pages）
+            inst = conn.execute(
+                "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
+                (args.ctx,),
             ).fetchone()
-            if not s:
-                print(f"no session {args.name!r}")
-                return 1
             pages = conn.execute(
                 "SELECT id,url,title,position,closed_at FROM pages"
-                " WHERE session_id=? ORDER BY position",
-                (s["id"],),
+                " WHERE instance_id=? ORDER BY position",
+                (inst["id"],) if inst else (-1,),
             ).fetchall()
             if args.filter:
                 pages = [
                     p for p in pages
                     if args.filter in f"{p['url']} {p['title'] or ''}"
                 ]
-            print(f"session {args.name!r} (ws={s['workspace'] or '-'}): {len(pages)} pages")
+            open_n = sum(1 for p in pages if not p["closed_at"])
+            print(f"ctx {args.ctx!r}: {open_n} open / {len(pages)} pages")
             for p in pages:
                 mark = "[closed]" if p["closed_at"] else "[open]"
                 print(f"  {mark} #{p['position']} {p['url']}  {p['title'] or ''}")
         else:
-            cur_session = db.get_state(conn, "current_session")
+            # 全部上下文概览：situation 叶 → 页数，当前项标 *
+            cur = db.current_context(conn)
             rows = conn.execute(
-                "SELECT id,name,workspace,created_at FROM sessions ORDER BY id"
+                "SELECT t.name AS leaf,"
+                " (SELECT COUNT(*) FROM pages p JOIN instances i ON i.id=p.instance_id"
+                "  WHERE i.profile=t.name AND p.closed_at IS NULL) AS n"
+                " FROM tag t WHERE t.parent_id="
+                " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation')"
+                " ORDER BY t.id"
             ).fetchall()
-            for s in rows:
-                mark = "*" if s["name"] == cur_session else " "
-                print(f"{mark}{s['id']:>2}  {s['name']:<20} ws={s['workspace'] or ''}")
+            for r in rows:
+                mark = "*" if r["leaf"] == cur else " "
+                print(f"{mark} {r['leaf']:<20} {r['n']} pages")
     return 0
 
 
@@ -86,26 +75,25 @@ def _ctl(path: str, body: dict) -> dict:
 
 
 def cmd_open(args: argparse.Namespace) -> int:
-    r = _ctl("/open", {"session": args.name, "url": args.url})
+    r = _ctl("/open", {"url": args.url, **({"ctx": args.ctx} if args.ctx else {})})
     if r.get("mode") == "joined":
-        print(f"joined running instance of {args.name!r} (port {r['port']})")
+        print(f"joined running instance of {r['ctx']!r} (port {r['port']})")
     else:
-        print(f"opened {args.url!r} in session {args.name!r}"
+        print(f"opened {args.url!r} in ctx {r['ctx']!r}"
               f" (port {r['port']}, pid {r['pid']})")
-    print("pages 由 mudrad daemon 实时同步")
     return 0
 
 
-def _require_port(args) -> tuple[int, str] | int:
-    port = ctl._port(args.name)
+def _require_port(ctx: str) -> tuple[int, str] | int:
+    port = ctl._port(ctx)
     if not port:
-        print(f"session {args.name!r} not running")
+        print(f"ctx {ctx!r} not running")
         return 1
-    return port, args.name
+    return port, ctx
 
 
 def cmd_targets(args) -> int:
-    got = _require_port(args)
+    got = _require_port(args.ctx)
     if isinstance(got, int):
         return got
     port, _ = got
@@ -114,25 +102,30 @@ def cmd_targets(args) -> int:
     return 0
 
 
+def _current_ctx(conn) -> str:
+    ctx = db.current_context(conn)
+    if not ctx:
+        raise SystemExit("no current context (mudra ctx <situation>)")
+    return ctx
+
+
 def cmd_focus(args) -> int:
-    if not getattr(args, "name", None):
-        with db.connect() as conn:
-            args.name = db.get_state(conn, "current_session")
-    got = _require_port(args)
+    with db.connect() as conn:
+        ctx = args.ctx or _current_ctx(conn)
+    got = _require_port(ctx)
     if isinstance(got, int):
         return got
-    port, name = got
+    port, _ = got
     hits = ctl.find(port, args.query)
     if not hits:
         print(f"no page matching {args.query!r}")
         return 1
     ctl.activate(port, hits[0]["targetId"])
-    # CDP 只激活 tab；把该 session 实例的 niri 窗口带到前台，才算"切换"
+    # CDP 只激活 tab；把该上下文实例的 niri 窗口带到前台，才算"切换"
     try:
         with db.connect() as conn:
             row = conn.execute(
-                "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
-                " WHERE s.name=? AND i.running=1", (name,)
+                "SELECT pid FROM instances WHERE profile=? AND running=1", (ctx,)
             ).fetchone()
         pid = row["pid"] if row else None
         if pid:
@@ -146,9 +139,11 @@ def cmd_focus(args) -> int:
 
 
 def _on_current(args, fn) -> int:
-    cur = ctl.current_target_id(args.name)
+    with db.connect() as conn:
+        ctx = args.ctx or _current_ctx(conn)
+    cur = ctl.current_target_id(ctx)
     if not cur:
-        print(f"session {args.name!r} not running or no open page")
+        print(f"ctx {ctx!r} not running or no open page")
         return 1
     port, tid = cur
     fn(port, tid)
@@ -171,71 +166,41 @@ def cmd_reload(args) -> int:
     return _on_current(args, lambda p, t: ctl.reload(p, t))
 
 
-def cmd_use(args: argparse.Namespace) -> int:
+def cmd_ctx(args: argparse.Namespace) -> int:
+    """切换 / 显示当前上下文（situation 叶）。切换走 mudrad /ctx（后端广播面板）。"""
     with db.connect() as conn:
-        if args.name:
-            s = conn.execute(
-                "SELECT id FROM sessions WHERE name=?", (args.name,)
+        if args.ctx:
+            leaf = conn.execute(
+                "SELECT id FROM tag WHERE name=? AND parent_id="
+                " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation')",
+                (args.ctx,),
             ).fetchone()
-            if not s:
-                conn.execute(
-                    "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
-                    (args.name, f"web:{args.name}", int(time.time())),
-                )
-                print(f"created session {args.name!r}")
-            db.set_state(conn, "current_session", args.name)
-            conn.commit()
-            print(f"current session -> {args.name}")
+            if not leaf:
+                print(f"not a situation leaf: {args.ctx!r}")
+                return 1
         else:
-            cur = db.get_state(conn, "current_session")
-            print(f"current session: {cur or '(none)'}")
-    return 0
-
-
-def cmd_mode(args: argparse.Namespace) -> int:
-    """walker 模式状态机：walker_mode(session|tab) + op_mod(1|0)。"""
-    with db.connect() as conn:
-        shown = args.cmd in (None, "show")
-        if shown:
-            wm = db.get_state(conn, "walker_mode") or "session"
-            om = db.get_state(conn, "op_mod") or "0"
-            print(f"walker_mode={wm}  op_mod={om}")
-        elif args.cmd in ("session", "tab"):
-            db.set_state(conn, "walker_mode", args.cmd)
-            conn.commit()
-            print(f"walker_mode -> {args.cmd}")
-        elif args.cmd == "flip":
-            wm = db.get_state(conn, "walker_mode") or "session"
-            nxt = "tab" if wm == "session" else "session"
-            db.set_state(conn, "walker_mode", nxt)
-            conn.commit()
-            print(f"@: walker_mode {wm} -> {nxt}")
-        elif args.cmd == "op":
-            om = db.get_state(conn, "op_mod") or "0"
-            nxt = "0" if om == "1" else "1"
-            db.set_state(conn, "op_mod", nxt)
-            conn.commit()
-            print(f"#: op_mod {om} -> {nxt}")
-        else:
-            print("usage: mode [session|tab|flip|op]")
-            return 1
+            print(f"current ctx: {db.current_context(conn) or '(none)'}")
+            return 0
+    _ctl("/ctx", {"ctx": args.ctx})
+    print(f"current ctx -> {args.ctx}")
     return 0
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    r = _ctl("/add", {"session": args.name, "url": args.url})
-    print(f"added {args.url!r} to session {args.name!r}"
+    r = _ctl("/add", {"url": args.url, **({"ctx": args.ctx} if args.ctx else {})})
+    print(f"added {args.url!r} to ctx {r['ctx']!r}"
           f" (new window in instance, port {r['port']})")
     return 0
 
 
 def cmd_close(args: argparse.Namespace) -> int:
     if args.query:
-        r = _ctl("/close_page", {"session": args.name, "query": args.query})
+        r = _ctl("/close_page", {"query": args.query,
+                                 **({"ctx": args.ctx} if args.ctx else {})})
         print(f"closed tab {r['closed']}")
     else:
-        _ctl("/close_session", {"session": args.name})
-        print(f"closed session {args.name!r}")
+        r = _ctl("/close_ctx", {"ctx": args.ctx} if args.ctx else {})
+        print(f"closed ctx {r['closed']!r}")
     return 0
 
 
@@ -300,7 +265,7 @@ def cmd_col(args: argparse.Namespace) -> int:
 def _focused_page(conn) -> dict | None:
     """解析当前聚焦 niri 窗口 → 对应 mudra 页（共享动作对象）。
 
-    Action(act copy) / tag 指派都以此为目标页。返回 pages 行（含 session_id/title/url/target_id）。
+    Action(act copy) / tag 指派都以此为目标页。返回 pages 行（含 instance_id/title/url/target_id）。
     focused 窗口非 mudra 实例、或找不到匹配 CDP 页时返回 None。
     """
     win = wm.get().focused_window()
@@ -325,25 +290,28 @@ def _focused_page(conn) -> dict | None:
 
 
 def cmd_conf(args: argparse.Namespace) -> int:
-    """per-session 代理/扩展配置；预建 running=0 的实例行，open 时复用。"""
+    """per-context 代理/扩展配置；预建 running=0 的实例行（profile=叶名），open 时复用。"""
     with db.connect() as conn:
-        s = conn.execute(
-            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
+        leaf = conn.execute(
+            "SELECT id FROM tag WHERE name=? AND parent_id="
+            " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation')",
+            (args.ctx,),
         ).fetchone()
-        if s:
-            sid, iid = s["id"], s["instance_id"]
+        if not leaf:
+            print(f"not a situation leaf: {args.ctx!r}")
+            return 1
+        inst = conn.execute(
+            "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
+            (args.ctx,),
+        ).fetchone()
+        if inst:
+            iid = inst["id"]
         else:
             cur = conn.execute(
-                "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
-                (args.name, f"web:{args.name}", int(time.time())),
-            )
-            sid, iid = cur.lastrowid, None
-        if not iid:
-            cur = conn.execute(
-                "INSERT INTO instances(profile,port,pid,running) VALUES(NULL,NULL,NULL,0)"
+                "INSERT INTO instances(profile,port,pid,running) VALUES(?,NULL,NULL,0)",
+                (args.ctx,),
             )
             iid = cur.lastrowid
-            conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
         if args.proxy is not None:
             newp = None if args.proxy.lower() in ("none", "off") else args.proxy
             conn.execute("UPDATE instances SET proxy=? WHERE id=?", (newp, iid))
@@ -354,24 +322,24 @@ def cmd_conf(args: argparse.Namespace) -> int:
             "SELECT proxy,extensions FROM instances WHERE id=?", (iid,)
         ).fetchone()
         conn.commit()
-        print(f"session {args.name!r}: proxy={row['proxy'] or '(none)'}  "
+        print(f"ctx {args.ctx!r}: proxy={row['proxy'] or '(none)'}  "
               f"extensions={row['extensions'] or '(default surfingkeys)'}")
     return 0
 
 
 def _menu_pages(conn, query: str) -> int:
-    """Page 模式(p) 菜单数据：当前 session 的开页，TAB 三列（title / url / url）。
+    """Page 模式(p) 菜单数据：当前上下文的开页，TAB 三列（title / url / url）。
     elephant menus 脚本按这行格式解析成 Text/Subtext/Value。
     """
-    cur = db.get_state(conn, "current_session")
+    cur = db.current_context(conn)
     if not cur:
         return 0
     q = query.lower()
     rows = conn.execute(
-        "SELECT id,url,title,position FROM pages"
-        " WHERE closed_at IS NULL"
-        " AND session_id = (SELECT id FROM sessions WHERE name=?)"
-        " ORDER BY position",
+        "SELECT p.id,p.url,p.title,p.position FROM pages p"
+        " JOIN instances i ON i.id=p.instance_id"
+        " WHERE p.closed_at IS NULL AND i.profile=?"
+        " ORDER BY p.position",
         (cur,),
     ).fetchall()
     for p in rows:
@@ -504,13 +472,13 @@ def cmd_sort(args) -> int:
     return 0
 
 
-def _page_for_url(conn, name: str, url: str) -> dict | None:
-    """在某 session 里按 url 找 open 页行（page 模式的选中项）。"""
+def _page_for_url(conn, ctx: str, url: str) -> dict | None:
+    """在某上下文里按 url 找 open 页行（page 模式的选中项）。"""
     return conn.execute(
-        "SELECT p.* FROM pages p JOIN sessions s ON s.id=p.session_id"
-        " WHERE s.name=? AND p.closed_at IS NULL AND p.url=?"
+        "SELECT p.* FROM pages p JOIN instances i ON i.id=p.instance_id"
+        " WHERE i.profile=? AND p.closed_at IS NULL AND p.url=?"
         " ORDER BY p.position LIMIT 1",
-        (name, url),
+        (ctx, url),
     ).fetchone()
 
 
@@ -531,29 +499,28 @@ def cmd_page(args) -> int:
     """Page 模式动作：对选中页执行 move-here / swap / close（选中项=url）。
     move-here: 移到当前活动工作区; swap: 与当前聚焦窗交换工作区; close: 关该页。
     """
-    if not getattr(args, "name", None):
+    if not getattr(args, "ctx", None):
         with db.connect() as conn:
-            args.name = db.get_state(conn, "current_session")
-    got = _require_port(args)
+            args.ctx = db.current_context(conn)
+    got = _require_port(args.ctx)
     if isinstance(got, int):
         return got
-    port, name = got
+    port, ctx = got
     with db.connect() as conn:
-        page = _page_for_url(conn, name, args.url)
+        page = _page_for_url(conn, ctx, args.url)
         if not page:
-            print(f"no open page matching {args.url!r} in {name!r}")
+            print(f"no open page matching {args.url!r} in {ctx!r}")
             return 1
         row = conn.execute(
-            "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
-            " WHERE s.name=? AND i.running=1", (name,)
+            "SELECT pid FROM instances WHERE profile=? AND running=1", (ctx,)
         ).fetchone()
     if not row:
-        print(f"session {name!r} not running")
+        print(f"ctx {ctx!r} not running")
         return 1
     mgr = wm.get()
     wid = _window_for_page(row["pid"], page)
     if args.op == "close":
-        _ctl("/close_page", {"session": name, "query": page["url"]})
+        _ctl("/close_page", {"ctx": ctx, "query": page["url"]})
         print(f"closed page {page['url']}")
         return 0
     if wid is None:
@@ -583,97 +550,86 @@ def cmd_page(args) -> int:
 def cmd_move(args) -> int:
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT i.pid FROM instances i JOIN sessions s ON s.instance_id=i.id"
-            " WHERE s.name=? AND i.running=1",
-            (args.name,),
+            "SELECT pid FROM instances WHERE profile=? AND running=1",
+            (args.ctx,),
         ).fetchone()
     if not row:
-        print(f"session {args.name!r} not running")
+        print(f"ctx {args.ctx!r} not running")
         return 1
     mgr = wm.get()
     wids = [w["id"] for w in mgr.windows_for_instance(row["pid"])]
     if not wids:
-        print(f"no niri windows found for session {args.name!r}")
+        print(f"no niri windows found for ctx {args.ctx!r}")
         return 1
     for wid in wids:
         mgr.focus_window(wid)
         mgr.move_to_workspace(args.workspace)
-    print(f"moved {len(wids)} window(s) of {args.name!r} to workspace {args.workspace}")
+    print(f"moved {len(wids)} window(s) of {args.ctx!r} to workspace {args.workspace}")
     return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="mudra", description="browser session manager")
+    ap = argparse.ArgumentParser(prog="mudra", description="browser context manager")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("new", help="create a session")
-    p.add_argument("name")
-    p.add_argument("--workspace", "-w", help="niri workspace (default web:<name>)")
-    p.set_defaults(fn=cmd_new)
-
-    l = sub.add_parser("ls", help="list sessions / pages")
-    l.add_argument("name", nargs="?", help="list pages of a session")
+    l = sub.add_parser("ls", help="list contexts / pages of one ctx")
+    l.add_argument("ctx", nargs="?", help="list pages of a context (situation leaf)")
     l.add_argument("--filter", "-f", help="filter pages by url/title substring")
     l.set_defaults(fn=cmd_ls)
 
-    o = sub.add_parser("open", help="open a session (spawn instance + first url)")
-    o.add_argument("name")
+    o = sub.add_parser("open", help="open url in a context (spawn instance + first url)")
     o.add_argument("url")
+    o.add_argument("--ctx", help="situation leaf (default: current context)")
     o.set_defaults(fn=cmd_open)
 
     t = sub.add_parser("targets", help="list live page targets (CDP)")
-    t.add_argument("name")
+    t.add_argument("ctx")
     t.set_defaults(fn=cmd_targets)
-    f = sub.add_parser("focus", help="find page by url/title and activate (name optional → current session)")
-    f.add_argument("name", nargs="?", help="session name (default: current)")
+    f = sub.add_parser("focus", help="find page by url/title and activate (ctx optional → current)")
     f.add_argument("query")
+    f.add_argument("--ctx", help="situation leaf (default: current)")
     f.set_defaults(fn=cmd_focus)
     g = sub.add_parser("goto", help="navigate current page to url")
-    g.add_argument("name")
     g.add_argument("url")
+    g.add_argument("--ctx", help="situation leaf (default: current)")
     g.set_defaults(fn=cmd_goto)
     b = sub.add_parser("back", help="history back")
-    b.add_argument("name")
+    b.add_argument("--ctx")
     b.set_defaults(fn=cmd_back)
     fw = sub.add_parser("forward", help="history forward")
-    fw.add_argument("name")
+    fw.add_argument("--ctx")
     fw.set_defaults(fn=cmd_forward)
     rl = sub.add_parser("reload", help="reload current page")
-    rl.add_argument("name")
+    rl.add_argument("--ctx")
     rl.set_defaults(fn=cmd_reload)
 
     pg = sub.add_parser("page", help="page 模式动作：对选中页 move-here / swap / close")
     pg.add_argument("op", choices=["move-here", "swap", "close"])
     pg.add_argument("url")
-    pg.add_argument("name", nargs="?", help="session name (default: current)")
+    pg.add_argument("--ctx", help="situation leaf (default: current)")
     pg.set_defaults(fn=cmd_page)
 
-    m = sub.add_parser("move", help="move a session's windows to a workspace")
-    m.add_argument("name")
+    m = sub.add_parser("move", help="move a context's windows to a workspace")
+    m.add_argument("ctx")
     m.add_argument("workspace", help="target niri workspace")
     m.set_defaults(fn=cmd_move)
 
-    u = sub.add_parser("use", help="set / show current session (k8s-ns like)")
-    u.add_argument("name", nargs="?", help="session to switch to (creates if missing)")
-    u.set_defaults(fn=cmd_use)
+    x = sub.add_parser("ctx", help="set / show current context (situation leaf)")
+    x.add_argument("ctx", nargs="?", help="context to switch to")
+    x.set_defaults(fn=cmd_ctx)
 
-    mo = sub.add_parser("mode", help="walker mode state: session|tab|flip|op")
-    mo.add_argument("cmd", nargs="?", help="session/tab/flip/op (default: show)")
-    mo.set_defaults(fn=cmd_mode)
-
-    a = sub.add_parser("add", help="add a page to a running session")
-    a.add_argument("name")
+    a = sub.add_parser("add", help="add a page to the running context instance")
     a.add_argument("url")
-    a.add_argument("--bg", action="store_true", help="open in background (keep current focus)")
+    a.add_argument("--ctx", help="situation leaf (default: current)")
     a.set_defaults(fn=cmd_add)
 
-    c = sub.add_parser("close", help="close a tab (<query>) or a whole session")
-    c.add_argument("name")
+    c = sub.add_parser("close", help="close a tab (<query>) or a whole context instance")
     c.add_argument("query", nargs="?", help="url filter → close just that open tab")
+    c.add_argument("--ctx", help="situation leaf (default: current)")
     c.set_defaults(fn=cmd_close)
 
-    cf = sub.add_parser("conf", help="set per-session proxy/extensions config")
-    cf.add_argument("name")
+    cf = sub.add_parser("conf", help="set per-context proxy/extensions config")
+    cf.add_argument("ctx", help="situation leaf")
     cf.add_argument("--proxy", help="proxy e.g. 127.0.0.1:7890, or 'none'")
     cf.add_argument("--ext", help="comma-separated extension dirs, or 'default'")
     cf.set_defaults(fn=cmd_conf)

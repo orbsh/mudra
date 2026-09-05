@@ -23,6 +23,11 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 
 /* ---- 树 ---- */
 .tree { flex: 1; overflow: auto; padding: 6px 0; }
+
+/* ---- 底部地址栏 ---- */
+.urlbar { border-top: 1px solid var(--line); padding: 8px 12px; }
+.urlbar input { width: 100%; background: var(--chip); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.urlbar input:focus { outline: none; border-color: var(--sel); }
 .node { display: flex; flex-direction: column; }
 .ncard { border-bottom: 1px solid var(--line); padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
 .ncard:hover { background: var(--panel); }

@@ -15,8 +15,7 @@ from . import cdp, db
 def _port(name: str) -> int | None:
     with db.connect() as conn:
         r = conn.execute(
-            "SELECT i.port FROM instances i JOIN sessions s ON s.instance_id=i.id"
-            " WHERE s.name=? AND i.running=1",
+            "SELECT port FROM instances WHERE profile=? AND running=1",
             (name,),
         ).fetchone()
         return r["port"] if r else None
@@ -42,13 +41,12 @@ def list_pages(port: int) -> list[dict]:
 
 
 def current_target_id(name: str) -> tuple[int, str] | None:
-    """该会话最靠右（position 最大）且仍打开的页面 target_id。"""
+    """该上下文最靠右（position 最大）且仍打开的页面 target_id。"""
     with db.connect() as conn:
         r = conn.execute(
-            "SELECT i.port, p.target_id, p.url FROM sessions s"
-            " JOIN instances i ON i.id=s.instance_id"
-            " JOIN pages p ON p.session_id=s.id"
-            " WHERE s.name=? AND i.running=1 AND p.closed_at IS NULL"
+            "SELECT i.port, p.target_id, p.url FROM instances i"
+            " JOIN pages p ON p.instance_id=i.id"
+            " WHERE i.profile=? AND i.running=1 AND p.closed_at IS NULL"
             " ORDER BY p.position DESC LIMIT 1",
             (name,),
         ).fetchone()
