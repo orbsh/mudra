@@ -14,6 +14,9 @@ const MudraConfig = {
     hintFg: "#000000",
     hintBg: "#ffd76e",
     keybindings: null,               // {key: command}；null = 用 COMMANDS 的 defaultKey
+    scrollStepLines: 3,              // j/k 每次滚动行数
+    pageOverlapLines: 5,             // w/s 翻页时保留的行数（重叠）
+    maxCandidates: 10,               // 命令模式弹出菜单最多显示条目数
   },
   storage: chrome.storage.local,
 
@@ -62,7 +65,7 @@ const MudraBar = {
       "pointer-events:none", "white-space:nowrap", "overflow:hidden",
     ].join(";");
     bar.innerHTML = `
-      <span id="mudra-bar-left" style="display:flex;gap:8px;align-items:center"></span>
+      <span id="mudra-bar-left" style="display:flex;gap:8px;align-items:center;min-width:0"></span>
       <span id="mudra-bar-right" style="display:flex;gap:10px;align-items:center;overflow:hidden"></span>`;
     document.documentElement.appendChild(bar);
     // 状态栏要在最外层：经典滚动条画在所有元素之上（z-index 压不住），
@@ -81,6 +84,8 @@ const MudraBar = {
   // data: {ctx, mode, title, url, scroll, tags, message}
   async render(data) {
     if (!this.el) return;
+    // command 模式时 bar 是输入行，render 不覆盖（输入行由 openCommand 自己维护）
+    if (document.getElementById("mudra-cmdinput")) return;
     const cfg = await MudraConfig.all();
     const mode = data.mode || "normal";
     const colors = {
@@ -90,7 +95,7 @@ const MudraBar = {
     }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg };
     this.el.style.color = colors.fg;
     this.el.style.background = colors.bg;
-    const left = [data.ctx, mode, ...(data.tags || [])].filter(Boolean).join(" · ");
+    const left = [data.ctx, data.count, mode, ...(data.tags || [])].filter(Boolean).join(" · ");
     const right = data.message
       ? data.message
       : `${data.title || ""} ${data.url || ""}${data.scroll != null ? " " + data.scroll : ""}`;
@@ -98,37 +103,43 @@ const MudraBar = {
     this.slots.right.textContent = right;
   },
 
-  // ---- command 模式：bar 变输入栏，候选向上展开（向上浮层，随输入过滤）----
-  // onPick(candidate, query) 由宿主实现；candidate = {label, value}
+  // ---- command 模式：bar 整条变输入行（: 提示符 + 输入框占满），
+  // 候选浮层在输入行上方，宽度 100%，最多 maxCandidates 条，超出滚动。----
+  // onInput(query, api) 由宿主过滤候选；onPick(candidate, query, api) 处理选中；
+  // candidate = {label, value}；Esc → onPick(null, ...)。
   async openCommand(onInput, onPick) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
-    this.el.style.color = cfg.insertFg;
-    this.el.style.background = cfg.insertBg;
 
-    // 输入行复用 bar；候选浮层贴 bar 上缘
+    // 候选浮层：贴在 bar 上缘，宽度 100%（left0/right0），高度最多 maxCandidates 行
+    const rowH = cfg.statusHeight + 2;
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
     box.style.cssText = [
-      "position:fixed", "left:0", `bottom:${cfg.statusHeight}px`, "z-index:2147483646",
-      "max-height:40vh", "overflow-y:auto", "direction:rtl", // 滚动条放右、内容反排
-      "box-sizing:border-box",
+      "position:fixed", "left:0", "right:0", `bottom:${cfg.statusHeight}px`,
+      "z-index:2147483646", `max-height:${cfg.maxCandidates * rowH}px`,
+      "overflow-y:auto", "box-sizing:border-box", "background:" + cfg.statusBg,
     ].join(";");
     const list = document.createElement("div");
-    list.style.direction = "ltr";
     list.id = "mudra-cmdlist";
     box.appendChild(list);
     document.documentElement.appendChild(box);
 
+    // 输入行接管整条 bar：左侧 ": " 提示符，输入框占满剩余宽度
+    const bar = this.el;
+    bar.style.color = cfg.insertFg;
+    bar.style.background = cfg.insertBg;
+    bar.style.pointerEvents = "auto";
+    this.slots.left.textContent = ":";
+    // 输入行接管整条 bar：right slot 隐藏（flex 布局下会残留占位），输入框占满其余宽度
+    this.slots.right.style.display = "none";
     const input = document.createElement("input");
     input.id = "mudra-cmdinput";
     input.style.cssText = [
-      "flex:1", "width:70%", "background:transparent", "border:none", "outline:none",
+      "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
       `color:${cfg.insertFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
-    this.slots.left.textContent = "cmd";
-    this.slots.right.textContent = "";
-    this.slots.right.appendChild(input);
+    this.slots.left.parentElement.appendChild(input);
     input.focus();
 
     let items = [];
@@ -139,7 +150,8 @@ const MudraBar = {
         const row = document.createElement("div");
         row.textContent = (i === sel ? "» " : "  ") + it.label;
         row.style.cssText = [
-          `font:${cfg.statusFont}`, `padding:1px 6px`, "white-space:nowrap",
+          `font:${cfg.statusFont}`, `height:${rowH}px`, "line-height:" + rowH + "px",
+          "padding:0 6px", "white-space:nowrap", "box-sizing:border-box",
           "background:" + (i === sel ? "rgba(128,128,255,.35)" : "transparent"),
           "color:" + (i === sel ? cfg.insertFg : cfg.statusFg),
         ].join(";");
@@ -147,22 +159,31 @@ const MudraBar = {
       });
     };
 
+    const close = () => {
+      input.remove();
+      document.getElementById("mudra-cmdbox")?.remove();
+      this.slots.right.style.display = "";
+      bar.style.pointerEvents = "none";
+    };
+
     const api = {
       setItems(next) { items = next; sel = Math.min(sel, Math.max(0, items.length - 1)); renderList(); },
       value: () => input.value,
-      close() {
-        input.remove();
-        document.getElementById("mudra-cmdbox")?.remove();
-      },
+      close,
     };
 
     input.addEventListener("input", () => { sel = 0; onInput(input.value, api); });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.preventDefault(); onPick(null, input.value, api); }
+      e.stopPropagation();
+      if (e.key === "Escape") { e.preventDefault(); close(); onPick(null, input.value, api); }
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
-      else if (e.key === "Enter") { e.preventDefault(); onPick(items[sel] || null, input.value, api); }
-      e.stopPropagation();
+      else if (e.key === "Tab") {
+        // Tab 补全：把当前选中候选的命令名（value，非含描述的 label）填入输入框，重新过滤
+        e.preventDefault();
+        if (items[sel]) { input.value = ":" + items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
+      }
+      else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, input.value, api); }
     });
     return api;
   },
