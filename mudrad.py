@@ -20,7 +20,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from mudralib import cdp, ctl, db, spawn, ui, wm
+from mudralib import cdp, ctl, db, ops, spawn, ui, wm
 
 # 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，mudrad 拉起 --app 窗口。
 _INTERCEPT_PORT = 8899
@@ -125,52 +125,12 @@ class Mudrad:
     def __init__(self) -> None:
         self._threads: dict[int, threading.Thread] = {}
 
-    # ---- sqlite 同步 ----
-    def _ctx_of_instance(self, conn, inst_id: int) -> str | None:
-        r = conn.execute(
-            "SELECT profile FROM instances WHERE id=?", (inst_id,)
-        ).fetchone()
-        return r["profile"] if r else None
-
+    # ---- tab→ctx 反查：语义在 ops.ctx_for_tab / ops.ctx_for_url ----
     def _ctx_for_tab(self, tab_id: str | int | None, url: str | None = None) -> str | None:
-        """反查 tab 所属实例 → ctx。
-
-        tab_id 可能是 CDP targetId（mudrad 拦截注入时用）或 chrome 数字 tabId
-        （扩展 sender.tab.id）——后者在 /json 里匹配不到，退回按 URL 匹配
-        pages 表（打开中的唯一页面即该实例）。
-        """
-        if not tab_id:
-            return None
-        with db.connect() as conn:
-            rows = conn.execute(
-                "SELECT id, port, running FROM instances WHERE running=1"
-            ).fetchall()
-        for row in rows:
-            try:
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{row['port']}/json", timeout=2
-                ) as r:
-                    targets = json.loads(r.read())
-                if any(t.get("id") == tab_id for t in targets):
-                    with db.connect() as conn:
-                        return self._ctx_of_instance(conn, row["id"])
-            except Exception:
-                continue
-        # chrome tabId（数字）在 CDP targetId 中不存在 → 按 URL 落库匹配
-        return self._ctx_for_url(url)
+        return ops.ctx_for_tab(tab_id, url)
 
     def _ctx_for_url(self, url: str | None) -> str | None:
-        """按 URL 匹配打开中的 page → 实例唯一时返回其 ctx（chrome tabId 在 CDP 中不存在）。"""
-        if not url:
-            return None
-        with db.connect() as conn:
-            row = conn.execute(
-                "SELECT i.profile FROM pages p JOIN instances i ON i.id=p.instance_id"
-                " WHERE p.closed_at IS NULL AND p.url LIKE ?"
-                " GROUP BY i.profile HAVING COUNT(DISTINCT i.id)=1",
-                ((url.split("#")[0] + "%")[:200],),
-            ).fetchone()
-            return row["profile"] if row else None
+        return ops.ctx_for_url(url)
 
     # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
     def _inject_page(self, port: int, target_id: str, ctx: str) -> None:
@@ -194,10 +154,7 @@ class Mudrad:
     # ---- 控制接口动词（唯一执行点：窗口 spawn / 进程 kill / 实例与页面生命周期写库都在这里）----
     def _inst_for_ctx(self, conn, ctx: str) -> dict | None:
         """上下文（situation 叶）对应实例；沿用旧实例行（profile 存叶名）复用 proxy/extensions。"""
-        return conn.execute(
-            "SELECT * FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
-            (ctx,),
-        ).fetchone()
+        return db.instance_for_context(conn, ctx)
 
     def ctl_ctx(self, data: dict) -> dict:
         """切换当前上下文（situation 叶）。"""
@@ -240,18 +197,8 @@ class Mudrad:
                                  extensions=ext.split(",") if ext else None,
                                  dev_mode=db.get_state(conn, "dev_mode") == "1")
         with db.connect() as conn:
-            if inst and inst["id"]:
-                conn.execute(
-                    "UPDATE instances SET port=?,pid=?,running=1 WHERE id=?",
-                    (port, pid, inst["id"]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO instances(profile,port,pid,running,proxy,extensions)"
-                    " VALUES(?,?,?,1,?,?)",
-                    (ctx, port, pid, proxy, ext),
-                )
-            conn.commit()
+            db.instance_launch_started(conn, inst["id"] if inst and inst["id"] else None,
+                                       ctx, port, pid, proxy, ext)
         print(f"[mudrad] open -> new instance :{port} pid {pid} (ctx {ctx})")
         self._apply_site_width(url, pid)
         return {"mode": "new", "port": port, "pid": pid, "ctx": ctx}
@@ -262,9 +209,7 @@ class Mudrad:
         if not domain:
             return
         with db.connect() as conn:
-            w = conn.execute(
-                "SELECT proportion FROM site_widths WHERE site=?", (domain,)
-            ).fetchone()
+            w = db.site_width(conn, domain)
         if not w:
             return
         mgr = wm.get()
@@ -314,11 +259,7 @@ class Mudrad:
             inst = self._inst_for_ctx(conn, ctx)
             if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
                 raise ValueError(f"ctx {ctx!r} not running")
-            cur = conn.execute(
-                "SELECT id,position,url,target_id FROM pages"
-                " WHERE instance_id=? AND closed_at IS NULL AND url LIKE ?",
-                (inst["id"], f"%{query}%"),
-            ).fetchone()
+            cur = db.page_open_by_url_substring(conn, inst["id"], query)
             if not cur:
                 raise ValueError(f"no open page in ctx {ctx!r} matching {query!r}")
         if cur["target_id"]:
@@ -338,40 +279,9 @@ class Mudrad:
         return {"closed": ctx}
 
     def ctl_ctx_status(self, data: dict) -> dict:
-        """状态栏数据源：tabId → (ctx, 页面 tags)。
-
-        扩展 SW 上报 tabId+页面 URL，这里反查实例→ctx 与 page_tag，一次往返。
-        """
-        tab_id = (data or {}).get("tabId")
-        url = (data or {}).get("url")
-        ctx = self._ctx_for_tab(tab_id, url) if tab_id else None
-        if not ctx:
-            ctx = self._ctx_for_url(url)
-        if not ctx:
-            ctx = (data or {}).get("ctx")
-        tags: list[str] = []
-        if ctx and url:
-            with db.connect() as conn:
-                inst = conn.execute(
-                    "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
-                    (ctx,),
-                ).fetchone()
-                if inst:
-                    row = conn.execute(
-                        "SELECT id FROM pages WHERE instance_id=? AND url LIKE ?"
-                        " AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
-                        (inst["id"], (url.split("#")[0] + "%")[:200]),
-                    ).fetchone()
-                    if row:
-                        tags = [
-                            r["name"]
-                            for r in conn.execute(
-                                "SELECT t.name FROM page_tag pt JOIN tag t ON t.id=pt.tag_id"
-                                " WHERE pt.page_id=?",
-                                (row["id"],),
-                            )
-                        ]
-        return {"ctx": ctx, "tags": tags, "role": "console" if self._is_console(url) else "page"}
+        """状态栏数据源：tabId → (ctx, 页面 tags)。编排收敛到 ops.page_info_for_tab。"""
+        d = data or {}
+        return ops.page_info_for_tab(d.get("tabId"), d.get("url"))
 
     @staticmethod
     def _is_console(url: str | None) -> bool:
@@ -382,119 +292,22 @@ class Mudrad:
         return url.startswith(f"http://127.0.0.1:{PANEL_PORT}/")
 
     def ctl_tag(self, data: dict) -> dict:
-        """给页面打/摘 tag：{tabId|url, tag: 名称}，存在则摘除（toggle）。"""
-        tag_name, url = (data or {}).get("tag"), (data or {}).get("url")
-        tab_id = (data or {}).get("tabId")
-        if not tag_name:
-            raise ValueError("need tag")
-        ctx = self._ctx_for_tab(tab_id, url) if tab_id else None
-        if not ctx or not url:
-            raise ValueError("need tabId and url to resolve page")
-        with db.connect() as conn:
-            t = conn.execute("SELECT id FROM tag WHERE name=? AND deleted=0", (tag_name,)).fetchone()
-            if not t:
-                raise ValueError(f"tag not found: {tag_name}")
-            inst = conn.execute(
-                "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1", (ctx,)
-            ).fetchone()
-            if not inst:
-                raise ValueError(f"no instance for ctx {ctx}")
-            page = conn.execute(
-                "SELECT id FROM pages WHERE instance_id=? AND url LIKE ? AND closed_at IS NULL"
-                " ORDER BY id DESC LIMIT 1",
-                (inst["id"], (url.split("#")[0] + "%")[:200]),
-            ).fetchone()
-            if not page:
-                raise ValueError("page not open in this ctx")
-            existing = conn.execute(
-                "SELECT 1 FROM page_tag WHERE page_id=? AND tag_id=?", (page["id"], t["id"])
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "DELETE FROM page_tag WHERE page_id=? AND tag_id=?", (page["id"], t["id"])
-                )
-                action = "removed"
-            else:
-                conn.execute(
-                    "INSERT OR IGNORE INTO page_tag(page_id, tag_id) VALUES(?,?)",
-                    (page["id"], t["id"]),
-                )
-                action = "added"
-            conn.commit()
-        ui._broadcast({"event": "pages_changed"})
-        return {"tag": tag_name, "action": action}
+        """给页面打/摘 tag（toggle）。语义在 ops.tag_page。"""
+        d = data or {}
+        return ops.tag_page(d.get("tabId"), d.get("url"), d.get("tag"))
 
     def ctl_tags(self, data: dict) -> dict:
-        """tag 树读取：{parent?: 名称} → 该父下子树（供扩展/面板补全 tag 名）。"""
-        with db.connect() as conn:
-            parent = (data or {}).get("parent")
-            if parent:
-                rows = conn.execute(
-                    "SELECT t.name, t.rank FROM tag t WHERE t.parent_id ="
-                    " (SELECT id FROM tag WHERE name=? AND deleted=0) AND t.deleted=0"
-                    " ORDER BY t.rank IS NULL, t.rank, t.name",
-                    (parent,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT name, rank FROM tag WHERE parent_id=-1 AND deleted=0"
-                    " ORDER BY name"
-                ).fetchall()
-        return {"tags": [r["name"] for r in rows]}
+        """tag 树读取：{parent?: 名称} → 该父下子树。语义在 ops.tags_children。"""
+        return {"tags": ops.tags_children((data or {}).get("parent"))}
 
     def ctl_pages(self, data: dict) -> dict:
-        """打开页列表（跨 ctx）：扩展 pages 命令的数据源（跳转其他 page，类似 tabs）。"""
-        ctx = (data or {}).get("ctx")
-        with db.connect() as conn:
-            if ctx:
-                cond = "i.profile=?"
-                args: tuple = (ctx,)
-            else:
-                cond = "1=1"
-                args = ()
-            rows = conn.execute(
-                "SELECT p.id, i.profile AS ctx, p.url, p.title, p.position"
-                " FROM pages p JOIN instances i ON i.id=p.instance_id"
-                f" WHERE p.closed_at IS NULL AND i.running=1 AND {cond}"
-                " ORDER BY i.profile, p.position",
-                args,
-            ).fetchall()
-        return {"pages": [
-            {"id": r["id"], "ctx": r["ctx"], "url": r["url"],
-             "title": r["title"] or r["url"], "position": r["position"]}
-            for r in rows
-        ]}
+        """打开页列表（跨 ctx）：扩展 pages 命令的数据源。语义在 ops.list_open_pages。"""
+        return {"pages": ops.list_open_pages((data or {}).get("ctx"))}
 
     def ctl_focus_page(self, data: dict) -> dict:
-        """聚焦某页（page_id）：CDP 激活 target + niri 窗口带到前台。"""
+        """聚焦某页（page_id）：CDP 激活 + niri 前台。语义在 ops.focus_page。"""
         page_id = int((data or {}).get("page_id") or 0)
-        with db.connect() as conn:
-            row = conn.execute(
-                "SELECT i.port, i.pid, p.target_id, p.url, p.title FROM pages p"
-                " JOIN instances i ON i.id=p.instance_id"
-                " WHERE p.id=? AND p.closed_at IS NULL", (page_id,)
-            ).fetchone()
-        if not row or not row["port"] or not row["target_id"]:
-            raise ValueError(f"page {page_id} not found or instance down")
-        ctl.activate(row["port"], row["target_id"])
-        # CDP 只激活 tab；niri 窗口带到前台才算"切换"（与 CLI focus 一致）
-        if row["pid"]:
-            try:
-                title, url = row["title"] or "", row["url"] or ""
-                domain = url.split("//")[-1].split("/")[0]
-                mgr = wm.get()
-                for w in mgr.windows_for_instance(row["pid"]):
-                    wt = w.get("title") or ""
-                    if (title and wt == title) or (domain and domain in wt):
-                        mgr.focus_window(w["id"])
-                        break
-                else:
-                    wins = mgr.windows_for_instance(row["pid"])
-                    if wins:
-                        mgr.focus_window(wins[0]["id"])
-            except Exception:
-                pass  # niri 不可用不阻塞 CDP activate
-        return {"focused": page_id}
+        return ops.focus_page(page_id)
 
     def _open(self, data: dict) -> None:
         """拦截到的“新开 tab” → 在该上下文拉起 --app 窗口（并入已有实例）。"""
@@ -508,41 +321,16 @@ class Mudrad:
             print(f"[mudrad] open err: {e}")
 
     def _sync_infos(self, inst_id: int, infos: list[dict]) -> None:
+        """CDP targetInfo → pages 表（写路径在 db.page_upsert_by_target，父子回填仅在首次）。"""
         with db.connect() as conn:
             pages = [t for t in infos if t.get("type") == "page"]
-            # CDP openerId = 由哪个页面打开（window.open / _blank / 新窗拦截），即父页
             t2id: dict[str, int] = {}
             for t in pages:
-                tid = t["targetId"]
-                row = conn.execute(
-                    "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
-                    (inst_id, tid),
-                ).fetchone()
-                if row:
-                    pid = row["id"]
-                    conn.execute(
-                        "UPDATE pages SET url=?, title=?, closed_at=NULL WHERE id=?",
-                        (t.get("url", ""), t.get("title", ""), pid),
-                    )
-                else:
-                    pos = conn.execute(
-                        "SELECT COALESCE(MAX(position),-1)+1 AS p FROM pages"
-                        " WHERE instance_id=?",
-                        (inst_id,),
-                    ).fetchone()["p"]
-                    conn.execute(
-                        "INSERT OR IGNORE INTO pages"
-                        "(instance_id,target_id,url,title,position,opened_at)"
-                        " VALUES(?,?,?,?,?,?)",
-                        (inst_id, tid, t.get("url", ""), t.get("title", ""), pos,
-                         int(time.time())),
-                    )
-                pid = conn.execute(
-                    "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
-                    (inst_id, tid),
-                ).fetchone()["id"]
-                t2id[tid] = pid
-            # 回填父子关系：子页 parent_id = 打开它的页（仅首次设置，不覆盖人工值）
+                t2id[t["targetId"]] = db.page_upsert_by_target(
+                    conn, inst_id, t["targetId"],
+                    t.get("url", ""), t.get("title", ""),
+                )
+            # 回填父子关系：子页 parent_id = 打开它的页（CDP openerId）
             for t in pages:
                 oid = t.get("openerId")
                 if not oid:
@@ -552,36 +340,22 @@ class Mudrad:
                     continue
                 p_id = t2id.get(oid)
                 if p_id is None:  # opener 不在本批，回查库
-                    r = conn.execute(
-                        "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
-                        (inst_id, oid),
-                    ).fetchone()
-                    p_id = r["id"] if r else None
+                    p_id = db.page_id_by_target(conn, inst_id, oid)
                 if p_id is not None:
-                    conn.execute(
-                        "UPDATE pages SET parent_id=? WHERE id=? AND parent_id IS NULL",
-                        (p_id, cid),
-                    )
+                    db.page_set_parent_once(conn, cid, p_id)
             conn.commit()
         ui._broadcast({"event": "pages_changed", "instance_id": inst_id})
 
     def _close_target(self, inst_id: int, target_id: str) -> None:
         with db.connect() as conn:
-            conn.execute(
-                "UPDATE pages SET closed_at=? WHERE instance_id=? AND target_id=?"
-                " AND closed_at IS NULL",
-                (int(time.time()), inst_id, target_id),
-            )
+            db.page_close_target(conn, inst_id, target_id, int(time.time()))
             conn.commit()
         ui._broadcast({"event": "pages_changed", "instance_id": inst_id})
 
     def _mark_down(self, inst_id: int) -> None:
         with db.connect() as conn:
-            conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst_id,))
-            conn.execute(
-                "UPDATE pages SET closed_at=? WHERE instance_id=? AND closed_at IS NULL",
-                (int(time.time()), inst_id),
-            )
+            db.instance_set_running(conn, inst_id, 0)
+            db.pages_close_all(conn, inst_id, int(time.time()))
             conn.commit()
 
     # ---- 单 instance 监听 ----
@@ -609,7 +383,7 @@ class Mudrad:
             infos = r["result"]["targetInfos"]
             self._sync_infos(iid, infos)
             with db.connect() as conn:
-                ctx = self._ctx_of_instance(conn, iid)
+                ctx = db.instance_ctx(conn, iid)
             if ctx:
                 for t in infos:
                     if t.get("type") == "page":
@@ -650,9 +424,7 @@ class Mudrad:
         ui._start_services()
         while True:
             with db.connect() as conn:
-                insts = conn.execute(
-                    "SELECT * FROM instances WHERE running=1"
-                ).fetchall()
+                insts = db.running_instances(conn)
             for inst in insts:
                 iid = inst["id"]
                 if iid in self._threads:

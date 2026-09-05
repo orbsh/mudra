@@ -8,7 +8,7 @@ import sys
 import time
 from urllib.parse import urlparse
 
-from mudralib import ctl, db, spawn, ui, wm
+from mudralib import ctl, db, ops, spawn, ui, wm
 
 
 def cmd_ls(args: argparse.Namespace) -> int:
@@ -112,30 +112,12 @@ def _current_ctx(conn) -> str:
 def cmd_focus(args) -> int:
     with db.connect() as conn:
         ctx = args.ctx or _current_ctx(conn)
-    got = _require_port(ctx)
-    if isinstance(got, int):
-        return got
-    port, _ = got
-    hits = ctl.find(port, args.query)
-    if not hits:
-        print(f"no page matching {args.query!r}")
-        return 1
-    ctl.activate(port, hits[0]["targetId"])
-    # CDP 只激活 tab；把该上下文实例的 niri 窗口带到前台，才算"切换"
     try:
-        with db.connect() as conn:
-            row = conn.execute(
-                "SELECT pid FROM instances WHERE profile=? AND running=1", (ctx,)
-            ).fetchone()
-        pid = row["pid"] if row else None
-        if pid:
-            wins = wm.get().windows_for_instance(pid)
-            if wins:
-                wm.get().focus_window(wins[0]["id"])
-    except Exception:
-        pass  # niri 不可用不阻塞 CDP activate
-    print(f"focused: {hits[0].get('title') or hits[0].get('url')}")
-    return 0
+        ops.focus_ctx_query(ctx, args.query)
+        return 0
+    except ValueError as e:
+        print(e)
+        return 1
 
 
 def _on_current(args, fn) -> int:
