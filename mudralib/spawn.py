@@ -29,8 +29,8 @@ def profile_dir(name: str) -> pathlib.Path:
 
 # 自带扩展：仓库内维护（extension/），chromium 直接从源码目录加载（纯 JS 零构建）
 EXT_ROOT = db.DB.parent / "extensions"
-REPO_EXTENSIONS = pathlib.Path(__file__).resolve().parent.parent / "extension"
-DEFAULT_EXTENSIONS = [str(REPO_EXTENSIONS / "mudra-keys")]
+REPO_FRONTEND = pathlib.Path(__file__).resolve().parent.parent / "frontend"
+DEFAULT_EXTENSIONS = [str(REPO_FRONTEND)]  # 扩展根 = frontend/，manifest.json 在根，共享库在 shared/
 
 
 def normalize_url(url: str) -> str:

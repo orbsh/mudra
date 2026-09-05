@@ -33,8 +33,9 @@ except ImportError:  # 面板依赖 websockets；缺失则 ui 命令报错
 from . import ctl, db, spawn, wm
 
 PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
-# 零构建：panel 静态根 = ui/ 源码目录本身（源码即产物，无 vite）
-DIST = pathlib.Path(__file__).resolve().parent.parent / "ui"
+# 零构建：panel 静态根 = frontend/ui/ 源码目录本身（源码即产物，无 vite）
+FRONTEND = pathlib.Path(__file__).resolve().parent.parent / "frontend"
+DIST = FRONTEND / "ui"   # 静态根 = ui/；/shared/ 挂 FRONTEND/shared（扩展与 panel 共用）
 
 
 def ctl_open(url: str, ctx: str | None = None) -> None:
@@ -345,6 +346,14 @@ def _serve_static() -> None:
     class H(SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(DIST), **kw)
+
+        def translate_path(self, path):
+            # /shared/* → frontend/shared/（跨静态根的公共库引用）
+            p = super().translate_path(path)
+            if path.startswith("/shared/"):
+                rel = pathlib.PurePosixPath(path).relative_to("/shared")
+                p = str(FRONTEND / "shared" / rel)
+            return p
 
         def log_message(self, *a):
             pass

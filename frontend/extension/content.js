@@ -118,7 +118,38 @@
     open:    { defaultKey: "o", desc: "open url / filter pages (console)",
                run: (arg) => role === "console" ? openOnConsole(arg) : openOnPage(arg) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
+    set:     { defaultKey: null, desc: ":set <key> <value>（如 set scrollStepLines 5）", run: (arg) => runSet(arg) },
   };
+
+  // ---- :set <key> <value>：写 chrome.storage.local（扩展本地配置，非 mudrad 全局）----
+  // keybindings 例外：set keybindings.j=scrollDown 形式（点号定位子键）。
+  async function runSet(arg) {
+    // 三种形态：bare=显示配置；"key value" 或 "key=value"（keybindings.u=pageUp 常为单 token）
+    arg = (arg || "").trim();
+    if (!arg) {
+      const cfg = await MudraConfig.all();
+      const lines = Object.entries(cfg)
+        .filter(([k]) => MudraConfig.defaults[k] !== undefined)
+        .map(([k, v]) => `${k} = ${JSON.stringify(v)}`);
+      return flashBar(lines.join("  ") || "no config");
+    }
+    const m = arg.match(/^(\S+?)(?:\s+|=)(.+)$/);
+    if (!m) return flashBar(`usage: set <key> <value> | set keybindings.<key>=<cmd>`);
+    const [, key, raw] = m;
+    if (key.startsWith("keybindings.")) {
+      const k = key.slice("keybindings.".length);
+      const cfg = await MudraConfig.all();
+      const kb = { ...(cfg.keybindings || {}) };
+      if (raw === "-" || raw === "off") delete kb[k]; else kb[k] = raw;
+      await MudraConfig.set({ keybindings: kb });
+      return flashBar(`${k} -> ${kb[k] || "unbound"}`);
+    }
+    if (!(key in MudraConfig.defaults)) return flashBar(`unknown key: ${key}`);
+    let val;
+    try { val = JSON.parse(raw); } catch { val = raw; } // 数字/布尔/字符串自动判型
+    await MudraConfig.set({ [key]: val });
+    return flashBar(`${key} = ${JSON.stringify(val)}`);
+  }
 
   // 键绑定解析：配置 JSON 的 keybindings[key]=commandName 覆盖 defaultKey
   async function keyToCommand(key) {
@@ -186,7 +217,8 @@
     if (!c) return flashBar(`no such command: ${name}`);
     if (!c.run.length && rest.length) return flashBar(`:${cand.value} takes no argument`);
     await c.run(rest.join(" "), {});
-    await refreshBar();
+    // 不统一 refreshBar：会盖掉命令自己的 flashBar 消息（如 :set 的配置回显）。
+    // 需要刷新的命令（scroll 等）内部已自行调用。
   }
 
   const enterCommand = async () => {
