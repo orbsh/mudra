@@ -121,7 +121,7 @@ def page_info_for_tab(tab_id: str | int | None, url: str | None) -> dict:
             if inst:
                 page = db.latest_open_page_by_url(conn, inst["id"], _url_prefix(url))
                 if page:
-                    tags = db.page_tag_names(conn, page["id"])
+                    tags = db.page_tag_paths(conn, page["id"])
     from mudralib.ui import PANEL_PORT
     role = "console" if (url or "").startswith(f"http://127.0.0.1:{PANEL_PORT}/") else "page"
     return {"ctx": ctx, "tags": tags, "role": role}

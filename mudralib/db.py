@@ -252,6 +252,32 @@ def page_tag_names(conn: sqlite3.Connection, page_id: int) -> list[str]:
     ]
 
 
+def page_tag_paths(conn: sqlite3.Connection, page_id: int) -> list[str]:
+    """页面 tags 的完整路径（state::未读 形式），胶囊渲染用。
+
+    tag 无 parent（根级孤立 tag）时路径就是 name。
+    """
+    rows = conn.execute(
+        "SELECT t.name, t.parent_id FROM page_tag pt JOIN tag t ON t.id=pt.tag_id"
+        " WHERE pt.page_id=?",
+        (page_id,),
+    ).fetchall()
+    out: list[str] = []
+    for r in rows:
+        parts = [r["name"]]
+        pid = r["parent_id"]
+        while pid and pid != -1:
+            p = conn.execute(
+                "SELECT name, parent_id FROM tag WHERE id=?", (pid,)
+            ).fetchone()
+            if not p:
+                break
+            parts.append(p["name"])
+            pid = p["parent_id"]
+        out.append("::".join(reversed(parts)))
+    return out
+
+
 def site_width(conn: sqlite3.Connection, domain: str) -> sqlite3.Row | None:
     """站点列宽记忆读取。"""
     return conn.execute(
