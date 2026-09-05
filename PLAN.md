@@ -22,7 +22,8 @@ Why (motivation): qutebrowser's modal input-method problem (`#3444`) → seek a 
 - **Path B concurrent**: one Chromium instance per session/workspace; multiple may run.
 - Python (CLI + daemon). Sole non-stdlib dep: `websocket-client` (CDP). sqlite via stdlib.
 - Command name `mudra`; daemon `mudrad`.
-- SurfingKeys loaded via `--load-extension` (verified working in chromium 151).
+- SurfingKeys loaded via `--load-extension`. **2026-09（chromium 152）**：MV2 构建被静默拒绝
+  （"unsupported manifest version"，139+ 移除 MV2 加载）；需 mv3 分支构建（见 README 实现细节）。
 - New-window opening routed through an injected content script → local HTTP server → new `--app`.
 - **Global instance & global tabs**: RSS / IM 等非 session 窗口由**单独常驻全局实例**承载；它们不属于任何
   session，所有 session 内都可访问/显示。模型：`pages.session_id` 为 NULL 表示全局 tab。
@@ -236,7 +237,7 @@ Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutti
   （密码存进 profile、无 keyring 也能工作，安全性弱于 keychain）。需先核实该 flag 在 chromium 151 是否仍生效。
   （2026-08 记录）
 
-## 9. 重构方案：从 session 到标签森林（2026-08，未定稿）
+## 9. 重构方案：从 session 到标签森林（2026-08，已实施 2026-09-05）
 
 > 目标重定位：从「全键盘 UX 工具」升级为「信息流精炼项目」——浏览器是信息主要入口，mudra
 > 做 捕获 → 属性化 → 精炼 → 消费。通用模型在 wiki `tag-forest.md`，本节是 mudra 落地映射。
@@ -264,6 +265,15 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 ### 后续
 - ML（朴素贝叶斯 / 逻辑回归，非 LLM）从手动评分学「该选哪个值」，生成规则供审。
 - 域名/子域名规则 → 自动打 importance/urgency 默认分。
+
+### 实施记录（2026-09-05）
+- schema 落地：`sessions` 表删除；`pages.instance_id` 直挂实例；`instances.isolated`；
+  `state.current_context` 存 situation 叶名（默认 inbox）。`conf` 行复用实例行（profile=叶名）。
+- 生命周期统一收口 mudrad 控制接口（`/open` `/add` `/close_page` `/close_ctx` `/ctx`），
+  CLI/面板均为其瘦客户端；状态变化走 WebSocket 推送（`pages_changed` / `context_changed`）。
+- 面板（solidjs web console）顶栏 select = situation 叶，切换即切上下文。
+- 已知坑：旧 schema 残留 chromium 持 profile `SingletonLock` → 新 spawn 转交后退出、
+  debug 端口不监听 → "never ready"。清残留进程即可。
 
 ## 10. 信息流精炼扩展路线（2026-08，方向）
 

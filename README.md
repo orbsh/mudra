@@ -16,9 +16,11 @@ just showing webpages.
 
 **Status**: core (spawn / realtime CDP sync / navigation / niri window mapping+move /
 proxy+extensions / column-width memory) works as CLI+daemon `mudra` / `mudrad`.
-**Tag-forest architecture** (replace `session`) is the current direction — a **solidjs
-management panel** (`mudra ui`) is the main tag-forest interaction surface; the launcher
-keeps only the `p` (Page) hot-path. See `PLAN.md` §9, `docs/PANEL.md`, and below.
+**Context model** (tag forest, *replaces session* — pages hang directly off an
+instance; the instance is chosen by the current `situation` leaf) is implemented: a
+**solidjs web console** (`mudra ui`) is the management surface, all lifecycle ops go
+through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
+See `PLAN.md` §9, `docs/PANEL.md`, and below.
 
 ---
 
@@ -38,9 +40,19 @@ than re-embedding an engine.
 
 **Design hard constraint — nearly niri-exclusive**: the whole mode needs a WM with
 (fine-grained IPC control: move/focus/set-column-width/workspace routing) **and** a
-suitable workspace model. `niri` qualifies (cheap growable workspaces, single-column
-overlap for dev-tools stacks); hyprland qualifies on IPC but its bounded workspaces
-limit "arbitrary isolation dimensions × multi-window layout".
+suitable workspace model. **niri is the best fit, for three structural reasons**:
+
+1. **Dynamic, cheap workspaces**: isolation in mudra is *workspace-routed* — each
+   context (situation leaf) gets its own workspace. niri workspaces are created on
+   demand and cost nothing; bounded-workspace WMs force a fixed isolation budget.
+2. **Fine-grained IPC** (`niri msg`): move/focus windows, route them to workspaces at
+   spawn time, and read `layout.tile_size` + focused-output geometry — the latter is
+   what makes per-site column-width memory possible (`col`).
+3. **Scrollable column layout**: the single-column dev-tools stack (console beside
+   pages) and the width-snap bands map 1:1 onto niri's column model.
+
+hyprland qualifies on IPC but its bounded workspaces limit "arbitrary isolation
+dimensions × multi-window layout"; cosmic-de lacks the required control surface.
 
 ---
 
@@ -129,40 +141,42 @@ a `BrowserEngine` interface (chromium=CDP backend) so another engine can slot in
 ## Quick start
 
 ```bash
-# 1. daemon (live-sync sqlite with real windows)
+# 1. daemon (live-sync sqlite with real windows; owns ALL lifecycle ops)
 python3 mudrad.py run
 
-# 2. open a page in a session context (spawns a chromium --app instance)
-python3 mudra.py open <name> <url>
+# 2. open a page in the current context (spawns a chromium --app instance for it)
+python3 mudra.py open <url>
 
-# 3. list sessions / a session's pages, filtered
+# 3. add / close pages; switch context
+python3 mudra.py add <url>
+python3 mudra.py close [query]
+python3 mudra.py ctx [leaf]        # show or switch current situation leaf
+
+# 4. list pages per context
 python3 mudra.py ls
-python3 mudra.py ls <name>
-python3 mudra.py ls <name> --filter news
 ```
+
+All lifecycle verbs are thin HTTP clients of the daemon's control API
+(`http://127.0.0.1:8899`) — the daemon is the single point that spawns/kills windows
+and writes sqlite; the panel talks to the same API over WebSocket.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `mudra.py new <name>` | create a session (no instance) |
-| `mudra.py open <name> <url>` | spawn an instance + open first page |
-| `mudra.py add <name> <url> [--bg]` | add a page to a running session (`--bg` keeps focus) |
-| `mudra.py close <name> [query]` | close a whole session, or one open page (url filter) |
-| `mudra.py ls [name] [-f FILTER]` | list sessions / pages (URL/title filter) |
-| `mudra.py targets <name>` | list live page targets (CDP) |
-| `mudra.py focus <name> <query>` | find a page by url/title and bring it forward |
-| `mudra.py goto/back/forward/reload <name>` | navigation |
-| `mudra.py move <name> <workspace>` | move a session's windows to a workspace (niri) |
-| `mudra.py use [name]` | set (creates if missing) / show current session (`*` in `ls`) |
-| `mudra.py mode [session\|tab\|flip\|op]` | current-context / op-mode state machine |
-| `mudra.py conf <name> [--proxy <p>] [--ext <csv>]` | per-session proxy/extensions (applied on next open/add) |
+| `mudra.py open <url> [--ctx LEAF]` | open a page in a context (spawns its instance if not running) |
+| `mudra.py add <url> [--bg] [--ctx LEAF]` | add a page to the context's running instance (`--bg` keeps focus) |
+| `mudra.py close [query] [--ctx LEAF]` | close the whole context instance, or one open page (url filter) |
+| `mudra.py ctx [LEAF]` | show / switch the current context (situation leaf) |
+| `mudra.py ls [-f FILTER]` | list open pages per context (URL/title filter) |
+| `mudra.py targets [--ctx LEAF]` | list live page targets (CDP) |
+| `mudra.py focus <query> [--ctx LEAF]` | find a page by url/title and bring it forward |
+| `mudra.py goto/back/forward/reload <url>` | navigation |
+| `mudra.py move <workspace>` | move the context's windows to a workspace (niri) |
+| `mudra.py conf <leaf> [--proxy <p>] [--ext <csv>]` | per-context proxy/extensions (applied on next open/add) |
 | `mudra.py col remember\|show` | remember/per-site apply column width (niri) |
-| `mudra.py ui` | open the solidjs management panel (`mudra ui`) — the tag-forest interaction surface |
-| `mudrad.py run` | daemon: connect running instances, sync Target→sqlite |
-
-> The `session` verbs above are the *current* surface; the tag-forest migration moves
-> the organizing axis from session to `situation` (default inbox) — see PLAN §9.
+| `mudra.py ui` | open the solidjs web console — the tag-forest management surface |
+| `mudrad.py run` | daemon: control API + WebSocket push + Target→sqlite live-sync |
 
 ## Environment
 
@@ -190,8 +204,12 @@ python3 mudra.py ls <name> --filter news
 ## Implementation notes / details
 
 - Launched: `chromium --app=<url> --remote-debugging-port=<dyn> --user-data-dir=<profile>
-  --no-first-run`; SurfingKeys preloaded per instance. `--load-extension` in `--app`
-  verified (SurfingKeys id `fbnpkpganphpmhekgfkanhdpombfanpj`).
+  --no-first-run`. Proxy/extension flags come from the context's `conf` row
+  (`proxy` / `extensions` columns) and are applied at spawn.
+- **SurfingKeys must be an MV3 build**: Chromium 139+ rejects `--load-extension` of
+  MV2 unpacked dirs ("unsupported manifest version" — silently dropped unless you
+  chase stderr). The repo-era 1.15.0 crx is MV2; build the `mv3` branch
+  (Surfingkeys 1.17.x) into `~/.local/share/mudra/extensions/surfingkeys/`.
 - **New-window interception (cascade)**: in `--app`, `_blank`/`window.open` open as a
   chrome-default window; qwd injects a script (overrides `window.open` +
   capture `a[target=_blank]` → Image beacon → local `/open` → a new `--app`). Must be
@@ -203,8 +221,13 @@ python3 mudra.py ls <name> --filter news
 - **Column width** (verified): read `layout.tile_size[0]` ÷ `focused-output.logical.width`;
   set `set-column-width <N%>` (percent; `1/2` fraction syntax errors). Snap to a band,
   store per-site; re-apply on open.
-- **Daemon** is a singleton (flock) and idempotent (`UNIQUE(session_id,target_id)` +
+- **Daemon** is a singleton (flock) and idempotent (`UNIQUE(instance_id,target_id)` +
   `INSERT OR IGNORE`) to survive races.
+- **Stale singleton trap**: a leftover chromium from a previous schema still holds the
+  profile's `SingletonLock`; a new spawn hands its flags over to the old process and
+  exits — the debug port never listens and the daemon marks the instance down. If
+  instances go "never ready" after a profile/schema change, kill the old
+  `mudra/profiles/*` chromium processes first.
 
 ## Status & open questions
 
