@@ -41,7 +41,7 @@ Why (motivation): qutebrowser's modal input-method problem (`#3444`) → seek a 
 
 - **`mudra`** (CLI): quick commands; reads sqlite; forwards control commands to `mudrad`.
 - **`mudrad`** (daemon): holds a CDP WebSocket to each **running** instance; subscribes `Target.targetCreated/infoChanged/Destroyed` → real-time sqlite sync (satisfies "update the list on close"); forwards control commands; spawns/stops instances.
-- **chromium**: `--app=<url>`, dedicated `--user-data-dir` per session, dynamic `--remote-debugging-port`, `--proxy-server`, `--load-extension=<list>`, uniform title prefix.
+- **chromium**: `--app=<url>`, dedicated `--user-data-dir` per session, dynamic `--remote-debugging-port`, `--proxy-server`, `--load-extension=<list>`. No title prefix — window identity comes from recorded pid/window id.
 
 ## 4. Data model
 
@@ -98,11 +98,12 @@ mudra daemon start|stop|status
 
 ### session = workspace (concurrent)
 - Each session binds a niri workspace (`web:<name>`); `mudra open` = `focus-workspace` + spawn + rebuild.
-- Windows land on the workspace via niri window-rule (title prefix / app_id) + `focus-workspace`.
+- Window↔instance mapping is recorded at spawn (address / pid / window id); no title
+  prefix or title-based niri window-rule is used.
 - Workspaces can hold mixed windows from several processes; **moving a process's windows to a workspace is the "separate" operation**.
 
 ### window↔process map & batch move
-- mudra records which window belongs to which process (CDP target ↔ niri window by title/app_id).
+- mudra records which window belongs to which process (recorded at spawn: pid → niri window id; no title matching).
 - `mudra move <name> <workspace>` iterates the process's windows → `move-window-to-workspace <ws>` (verified).
 
 ### URL record & filter
@@ -188,9 +189,14 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
 - **P5 column-width memory**: Win+R capture → `site_widths`; auto-apply on open. **[done 2026-08]**
 - **P6 new-window interception**: `inject.js` + local `/open` server in `mudrad`. [done]
 - **P7 extension modules**: build `WmExt` (niri move / column-width / workspace routing /
-  window mapping) + `LauncherExt` (walker session/page menus + hotkeys) behind the pluggable
+  window mapping) + `LauncherExt` (walker page menus + hotkeys) behind the pluggable
   interface (§5 Extensions); migrate `mudra move` and focus onto the `WmExt` interface.
   **[P7a done 2026-08: `mudralib/wm.py` `WmExt`+`NiriExt`, move/add migrated]**
+  **[切换模型转向 2026-09]**: 统一切换——page 窗口直接进 Alt+Tab / launcher 过滤，**废弃
+  title 前缀与"排除浏览器窗口"方案**；mudra 专属视图 = web 控制台（`mudra ui`，只显示
+  mudra page），**Mod+Space 绑定打开控制台**；窗口识别靠 spawn 时记录的 pid/窗口 id。
+  **[交互收敛 2026-09]**: **无 launcher 改造**——搜索过滤、全部操作、tag 森林树形展示
+  都在 web 控制台完成；`p` 热路径与 `p/t/a/s` 前缀方案整体废弃，launcher 侧只剩 Mod+Space 绑定。
   **P7b (walker LauncherExt)**: 交互模型**已定稿 p/t/a/s**（p=Page 默认切换+移动/交换/关闭；t=tag 默认
     situation、跨树多选/树内单选；a=Action 评分/复制/隔离；s=排序，见 docs/EXTENSIONS.md）。tag 多选 =
     **累积缓冲(A, keyboardShortcut)** / **文本分隔(B 兜底)**。走 **elephant menus**（非 walker provider 插件）；

@@ -173,10 +173,19 @@ python3 mudra.py ls <name> --filter news
 
 ## Window management (walker)
 
-- A dedicated walker menu (cwdhist/windowsmru-like) lists browser pages by filter;
-  the generic windowsmru menu excludes them so they don't drown normal switching
-  (structural: one isolation-dimension per workspace; no niri-native filter exists).
-- **Alt+Tab** re-bound to a walker menu excluding browser windows.
+- **Unified switching**: each mudra page window is a plain niri window and appears
+  directly in Alt+Tab — no in-browser secondary switching layer. Extra windows are a
+  side effect; filter them in the launcher when needed. Alt+Tab remains the hot path.
+- **No title prefix, no exclusion**: the earlier plan (title prefix to filter/exclude
+  browser windows from generic switchers) is dropped — a dedicated mudra window menu
+  is no longer needed.
+- **Mod+Space (Win+Space)** opens the mudra **web console** (`mudra ui`), which shows
+  only mudra pages. Instances record address / pid / window id at spawn, so no title
+  prefix is required for identification.
+- **No launcher work needed**: the console is the entire management surface — search/
+  filter, operations (focus/close/move…), and tag-forest tree view all live there.
+  Launcher side stays untouched (only the Mod+Space binding). The earlier `p` hot-path
+  mode and `p/t/a/s` prefixes are dropped.
 
 ## Implementation notes / details
 

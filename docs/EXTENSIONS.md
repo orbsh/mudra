@@ -97,15 +97,24 @@ launcher 侧如需 tag 过滤，用 `p` 模式的过滤参数即可，无需多�
 - **排序偏好**：存 `state` 表（`mudra use`/`mudra mode` 已有写入机制），tabs/sessions 脚本按它排序。
 - **当前聚焦 tab 识别**：`pid→instance→title 匹配 target`（同 `mudra col remember`，机制已通）。
 
-#### Alt+Tab
-浏览器窗口已出现在 `menus:windowsmru`（所有窗口 MRU 切换）。LauncherExt 的价值是**按 session
-组织** + session/tab 级操作；niri 无原生切换器，浏览器窗口默认混在正常切换中（不动）。
+#### Alt+Tab 与统一切换（2026-09 转向）
+page 窗口直接出现在 Alt+Tab（`recent-windows`）与 `menus:windowsmru` 中——**统一切换，
+不做排除**。早期"title 前缀 + 专用 mudra 窗口菜单/排除"方案已废弃：单独 page 窗口可在
+launcher 中过滤，本来就是统一切换的优势，无需在浏览器内再养一套双层切换。mudra 专属
+视图交给 **web 控制台**（`mudra ui`，只显示 mudra page）；窗口识别靠 spawn 时记录的
+地址/pid/窗口 id，不再依赖 title。
+
+#### launcher 全废弃（2026-09 收敛）
+**无需任何 launcher 改造**：搜索过滤、页面操作（focus/close/move…）、tag 森林树形展示
+（tag 多选批量、评分轴、排序）全部收敛进 web 控制台（见 `docs/PANEL.md`）。早期的
+`p` 热路径模式与 `p/t/a/s` 前缀交互整体废弃——launcher 侧唯一的改动是 Mod+Space 绑定
+`mudra ui`。elephant menus / walker provider 相关基建保留为历史参考。
 
 ## NixOS / config coupling
 
 - Optional: niri config declares `web:*` named workspaces + a `mudra open`/`mudra move` binding
   (NixOS-managed, not inside the mudra repo).
-- Launch binding / Mod+Space reserved for the launcher menu entry.
+- **Mod+Space（Win+Space）→ `mudra ui`**（打开 web 控制台；替代原 cwdhist 直达）。
 
 ## Verification status
 
