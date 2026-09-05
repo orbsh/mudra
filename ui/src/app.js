@@ -1,6 +1,10 @@
+// mudra panel — SolidJS hyperscript 版（零构建）。
+// h() 返回的是惰性工厂（[$ELEMENT] 标记），插入 DOM 时才求值；
+// 组件就是返回 h() 工厂的普通函数，Solid 会自动当 component 调用。
 import { render } from "solid-js/web";
 import { createSignal, createMemo, createEffect, For, Show } from "solid-js";
-import "./styles.css";
+import hDefault from "solid-js/h";
+const h = hDefault; // 该包只有 default export
 
 // ---- WS client（请求/响应，id -> promise）----
 function makeClient() {
@@ -55,7 +59,6 @@ const [filters, setFilters] = createSignal(new Set());
 const [collapsed, setCollapsed] = createSignal(new Set());
 const [shot, setShot] = createSignal(null);   // {x,y,url}
 const [popup, setPopup] = createSignal(null); // 胶囊切换菜单 {x,y,items[],cb}
-const [urlInput, setUrlInput] = createSignal(""); // 底部地址栏输入
 
 let byId = new Map();
 let rankRoots = [];
@@ -168,13 +171,9 @@ const normalTags = (page) =>
 // 段级切换：在该段父下选同级
 function capsuleSwitch(page, tagNode, depth) {
   const parts = tagNode.path.split("::");
-  let parent = null;
-  let parentChildren = [];
-  // 定位 depth 段的父节点的直接子
-  // path: r::a::b, depth 0 segment = a (根下), depth 1 = b
-  let cur = parts[0];
-  const root = roots().find((r) => r.name === cur);
+  const root = roots().find((r) => r.name === parts[0]);
   if (!root) return;
+  let parentChildren = [];
   if (depth === 0) {
     parentChildren = root.children.filter((c) => c.rank === null); // 同级（同根下的普通 tag）
   } else {
@@ -224,148 +223,127 @@ function hover(page, on, e) {
   }, 250);
 }
 
-async function openUrl(e) {
-  e.preventDefault();
-  const url = urlInput().trim();
-  if (!url) return;
-  setUrlInput("");
-  try {
-    await client.call("open", { ctx: ctx(), url });
-  } catch (err) { alert("打开失败 " + err.message); }
-}
-
 function App() {
   const pageSet = () => pages();
   const toggleFilter = (id) => setFilters((s) => {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  return (
-    <div class="panel" onClick={() => popup() && popup().place === undefined && setPopup(null)}>
-      {/* 头部：上下文 + 排序 + 过滤 */}
-      <header class="hdr">
-        <div class="hdr-row">
-          <select value={ctx()} onChange={(e) => switchCtx(e.currentTarget.value)}>
-            <For each={contexts()}>{(c) => <option value={c}>{c}</option>}</For>
-          </select>
-          <button class="b" onClick={() => setSortNew(!sortNew())}>{sortNew() ? "新→旧" : "旧→新"}</button>
-          <span class="count">{pageSet().length} 页</span>
-        </div>
-        <div class="filts">
-          <For each={allLeaves}>
-            {(n) => (
-              <button class={"chip" + (filters().has(n.id) ? " on" : "")}
-                      onClick={() => toggleFilter(n.id)}>{n.path}</button>
-            )}
-          </For>
-        </div>
-      </header>
+  // 头部：上下文 + 排序 + 过滤
+  const hdrRow = () => h("div.hdr-row", [
+    h("select", { value: ctx, onChange: (e) => switchCtx(e.currentTarget.value) },
+      () => h(For, { each: contexts() }, (c) => h("option", { value: c }, c))),
+    h("button.b", { onClick: () => setSortNew(!sortNew()) }, () => sortNew() ? "新→旧" : "旧→新"),
+    h("span.count", () => `${pageSet().length} 页`),
+  ]);
+  const filts = () => h("div.filts",
+    () => h(For, { each: allLeaves }, (n) =>
+      h("button", {
+        class: () => "chip" + (filters().has(n.id) ? " on" : ""),
+        onClick: () => toggleFilter(n.id),
+      }, n.path)));
 
-      <main class="tree">
-        <For each={pageTree()}>
-          {(nd) => <PageNode nd={nd} />}
-        </For>
-      </main>
+  // 胶囊切换菜单（x/y 由 setPopup 调用方给定）
+  const popupMenu = () => {
+    const p = popup();
+    return h("div.menu", {
+      onClick: (e) => e.stopPropagation(),
+      style: `left:${p.x}px;top:${p.y}px;`,
+    }, [
+      p.place === "add" ? h("div.menu-title", "指派 tag") : null,
+      h(For, { each: p.items }, (it) => h("button.menu-item", {
+        onClick: () => { const cb = p.cb; setPopup(null); cb(it.id); },
+      }, it.label)),
+    ]);
+  };
 
-      {/* 底部地址栏：在当前会话开新窗口（走后端 /open） */}
-      <form class="urlbar" onSubmit={openUrl}>
-        <input type="text" placeholder="输入地址，回车在当前会话打开"
-               value={urlInput()}
-               onInput={(e) => setUrlInput(e.currentTarget.value)} />
-      </form>
+  // 悬停截图浮窗
+  const shotBox = () => {
+    const s = shot();
+    return h("div.shot", {
+      style: `left:${Math.min(s.x + 16, innerWidth - 340)}px;top:${Math.min(s.y + 16, innerHeight - 220)}px;`,
+    }, h("img", { src: s.data, alt: "" }));
+  };
 
-      <Show when={popup()}>
-        <div class="menu" onClick={(e) => e.stopPropagation()}
-             style={`left:${popup().x}px;top:${popup().y}px;`}>
-          {popup().place === "add" ? <div class="menu-title">指派 tag</div> : null}
-          <For each={popup().items}>
-            {(it) => <button class="menu-item" onClick={() => { const cb = popup().cb; setPopup(null); cb(it.id); }}>{it.label}</button>}
-          </For>
-        </div>
-      </Show>
-
-      <Show when={shot()}>
-        <div class="shot"
-             style={`left:${Math.min(shot().x + 16, innerWidth - 340)}px;top:${Math.min(shot().y + 16, innerHeight - 220)}px;`}>
-          <img src={shot().data} alt="" />
-        </div>
-      </Show>
-    </div>
-  );
+  // 开新窗口：底部地址栏已移除，用扩展的 :open 命令（console 角色过滤 page，兜底开 URL）
+  return h("div.panel", {
+    onClick: () => popup() && popup().place === undefined && setPopup(null),
+  }, () => [
+    h("header.hdr", [hdrRow(), filts()]),
+    h("main.tree",
+      () => h(For, { each: pageTree() }, (nd) => h(PageNode, { nd }))),
+    h(Show, { when: popup() }, popupMenu),
+    h(Show, { when: shot() }, shotBox),
+  ]);
 }
 
 function PageNode(props) {
-  const { p, lvl, kids, open } = props.nd;
-  return (
-    <div class="node">
-      <div class="ncard" style={{ "margin-left": `${lvl * 16}px` }}>
-        {/* 行1：标题 + 链接 + 折叠 */}
-        <div class="row1">
-          <button class="tw" onClick={() => setCollapsed((s) => {
-            const n = new Set(s); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n;
-          })}>
-            {kids.some((k) => !filters().size) || kids.length > 0 ? (open && kids.length ? "▾" : "▸") : ""}
-          </button>
-          <a class="link"
-             href={p.url}
-             onClick={(e) => { e.preventDefault(); client.call("focus", { page_id: p.id }).catch(() => {}); }}
-             onMouseMove={(e) => hover(p, true, e)}
-             onMouseLeave={() => hover(p, false)}>
-            {p.title}
-          </a>
-          <span class="meta">{timeAgo(p.opened_at)}</span>
-        </div>
-        {/* 行2：rank + 普通胶囊 + 添加 */}
-        <div class="row2">
-          <For each={rankRoots}>
-            {(root) => <RankAxis page={p} root={root} />}
-          </For>
-          <For each={normalTags(p)}>
-            {(t) => <Capsule page={p} t={t} />}
-          </For>
-          <button class="b add" onClick={(e) => { e.stopPropagation(); addTagToPage(p); }}>＋</button>
-        </div>
-      </div>
-      <For each={kids}>{(k) => <PageNode nd={k} />}</For>
-    </div>
-  );
+  const p = () => props.nd.p;
+  return h("div.node", [
+    h("div.ncard", { style: { "margin-left": () => `${props.nd.lvl * 16}px` } }, [
+      // 行1：标题 + 链接 + 折叠
+      h("div.row1", [
+        h("button.tw", {
+          onClick: () => setCollapsed((s) => {
+            const n = new Set(s); n.has(p().id) ? n.delete(p().id) : n.add(p().id); return n;
+          }),
+        }, () => props.nd.kids.some((k) => !filters().size) || props.nd.kids.length > 0
+          ? (props.nd.open && props.nd.kids.length ? "▾" : "▸") : ""),
+        h("a.link", {
+          href: () => p().url,
+          onClick: (e) => { e.preventDefault(); client.call("focus", { page_id: p().id }).catch(() => {}); },
+          onMouseMove: (e) => hover(p(), true, e),
+          onMouseLeave: () => hover(p(), false),
+        }, () => p().title),
+        h("span.meta", () => timeAgo(p().opened_at)),
+      ]),
+      // 行2：rank + 普通胶囊 + 添加
+      h("div.row2", [
+        h(For, { each: rankRoots }, (root) => h(RankAxis, { page: p(), root })),
+        h(For, { each: () => normalTags(p()) }, (t) => h(Capsule, { page: p(), t })),
+        h("button.b.add", {
+          onClick: (e) => { e.stopPropagation(); addTagToPage(p()); },
+        }, "＋"),
+      ]),
+    ]),
+    h(For, { each: () => props.nd.kids }, (k) => h(PageNode, { nd: k })),
+  ]);
 }
 
 function RankAxis(props) {
-  const { page, root } = props;
-  const sel = rankSel(page, root);
-  const n = sel ? sel.rank : 0;
-  return (
-    <span class="rank" title={root.name + (root.alias ? "（" + root.alias + "）" : "")}>
-      {[1, 2, 3, 4, 5].map((k) => (
-        <span class={"rk" + (k <= n ? " on" : "")} onClick={() => setRank(page, root, k)}>{root.rank_axis}</span>
-      ))}
-    </span>
-  );
+  const sel = () => rankSel(props.page, props.root);
+  return h("span.rank", {
+    title: () => props.root.name + (props.root.alias ? "（" + props.root.alias + "）" : ""),
+  }, [1, 2, 3, 4, 5].map((k) =>
+    h("span", {
+      class: () => "rk" + (k <= (sel() ? sel().rank : 0) ? " on" : ""),
+      onClick: () => setRank(props.page, props.root, k),
+    }, props.root.rank_axis)));
 }
 
 function Capsule(props) {
-  const { page, t } = props;
-  const parts = t.path.split("::");
+  const t = () => props.t;
   // 普通 tag 胶囊：每段一级路径，点击段切换同级；头✕删，尾＋加子级
-  return (
-    <span class="capsule" onClick={(e) => e.stopPropagation()}>
-      <span class="cp-x" title="删除此标签" onClick={() => setTags(page, page.tag_ids.filter((x) => x !== t.id))}>✕</span>
-      <For each={parts}>
-        {(seg, i) => (
-          <span class={"seg" + (i() === parts.length - 1 ? " leaf" : "")}
-                onClick={(e) => {
-                  const el = e.currentTarget.getBoundingClientRect();
-                  // 打开同级切换（在 depth=i() 的父下）
-                  openSegMenu(page, t, i(), el);
-                }}>
-            {seg}
-          </span>
-        )}
-      </For>
-      <span class="cp-close" title="添加子级" onClick={() => addChild(page, t.id)}>＋</span>
-    </span>
-  );
+  return h("span.capsule", {
+    onClick: (e) => e.stopPropagation(),
+  }, [
+    h("span.cp-x", {
+      title: "删除此标签",
+      onClick: () => setTags(props.page, props.page.tag_ids.filter((x) => x !== t().id)),
+    }, "✕"),
+    h(For, { each: () => t().path.split("::") }, (seg, i) =>
+      h("span", {
+        class: () => "seg" + (i() === t().path.split("::").length - 1 ? " leaf" : ""),
+        onClick: (e) => {
+          const el = e.currentTarget.getBoundingClientRect();
+          openSegMenu(props.page, t(), i(), el);
+        },
+      }, seg)),
+    h("span.cp-close", {
+      title: "添加子级",
+      onClick: () => addChild(props.page, t().id),
+    }, "＋"),
+  ]);
 }
 
 function openSegMenu(page, t, depth, rect) {
@@ -391,4 +369,4 @@ function openSegMenu(page, t, depth, rect) {
   });
 }
 
-render(() => <App />, document.getElementById("root"));
+render(() => h(App), document.getElementById("root"));

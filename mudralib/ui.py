@@ -33,7 +33,8 @@ except ImportError:  # 面板依赖 websockets；缺失则 ui 命令报错
 from . import ctl, db, spawn, wm
 
 PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
-DIST = pathlib.Path(__file__).resolve().parent.parent / "ui" / "dist"
+# 零构建：panel 静态根 = ui/ 源码目录本身（源码即产物，无 vite）
+DIST = pathlib.Path(__file__).resolve().parent.parent / "ui"
 
 
 def ctl_open(url: str, ctx: str | None = None) -> None:
@@ -460,7 +461,7 @@ def launch(args: argparse.Namespace) -> int:
         print("panel requires 'websockets' python package")
         return 1
     if not DIST.exists():
-        print(f"panel frontend not built: {DIST} (cd ui && npm run build)")
+        print(f"panel frontend missing: {DIST}")
         return 1
     existing = _panel_window_ids()
     if existing:
