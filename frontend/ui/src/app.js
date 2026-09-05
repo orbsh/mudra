@@ -278,9 +278,25 @@ function App() {
 function PageNode(props) {
   const p = () => props.nd.p;
   return h("div.node", [
-    h("div.ncard", { style: { "margin-left": () => `${props.nd.lvl * 16}px` } }, [
-      // 行1：标题 + 链接 + 折叠
+    h("div.ncard", { class: () => (p().closed ? "closed" : ""), style: { "margin-left": () => `${props.nd.lvl * 16}px` } }, [
+      // 行1：关闭/打开 + 删除 + 标题 + 链接 + 折叠
       h("div.row1", [
+        h("button.act", {
+          title: () => (p().closed ? "打开" : "关闭窗口"),
+          onClick: (e) => {
+            e.stopPropagation();
+            client.call(p().closed ? "reopen" : "close", { page_id: p().id }).catch(() => {});
+          },
+        }, () => (p().closed ? "↻" : "⨯")),
+        h("button.act.del", {
+          title: "删除（仅关闭状态可用）",
+          // 打开状态灰占位，点击无效果；删除为软删
+          disabled: () => !p().closed,
+          onClick: (e) => {
+            e.stopPropagation();
+            if (p().closed) client.call("delete", { page_id: p().id }).catch(() => {});
+          },
+        }, "🗑"),
         h("button.tw", {
           onClick: () => setCollapsed((s) => {
             const n = new Set(s); n.has(p().id) ? n.delete(p().id) : n.add(p().id); return n;

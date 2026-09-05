@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS pages(
     position   INTEGER,
     opened_at  INTEGER,
     closed_at  INTEGER,
+    deleted_at INTEGER,                                        -- 软删（只删 closed 页）
     parent_id  INTEGER REFERENCES pages(id)   -- 子页：由谁(target)打开（CDP openerId）
 );
 
@@ -206,7 +207,7 @@ def page_by_id_joined(conn: sqlite3.Connection, page_id: int) -> sqlite3.Row | N
     return conn.execute(
         "SELECT p.id, i.port, i.pid, p.target_id, p.url, p.title FROM pages p"
         " JOIN instances i ON i.id=p.instance_id"
-        " WHERE p.id=? AND p.closed_at IS NULL", (page_id,)
+        " WHERE p.id=? AND p.closed_at IS NULL AND p.deleted_at IS NULL", (page_id,)
     ).fetchone()
 
 
@@ -225,7 +226,7 @@ def page_ctx_for_url(conn: sqlite3.Connection, url_prefix: str) -> str | None:
     """按 URL 匹配打开中的 page → 实例唯一时返回其 ctx。"""
     row = conn.execute(
         "SELECT i.profile FROM pages p JOIN instances i ON i.id=p.instance_id"
-        " WHERE p.closed_at IS NULL AND p.url LIKE ?"
+        " WHERE p.closed_at IS NULL AND p.deleted_at IS NULL AND p.url LIKE ?"
         " GROUP BY i.profile HAVING COUNT(DISTINCT i.id)=1",
         (url_prefix,),
     ).fetchone()
@@ -237,7 +238,8 @@ def latest_open_page_by_url(
 ) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT id FROM pages WHERE instance_id=? AND url LIKE ?"
-        " AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+        " AND closed_at IS NULL AND deleted_at IS NULL"
+        " ORDER BY id DESC LIMIT 1",
         (inst_id, url_prefix),
     ).fetchone()
 
@@ -278,8 +280,18 @@ def page_tag_paths(conn: sqlite3.Connection, page_id: int) -> list[str]:
     return out
 
 
+def page_soft_delete(conn: sqlite3.Connection, page_id: int, ts: int) -> None:
+    """软删页（仅允许 closed 页调用，调用方负责校验）。"""
+    conn.execute("UPDATE pages SET deleted_at=? WHERE id=?", (ts, page_id))
+
+
+def page_closed(conn: sqlite3.Connection, page_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM pages WHERE id=? AND closed_at IS NOT NULL", (page_id,)
+    ).fetchone() is not None
+
+
 def site_width(conn: sqlite3.Connection, domain: str) -> sqlite3.Row | None:
-    """站点列宽记忆读取。"""
     return conn.execute(
         "SELECT proportion FROM site_widths WHERE site=?", (domain,)
     ).fetchone()
@@ -291,7 +303,8 @@ def page_open_by_url_substring(
     """实例内按 URL 子串找打开中的页（close page 用）。"""
     return conn.execute(
         "SELECT id,position,url,target_id FROM pages"
-        " WHERE instance_id=? AND closed_at IS NULL AND url LIKE ?",
+        " WHERE instance_id=? AND closed_at IS NULL AND deleted_at IS NULL"
+        " AND url LIKE ?",
         (inst_id, f"%{query}%"),
     ).fetchone()
 
@@ -362,11 +375,12 @@ def pages_open(conn: sqlite3.Connection, ctx: str | None = None) -> list[sqlite3
         return conn.execute(
             "SELECT p.id, p.title, p.url, i.profile AS ctx FROM pages p"
             " JOIN instances i ON i.id=p.instance_id"
-            " WHERE p.closed_at IS NULL AND i.profile=? ORDER BY p.id",
+            " WHERE p.closed_at IS NULL AND p.deleted_at IS NULL"
+            " AND i.profile=? ORDER BY p.id",
             (ctx,),
         ).fetchall()
     return conn.execute(
         "SELECT p.id, p.title, p.url, i.profile AS ctx FROM pages p"
         " JOIN instances i ON i.id=p.instance_id"
-        " WHERE p.closed_at IS NULL ORDER BY p.id",
+        " WHERE p.closed_at IS NULL AND p.deleted_at IS NULL ORDER BY p.id",
     ).fetchall()

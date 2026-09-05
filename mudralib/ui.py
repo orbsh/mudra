@@ -110,12 +110,12 @@ def _forest(conn) -> list[dict]:
 
 
 def _pages(conn, ctx: str) -> list[dict]:
-    """某上下文（situation 叶 → 实例）的打开页。"""
+    """某上下文（situation 叶 → 实例）的页：未删全显示（open + closed）。"""
     rows = conn.execute(
-        "SELECT p.id,p.url,p.title,p.position,p.target_id,p.parent_id,p.opened_at"
+        "SELECT p.id,p.url,p.title,p.position,p.target_id,p.parent_id,p.opened_at,p.closed_at"
         " FROM pages p JOIN instances i ON i.id=p.instance_id"
-        " WHERE p.closed_at IS NULL AND i.profile=?"
-        " ORDER BY p.position", (ctx,)
+        " WHERE p.deleted_at IS NULL AND i.profile=?"
+        " ORDER BY p.position", (ctx,),
     ).fetchall()
     result = []
     for p in rows:
@@ -127,6 +127,7 @@ def _pages(conn, ctx: str) -> list[dict]:
             "position": p["position"], "tag_ids": tags,
             "target_id": p["target_id"], "parent_id": p["parent_id"],
             "opened_at": p["opened_at"],
+            "closed": p["closed_at"] is not None,
         })
     return result
 
@@ -179,8 +180,14 @@ def _handle(msg: dict) -> str:
                 _focus(conn, msg.get("page_id"))
                 return _reply(msg, ok=True)
             elif op == "close":
-                _close(conn, msg.get("page_id"))
-                return _reply(msg, ok=True)
+                import mudralib.ops as ops
+                return _reply(msg, ok=True, **ops.close_page(int(msg["page_id"])))
+            elif op == "reopen":
+                import mudralib.ops as ops
+                return _reply(msg, ok=True, **ops.open_page(int(msg["page_id"])))
+            elif op == "delete":
+                import mudralib.ops as ops
+                return _reply(msg, ok=True, **ops.delete_page(int(msg["page_id"])))
             elif op == "create_tag":
                 nid = _create_tag(conn, msg.get("parent_id"), msg.get("name"))
                 return _reply(msg, ok=True, id=nid)
@@ -293,17 +300,6 @@ def _focus(conn, page_id) -> None:
         mgr.focus_window(w["id"])
         break
 
-
-def _close(conn, page_id) -> None:
-    row = conn.execute(
-        "SELECT i.port,p.target_id FROM pages p"
-        " JOIN instances i ON i.id=p.instance_id"
-        " WHERE p.id=?", (int(page_id),)
-    ).fetchone()
-    conn.execute("DELETE FROM pages WHERE id=?", (int(page_id),))
-    conn.commit()
-    if row and row["port"] and row["target_id"]:
-        ctl.close_target(row["port"], row["target_id"])
 
 
 def _create_tag(conn, parent_id, name) -> int:

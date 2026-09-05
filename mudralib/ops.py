@@ -11,6 +11,9 @@ mudrad（HTTP handler）与 mudra CLI 各自的入口都收敛到这里，消除
 
 from __future__ import annotations
 
+import json
+import time
+
 from mudralib import cdp, db, wm
 from mudralib.ui import _broadcast
 
@@ -76,6 +79,52 @@ def list_open_pages(ctx: str | None = None) -> list[dict]:
     """打开页列表（跨 ctx）。"""
     with db.connect() as conn:
         return [dict(r) for r in db.pages_open(conn, ctx)]
+
+
+def close_page(page_id: int) -> dict:
+    """关窗语义：置 closed_at + CDP 关 target。行保留（可重开/删除）。"""
+    with db.connect() as conn:
+        row = db.page_by_id_joined(conn, page_id)
+        if not row:
+            raise ValueError(f"page {page_id} not found")
+        conn.execute(
+            "UPDATE pages SET closed_at=? WHERE id=?",
+            (int(time.time()), page_id),
+        )
+        conn.commit()
+    if row["port"] and row["target_id"]:
+        from mudralib import ctl
+        ctl.close_target(row["port"], row["target_id"])
+    _broadcast({"event": "pages_changed"})
+    return {"closed": page_id}
+
+
+def open_page(page_id: int) -> dict:
+    """重开已关闭页：经 mudrad /open 开窗口，CDP 同步会把 closed_at 置回 NULL。"""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT p.url, p.deleted_at, i.profile AS ctx FROM pages p"
+            " JOIN instances i ON i.id=p.instance_id WHERE p.id=?",
+            (page_id,),
+        ).fetchone()
+    if not row:
+        raise ValueError(f"page {page_id} not found")
+    if row["deleted_at"]:
+        raise ValueError("page is deleted")
+    from mudralib.ui import ctl_open
+    ctl_open(row["url"] or "", row["ctx"])
+    return {"opened": page_id}
+
+
+def delete_page(page_id: int) -> dict:
+    """软删：仅 closed 页允许；打开中的页拒绝。"""
+    with db.connect() as conn:
+        if not db.page_closed(conn, page_id):
+            raise ValueError("cannot delete an open page; close it first")
+        db.page_soft_delete(conn, page_id, int(time.time()))
+        conn.commit()
+    _broadcast({"event": "pages_changed"})
+    return {"deleted": page_id}
 
 
 def tags_children(parent: str | None = None) -> list[str]:
