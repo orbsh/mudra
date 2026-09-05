@@ -1,10 +1,8 @@
 // mudra panel — SolidJS hyperscript 版（零构建）。
 // h() 返回的是惰性工厂（[$ELEMENT] 标记），插入 DOM 时才求值；
 // 组件就是返回 h() 工厂的普通函数，Solid 会自动当 component 调用。
-import { render } from "solid-js/web";
-import { createSignal, createMemo, createEffect, For, Show } from "solid-js";
-import hDefault from "solid-js/h";
-const h = hDefault; // 该包只有 default export
+// Solid 由 /shared/vendor/solid-bundle.js 提供（window.MudraSolid，与扩展共用同一份）。
+const { h, render, createSignal, createMemo, createEffect, For, Show } = window.MudraSolid;
 
 // ---- WS client（请求/响应，id -> promise）----
 function makeClient() {
@@ -311,39 +309,22 @@ function PageNode(props) {
 }
 
 function RankAxis(props) {
-  const sel = () => rankSel(props.page, props.root);
-  return h("span.rank", {
-    title: () => props.root.name + (props.root.alias ? "（" + props.root.alias + "）" : ""),
-  }, [1, 2, 3, 4, 5].map((k) =>
-    h("span", {
-      class: () => "rk" + (k <= (sel() ? sel().rank : 0) ? " on" : ""),
-      onClick: () => setRank(props.page, props.root, k),
-    }, props.root.rank_axis)));
+  return window.MudraTags.RankAxis({
+    root: props.root,
+    sel: rankSel(props.page, props.root),
+    onPick: (sel, k) => setRank(props.page, props.root, k),
+  });
 }
 
 function Capsule(props) {
   const t = () => props.t;
   // 普通 tag 胶囊：每段一级路径，点击段切换同级；头✕删，尾＋加子级
-  return h("span.capsule", {
-    onClick: (e) => e.stopPropagation(),
-  }, [
-    h("span.cp-x", {
-      title: "删除此标签",
-      onClick: () => setTags(props.page, props.page.tag_ids.filter((x) => x !== t().id)),
-    }, "✕"),
-    h(For, { each: () => t().path.split("::") }, (seg, i) =>
-      h("span", {
-        class: () => "seg" + (i() === t().path.split("::").length - 1 ? " leaf" : ""),
-        onClick: (e) => {
-          const el = e.currentTarget.getBoundingClientRect();
-          openSegMenu(props.page, t(), i(), el);
-        },
-      }, seg)),
-    h("span.cp-close", {
-      title: "添加子级",
-      onClick: () => addChild(props.page, t().id),
-    }, "＋"),
-  ]);
+  return window.MudraTags.Capsule({
+    tag: t(),
+    onSeg: (tag, i, el) => openSegMenu(props.page, tag, i, el.getBoundingClientRect()),
+    onRemove: (tag) => setTags(props.page, props.page.tag_ids.filter((x) => x !== tag.id)),
+    onAddChild: (tag) => addChild(props.page, tag.id),
+  });
 }
 
 function openSegMenu(page, t, depth, rect) {

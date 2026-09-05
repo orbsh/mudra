@@ -1,5 +1,7 @@
 // mudra-keys shared settings + status-bar widget library.
 // Used by content.js here and reusable by other mudra frontends (panel, CLI).
+// Rendering is SolidJS (window.MudraSolid from solid-bundle.js); tag capsules
+// come from window.MudraTags (tags.js) — same components as the panel.
 
 const MudraConfig = {
   defaults: {
@@ -44,63 +46,108 @@ const MudraConfig = {
 };
 
 // ---- status bar（qutebrowser 风格：底部一条，一字符高）----
-// 左侧：ctx 标签 + 模式（normal/insert/hint/command）；右侧：title + url + 滚动位置。
-// 做成公用库：MudraBar.mount(el?) 返回控制器，宿主页面/扩展均可复用。
+// Solid 实现：bar 是一个 Solid root，render() 只改 signal，DOM 增量更新。
+// 左侧：ctx · 数字前缀 · 模式 · tag 胶囊串；右侧：title + url + 滚动位置。
 const MudraBar = {
   el: null,
-  slots: {},
+  _setState: null, // {data, cfg} signals
+  _dispose: null,
 
   async mount() {
     if (this.el && this.el.isConnected) return this;
+    const { h, render, createSignal } = window.MudraSolid;
     const cfg = await MudraConfig.all();
-    const bar = document.createElement("div");
-    bar.id = "mudra-bar";
-    bar.style.cssText = [
-      "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
-      `height:${cfg.statusHeight}px`,
-      `font:${cfg.statusFont}`,
-      `color:${cfg.statusFg}`, `background:${cfg.statusBg}`,
-      "display:flex", "align-items:center", "justify-content:space-between",
-      "padding:0 6px", "box-sizing:border-box", "user-select:none",
-      "pointer-events:none", "white-space:nowrap", "overflow:hidden",
-    ].join(";");
-    bar.innerHTML = `
-      <span id="mudra-bar-left" style="display:flex;gap:8px;align-items:center;min-width:0"></span>
-      <span id="mudra-bar-right" style="display:flex;gap:10px;align-items:center;overflow:hidden"></span>`;
-    document.documentElement.appendChild(bar);
+
+    const [data, setData] = createSignal({});
+    const [command, setCommand] = createSignal(false); // command 输入行接管中
+    const [cfgSig] = createSignal(cfg);
+    this._setState = { data, setData, command, setCommand, cfg: cfgSig };
+
+    const colors = (mode) => ({
+      normal: { fg: cfg.statusFg, bg: cfg.statusBg },
+      insert: { fg: cfg.insertFg, bg: cfg.insertBg },
+      hint:   { fg: cfg.statusFg, bg: "#204080" },
+    }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg });
+
+    // 胶囊串：tags 是路径数组（state::未读），复用 panel 的 Capsule 渲染逻辑。
+    // 浏览器侧胶囊是只读显示（点击行为后续接菜单），先渲染段结构。
+    const Capsule = (path) => {
+      const segs = path.split("::");
+      return h("span.capsule",
+        segs.map((seg, i) => h("span", { class: "seg" + (i === segs.length - 1 ? " leaf" : "") }, seg)));
+    };
+
+    const Bar = () => {
+      // Solid 组件体只运行一次：顶层读 data() 不被追踪，DOM 会停在首次渲染。
+      // 动态内容必须以函数子节点传入 h()，由 Solid 建立 reactive insertion。
+      const c = cfgSig();
+      const left = () => {
+        const d = data();
+        const mode = d.mode || "normal";
+        return [d.ctx, d.count, mode, ...(d.tags || []).map(Capsule)].filter(Boolean);
+      };
+      const right = () => {
+        const d = data();
+        return d.message != null
+          ? d.message
+          : `${d.title || ""} ${d.url || ""}${d.scroll != null ? " " + d.scroll : ""}`;
+      };
+      const barStyle = () => {
+        const d = data();
+        const col = colors(d.mode || "normal");
+        return {
+          position: "fixed", left: "0", right: "0", bottom: "0", "z-index": "2147483647",
+          height: c.statusHeight + "px", font: c.statusFont,
+          color: col.fg, background: col.bg,
+          display: "flex", "align-items": "center", "justify-content": "space-between",
+          padding: "0 6px", "box-sizing": "border-box", "user-select": "none",
+          "pointer-events": command() ? "auto" : "none",
+          "white-space": "nowrap", overflow: "hidden",
+        };
+      };
+      return h("div#mudra-bar", { style: barStyle }, [
+        h("span#mudra-bar-left", {
+          style: { display: "flex", gap: "6px", "align-items": "center", "min-width": "0" },
+        }, left),
+        h("span#mudra-bar-right", {
+          style: {
+            display: () => (command() ? "none" : "flex"),
+            gap: "10px", "align-items": "center", overflow: "hidden", "flex-direction": "row",
+          },
+        }, right),
+      ]);
+    };
+
+    const root = document.createElement("div");
+    root.id = "mudra-bar-root";
+    document.documentElement.appendChild(root);
     // 状态栏要在最外层：经典滚动条画在所有元素之上（z-index 压不住），
-    // 而滚动位置已在 bar 右侧显示 → 直接隐藏页面滚动条（滚轮/键盘滚动不受影响）。
+    // 而滚动位置已在 bar 右侧显示 → 直接隐藏页面滚动条。
     const st = document.createElement("style");
     st.id = "mudra-scrollbar-style";
     st.textContent = "html { scrollbar-width: none !important; } html::-webkit-scrollbar { display: none !important; }";
     document.documentElement.appendChild(st);
-    this.el = bar;
-    this.slots.left = bar.querySelector("#mudra-bar-left");
-    this.slots.right = bar.querySelector("#mudra-bar-right");
-    this.render({});
+    this.el = root;
+    this._dispose = render(Bar, root);
+    // 胶囊/模式段的样式与 panel 共用（styles.css 只在 panel 加载），这里内联注入
+    const css = document.createElement("style");
+    css.id = "mudra-tags-style";
+    css.textContent = [
+      "#mudra-bar-root .capsule{display:inline-flex;align-items:stretch;border:1px solid #555;border-radius:9px;overflow:hidden}",
+      "#mudra-bar-root .seg{padding:0 5px;border-right:1px solid #333;white-space:nowrap}",
+      "#mudra-bar-root .seg:last-child{border-right:none}",
+      "#mudra-bar-root .seg.leaf{background:rgba(122,162,247,.25)}",
+    ].join("");
+    document.documentElement.appendChild(css);
     return this;
   },
 
-  // data: {ctx, mode, title, url, scroll, tags, message}
+  // data: {ctx, mode, title, url, scroll, tags(path 数组), message, count}
   async render(data) {
     if (!this.el) return;
     // command 模式时 bar 是输入行，render 不覆盖（输入行由 openCommand 自己维护）
     if (document.getElementById("mudra-cmdinput")) return;
-    const cfg = await MudraConfig.all();
-    const mode = data.mode || "normal";
-    const colors = {
-      normal: { fg: cfg.statusFg, bg: cfg.statusBg },
-      insert: { fg: cfg.insertFg, bg: cfg.insertBg },
-      hint:   { fg: cfg.statusFg, bg: "#204080" },
-    }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg };
-    this.el.style.color = colors.fg;
-    this.el.style.background = colors.bg;
-    const left = [data.ctx, data.count, mode, ...(data.tags || [])].filter(Boolean).join(" · ");
-    const right = data.message
-      ? data.message
-      : `${data.title || ""} ${data.url || ""}${data.scroll != null ? " " + data.scroll : ""}`;
-    this.slots.left.textContent = left;
-    this.slots.right.textContent = right;
+    this._setState.setData({ ...data });
   },
 
   // ---- command 模式：bar 整条变输入行（: 提示符 + 输入框占满），
@@ -110,6 +157,7 @@ const MudraBar = {
   async openCommand(onInput, onPick) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
+    const { setCommand } = this._setState;
 
     // 候选浮层：贴在 bar 上缘，宽度 100%（left0/right0），高度最多 maxCandidates 行
     const rowH = cfg.statusHeight + 2;
@@ -125,21 +173,20 @@ const MudraBar = {
     box.appendChild(list);
     document.documentElement.appendChild(box);
 
-    // 输入行接管整条 bar：左侧 ": " 提示符，输入框占满剩余宽度
-    const bar = this.el;
+    // 输入行接管整条 bar：右槽隐藏（Solid 渲染），输入框 append 到 bar 内
+    setCommand(true);
+    const bar = document.getElementById("mudra-bar");
     bar.style.color = cfg.insertFg;
     bar.style.background = cfg.insertBg;
-    bar.style.pointerEvents = "auto";
-    this.slots.left.textContent = ":";
-    // 输入行接管整条 bar：right slot 隐藏（flex 布局下会残留占位），输入框占满其余宽度
-    this.slots.right.style.display = "none";
+    const left = document.getElementById("mudra-bar-left");
+    left.textContent = ":";
     const input = document.createElement("input");
     input.id = "mudra-cmdinput";
     input.style.cssText = [
       "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
       `color:${cfg.insertFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
-    this.slots.left.parentElement.appendChild(input);
+    bar.appendChild(input);
     input.focus();
 
     let items = [];
@@ -162,8 +209,8 @@ const MudraBar = {
     const close = () => {
       input.remove();
       document.getElementById("mudra-cmdbox")?.remove();
-      this.slots.right.style.display = "";
-      bar.style.pointerEvents = "none";
+      setCommand(false);
+      this._setState.setData((d) => ({ ...d })); // 恢复普通渲染（颜色由 mode signal 决定）
     };
 
     const api = {
@@ -189,6 +236,8 @@ const MudraBar = {
   },
 
   unmount() {
+    if (this._dispose) this._dispose();
+    this._dispose = null;
     if (this.el) this.el.remove();
     this.el = null;
   },
