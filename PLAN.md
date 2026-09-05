@@ -11,7 +11,7 @@ A minimal-UI, keyboard-driven, externally-controlled browser **usage mode** for 
 - Each page is a `chromium --app` window (no omnibox, no tab strip → maximal webview).
 - One Chromium **instance per session/workspace**; several sessions/instances may run concurrently.
 - Sessions and pages live in **sqlite**; a CLI (`mudra`) + daemon (`mudrad`) drive everything over **CDP**.
-- **SurfingKeys** is preloaded via `--load-extension`; proxy and an **extension list** are configurable per instance.
+- **mudra-keys extension** (self-authored, `frontend/`, zero-build MV3) is loaded via `--load-extension`; proxy and an **extension list** are configurable per instance.
 - Links that would open a new window are **intercepted** by an injected script and opened as a new `--app` window instead of a chrome-default window.
 
 Why (motivation): qutebrowser's modal input-method problem (`#3444`) → seek a non-modal, minimal-UI, fully external-controlled browser. See the wiki doc.
@@ -22,8 +22,9 @@ Why (motivation): qutebrowser's modal input-method problem (`#3444`) → seek a 
 - **Path B concurrent**: one Chromium instance per session/workspace; multiple may run.
 - Python (CLI + daemon). Sole non-stdlib dep: `websocket-client` (CDP). sqlite via stdlib.
 - Command name `mudra`; daemon `mudrad`.
-- SurfingKeys loaded via `--load-extension`. **2026-09（chromium 152）**：MV2 构建被静默拒绝
-  （"unsupported manifest version"，139+ 移除 MV2 加载）；需 mv3 分支构建（见 README 实现细节）。
+- 自写 **mudra-keys** 扩展（`frontend/`，MV3 零构建）取代 SurfingKeys（2026-09-05 定案，
+  见 `docs/ADR-self-maintained-extension.md`）。历史背景：SurfingKeys MV2 构建在 139+
+  被静默拒绝（"unsupported manifest version"），需 mv3 分支构建——这也是被取代的原因之一。
 - New-window opening routed through an injected content script → local HTTP server → new `--app`.
 - **Global instance & global tabs**: RSS / IM 等非 session 窗口由**单独常驻全局实例**承载；它们不属于任何
   session，所有 session 内都可访问/显示。模型：`pages.session_id` 为 NULL 表示全局 tab。
@@ -92,7 +93,7 @@ mudra daemon start|stop|status
 
 ### CDP control
 - Launch: `chromium --app=<url> --remote-debugging-port=<dyn> --user-data-dir=<session profile>`
-  `--proxy-server=... --load-extension=<dir>,... --no-first-run` (SurfingKeys etc.)
+  `--proxy-server=... --load-extension=<dir>,... --no-first-run` (mudra-keys etc.)
 - Open/close page: `Target.createTarget` / `Page.close` → Target events sync sqlite.
 - Navigate: `Page.navigate` / `reload` / `getNavigationHistory` / `navigateToHistoryEntry`.
 - **Find page by URL and activate**: `Target.getTargets` (url/title/type) → match → `Target.activateTarget`. Works on error pages.
@@ -120,10 +121,13 @@ mudra daemon start|stop|status
   `mudra col show` lists; `open`/`add` auto-apply by domain (wait for the instance's window to focus).
 
 ### proxy & extension list
-- per-instance `proxy` → `--proxy-server`; `extensions` → `--load-extension=<built dirs>`.
-- **Verified**: `--app` + `--load-extension` loads SurfingKeys in an `--app` window (extension id
-  `fbnpkpganphpmhekgfkanhdpombfanpj`; built unpacked at `dist/production/chrome/`). Building SurfingKeys:
-  `npm install` (official registry, direct net) then webpack `build:prod`.
+- per-instance `proxy` → `--proxy-server`; `extensions` → `--load-extension=<dirs>`.
+- **Current (2026-09-05)**: default loads the in-repo `frontend/` root — `mudra-keys`
+  extension (`frontend/extension/`) + shared lib (`frontend/shared/lib.js`, also used by
+  the panel). Keymap & `:set` config: `docs/KEYS.md`.
+- **Verified**: `--app` + `--load-extension` loads unpacked MV3 extensions in an `--app` window.
+- **Historical (SurfingKeys)**: built unpacked at `dist/production/chrome/` — `npm install`
+  (official registry, direct net) then webpack `build:prod`. Superseded by mudra-keys.
 
 ### new-window interception (links / window.open)
 - `--app` opens `_blank`/`window.open` as a **chrome-default window** (inherent to `--app`; CDP cannot restyle it).
@@ -173,7 +177,7 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
 - CDP lists/attaches `--app` page targets.
 - niri `move-window-to-workspace` / `move-column-to-workspace` / `set-column-width` exist.
 - niri has no Alt+Tab window filter (no such config; default has no Alt+Tab binding).
-- `--load-extension` loads SurfingKeys into `--app` (chromium 151).
+- `--load-extension` loads unpacked MV3 extensions into `--app` (chromium 151/152).
 
 **Pending** (confirm at impl):
 - CDP control of error pages (`chrome-error`).
@@ -186,7 +190,8 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
 - **P1 core loop**: `mudra open` spawns instance; `mudrad` connects CDP; Target events → sqlite (open/close/url live-sync).
 - **P2 CDP verbs**: `goto / back / forward / reload / focus <page>`; find-by-URL activate.
 - **P3 workspace & move**: window↔process map; `mudra move`; per-instance workspace routing; URL filter in `ls`.
-- **P4 proxy & extensions**: `--proxy-server`; `--load-extension` list; build+ship SurfingKeys bundle.
+- **P4 proxy & extensions**: `--proxy-server`; `--load-extension` list; ~~build+ship SurfingKeys bundle~~
+  → superseded by in-repo mudra-keys (`frontend/`, zero-build).
 - **P5 column-width memory**: Win+R capture → `site_widths`; auto-apply on open. **[done 2026-08]**
 - **P6 new-window interception**: `inject.js` + local `/open` server in `mudrad`. [done]
 - **P7 extension modules**: build `WmExt` (niri move / column-width / workspace routing /
@@ -220,6 +225,15 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
     - **a Action 模式** = "当前聚焦页识别"（niri focused window → 对应页作为动作对象）+ 动作集（close/copy/move/swap/star）+ `mudraactions.lua` + `` `a `` 前缀。`cmd_focus` 已含 CDP activate + niri `focus-window`（WmExt.focus_window），可复用 WmExt 定位聚焦实例/页。
     - **落 `Configuration/nixos` 资产源**：上述 lua/config/daemon 正式化，切 systemd 管理、免手改配置。
     - **tag 多选 A′**：打开后 keep 窗口（`AfterAction::KeepOpen`）+ 自建 provider 缓冲累积。
+
+- **P7b extension (mudra-keys)**: self-authored MV3 zero-build keyboard extension replaces
+  SurfingKeys. **[done 2026-09-05]**
+  - Layout: `frontend/` = extension root (`manifest.json` + `extension/` + `shared/` +
+    `ui/` panel); manifest references shared lib via `/shared/lib.js`. `--load-extension=frontend/`.
+  - Four-mode FSM (normal/hint/insert/command), qutebrowser-style status bar, scroll
+    commands + `<N>g` percent jump, `:set` live config (`chrome.storage.local`).
+    Details: `docs/KEYS.md`; decision record: `docs/ADR-self-maintained-extension.md`.
+  - Panel also went zero-build (solidjs hyperscript, no vite/npm).
 
 - **P8 转 MD + 全文检索**（§10 ①）：html→md（reader-mode）提取正文 + sqlite FTS，无 LLM、是信息流精炼基础。
 - **P9 parent_id 分拣**：页面树 → workspace 移动（整棵子树归类，消费既有 `parent_id`）。

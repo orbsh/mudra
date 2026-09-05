@@ -34,9 +34,10 @@ Two pain points drove it:
 - **Extension-layer control is incomplete**: Vimium/SurfingKeys can't inject into error
   pages (`chrome-error`) or built-in pages.
 
-**Selection**: `chromium --app` + CDP + SurfingKeys + sqlite/mudra. A real Chromium
-origin with an external controller (keeps SurfingKeys + error-page control), rather
-than re-embedding an engine.
+**Selection**: `chromium --app` + CDP + self-authored mudra-keys extension + sqlite/mudra.
+A real Chromium origin with an external controller (keeps error-page control), rather
+than re-embedding an engine. (SurfingKeys was initially preloaded; superseded by the
+in-repo extension — see `docs/ADR-self-maintained-extension.md`.)
 
 **Design hard constraint — nearly niri-exclusive**: the whole mode needs a WM with
 (fine-grained IPC control: move/focus/set-column-width/workspace routing) **and** a
@@ -116,8 +117,11 @@ state(key, value)               -- current_context(situation), sort, ...
   chrome, so minimal UI comes only from `--app`.
 - **CDP backbone** — controls every target (incl. error/built-in pages);
   `Target.targetCreated/Destroyed` events live-sync to sqlite; recovery.
-- **SurfingKeys** — keyboard/insert/IME on normal pages (JS-driven); pre-seeded into
-  each instance profile.
+- **mudra-keys extension** (self-authored, `frontend/`) — four-mode keyboard driving
+  (normal/hint/insert/command) with qutebrowser-style status bar, link hints, scroll
+  commands, `:set` live config. All open/tag/page ops route through mudrad. See
+  `docs/KEYS.md` (keymap & config) and `docs/ADR-self-maintained-extension.md` (why
+  not SurfingKeys/Vimium).
 - **sqlite + launcher** — tag-forest org & refine, isolated instances, window↔process
   mapping, url record/filter, per-site column width; walker lists pages filtered by tag
   and does address input.
@@ -206,10 +210,10 @@ and writes sqlite; the panel talks to the same API over WebSocket.
 - Launched: `chromium --app=<url> --remote-debugging-port=<dyn> --user-data-dir=<profile>
   --no-first-run`. Proxy/extension flags come from the context's `conf` row
   (`proxy` / `extensions` columns) and are applied at spawn.
-- **SurfingKeys must be an MV3 build**: Chromium 139+ rejects `--load-extension` of
-  MV2 unpacked dirs ("unsupported manifest version" — silently dropped unless you
-  chase stderr). The repo-era 1.15.0 crx is MV2; build the `mv3` branch
-  (Surfingkeys 1.17.x) into `~/.local/share/mudra/extensions/surfingkeys/`.
+- **Extension is zero-build MV3**: `--load-extension=<repo>/frontend` (self-authored
+  mudra-keys; keymap/config in `docs/KEYS.md`). Historical note: SurfingKeys required an
+  MV3 build — Chromium 139+ rejects MV2 unpacked dirs ("unsupported manifest version",
+  silently dropped unless you chase stderr) — one of the reasons it was replaced.
 - **New-window interception (cascade)**: in `--app`, `_blank`/`window.open` open as a
   chrome-default window; qwd injects a script (overrides `window.open` +
   capture `a[target=_blank]` → Image beacon → local `/open` → a new `--app`). Must be
@@ -234,12 +238,12 @@ and writes sqlite; the panel talks to the same API over WebSocket.
 **Verified**: `--app` w/o chrome, CDP lists/attaches `--app`, niri
 move/focus/column-width, `--load-extension`, walker multi-char prefixes + `argument_delimiter`.
 **Pending/⏳**: tag-forest migration (situation switch, isolated instances, scoring
-trees, ML), SurfingKeys-in-app, CDP error-page nav, walker provider protocol (P7b).
+trees, ML), CDP error-page nav, walker provider protocol (P7b).
 
 **Known issue (deferred)**: passwords aren't saved in `--app` (Linux keyring absent) —
 candidates: `gnome-keyring` or `--password-store=basic`.
 
-**Open**: dual control routing (SurfingKeys vs CDP for error pages) · download/print
+**Open**: CDP control routing for error pages (no DOM extension injection there) · download/print
 (chrome UI gaps) · tag-forest app-layer single-select enforcement · ML scoring.
 
 ## Roadmap

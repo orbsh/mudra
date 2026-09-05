@@ -16,15 +16,17 @@ launcher（walker/elephant menus）适合**热路径单动作**：呼出 → 选
 实际落地时，tag 多选（`t`）、排序（`s`）、动作（`a`）从 launcher **移交给了面板**。
 launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest 主力交互面。
 
-## 二、面板现状（2026-08 落地的形态）
+## 二、面板现状（2026-08 落地，2026-09-05 零构建化）
 
-- **技术栈**：solidjs + vite 前端（`ui/`），python `mudrad` 内置 HTTP(静态) + WebSocket
-  双服务（`mudralib/ui.py`）。
+- **技术栈**：solidjs（hyperscript `h()`，无 JSX）+ python `mudrad` 内置 HTTP(静态) + WebSocket
+  双服务（`mudralib/ui.py`）。**零构建**：无 vite/npm，源码目录即产物（ESM + 内联
+  importmap，`/shared/vendor/solid*.js`）。前端位于 `frontend/ui/`，共享库
+  （solid vendor、后续公共组件）在 `frontend/shared/`——panel 与 mudra-keys 扩展同根引用。
 - **入口**：`mudra ui` 确保 mudrad 在跑（它持有面板服务），spawn 一个 chromium `--app`
   固定窗载入 `http://127.0.0.1:9299/`。**固定窗，非浮动**——用户直接切过去，不需要
   WM 浮动居中。
-- **端口**：HTTP `:9299`（静态 dist）、WS `:9300`（数据通道）。前端按
-  `location.port + 1` 连 WS 并**自动重连**。
+- **端口**：HTTP `:9299`（静态，`/shared/*` 由 `translate_path` 映射到 `frontend/shared/`）、
+  WS `:9300`（数据通道）。前端按 `location.port + 1` 连 WS 并**自动重连**。
 
 ### WS 协议（JSON 请求/响应，`id` 匹配）
 

@@ -1,6 +1,6 @@
 # ADR: 自维护 mudra-keys 扩展（放弃复用 SurfingKeys / Vimium 等已有扩展）
 
-日期：2026-09-05　状态：已定案并实施（`extension/mudra-keys/`）
+日期：2026-09-05　状态：已定案并实施（`frontend/`，扩展根 = `frontend/`，共享库在 `frontend/shared/`）
 
 ## 问题
 
@@ -29,7 +29,14 @@ tag 打标。这是浏览器内行为，只能由浏览器扩展承担。选择�
 
 ### 形态约束
 
-- **MV3 + 零构建**：manifest 直接指向源码 JS；`--load-extension=<repo>/extension/mudra-keys`。
+- **MV3 + 零构建**：manifest 直接指向源码 JS；`--load-extension=<repo>/frontend`
+  （扩展根 = `frontend/`：`manifest.json` 在根，`extension/` 放 content/SW，
+  `shared/` 放与 panel 共用的库——manifest 以 `/shared/lib.js` 绝对路径引用跨子目录共享代码）。
+- **模式机与按键**（2026-09-05）：四模式 FSM（normal / hint / insert / command），
+  qutebrowser 式状态栏（左 ctx·count·mode·tags，右 title/url/scroll%）。键位与全部
+  行为参数（hintChars、scrollStepLines、pageOverlapLines、maxCandidates、keybindings
+  覆盖表）存 `chrome.storage.local`，cmd 模式 `:set` 就地修改（`:set scrollStepLines 5`、
+  `:set keybindings.u=pageUp`、裸 `:set` 列出全部）。
 - **SW 只做桥**：service worker 不含业务逻辑，content script 消息 →
   mudrad HTTP（`127.0.0.1:8899`）。开页、打标、页列表、跳页全部由 mudrad
   执行（tabId 路由回所属 ctx）。状态、广播、生命周期的所有权都在后端。
