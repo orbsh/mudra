@@ -40,14 +40,32 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def launch(name, url, port, *, proxy=None, extensions=None) -> tuple[int, str]:
+def clear_extension_caches(name: str) -> None:
+    """清掉 chromium 对 --load-extension 目录文件的缓存（ScriptCache/Code Cache/HTTP Cache）。
+
+    源码目录直载的扩展改文件后 chromium 不会自动重读（会跑旧 SW/content script），
+    密集开发期每次 spawn 前调用；代价只是冷启动。
+    """
+    d = profile_dir(name) / "Default"
+    for sub in ("Service Worker/ScriptCache", "Code Cache", "Cache"):
+        p = d / sub
+        if p.exists():
+            import shutil
+
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def launch(name, url, port, *, proxy=None, extensions=None, dev_mode=False) -> tuple[int, str]:
     """拉起一个 chromium --app 窗口；返回 (pid, profile_dir).
 
     port 非 None → 新实例（带 remote-debugging）；port=None → 并入已有实例（无 debug 端口）。
-    proxy 非 None → --proxy-server；extensions=None 用默认(SurfingKeys)，否则按给定列表。
+    proxy 非 None → --proxy-server；extensions=None 用默认(mudra-keys)，否则按给定列表。
+    dev_mode → spawn 前清扩展缓存（改扩展源码后立即可见，冷启动换即时生效）。
     """
     udir = profile_dir(name)
     udir.mkdir(parents=True, exist_ok=True)
+    if dev_mode:
+        clear_extension_caches(name)
     cmd = [
         "chromium",
         f"--app={url}",

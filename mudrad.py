@@ -69,6 +69,7 @@ class _InterceptHandler(BaseHTTPRequestHandler):
     ctx 缺省 = 当前上下文（state.current_context）。
     """
     def do_POST(self):
+        print(f"[mudrad] POST {self.path}")
         mudrad = self.server.mudrad
         ok, err, out = True, None, {}
         try:
@@ -84,6 +85,16 @@ class _InterceptHandler(BaseHTTPRequestHandler):
                 out = mudrad.ctl_close_ctx(body)
             elif self.path == "/ctx":
                 out = mudrad.ctl_ctx(body)
+            elif self.path == "/tag":
+                out = mudrad.ctl_tag(body)
+            elif self.path == "/tags":
+                out = mudrad.ctl_tags(body)
+            elif self.path == "/pages":
+                out = mudrad.ctl_pages(body)
+            elif self.path == "/focus_page":
+                out = mudrad.ctl_focus_page(body)
+            elif self.path == "/ctx_status":
+                out = mudrad.ctl_ctx_status(body)
             else:
                 ok, err = False, f"unknown endpoint {self.path}"
         except Exception as e:
@@ -121,8 +132,13 @@ class Mudrad:
         ).fetchone()
         return r["profile"] if r else None
 
-    def _ctx_for_tab(self, tab_id: str | int | None) -> str | None:
-        """按 CDP targetId（SK sender tab）反查其所属实例 → ctx（跨实例全量查）。"""
+    def _ctx_for_tab(self, tab_id: str | int | None, url: str | None = None) -> str | None:
+        """反查 tab 所属实例 → ctx。
+
+        tab_id 可能是 CDP targetId（mudrad 拦截注入时用）或 chrome 数字 tabId
+        （扩展 sender.tab.id）——后者在 /json 里匹配不到，退回按 URL 匹配
+        pages 表（打开中的唯一页面即该实例）。
+        """
         if not tab_id:
             return None
         with db.connect() as conn:
@@ -140,7 +156,21 @@ class Mudrad:
                         return self._ctx_of_instance(conn, row["id"])
             except Exception:
                 continue
-        return None
+        # chrome tabId（数字）在 CDP targetId 中不存在 → 按 URL 落库匹配
+        return self._ctx_for_url(url)
+
+    def _ctx_for_url(self, url: str | None) -> str | None:
+        """按 URL 匹配打开中的 page → 实例唯一时返回其 ctx（chrome tabId 在 CDP 中不存在）。"""
+        if not url:
+            return None
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT i.profile FROM pages p JOIN instances i ON i.id=p.instance_id"
+                " WHERE p.closed_at IS NULL AND p.url LIKE ?"
+                " GROUP BY i.profile HAVING COUNT(DISTINCT i.id)=1",
+                ((url.split("#")[0] + "%")[:200],),
+            ).fetchone()
+            return row["profile"] if row else None
 
     # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
     def _inject_page(self, port: int, target_id: str, ctx: str) -> None:
@@ -197,7 +227,8 @@ class Mudrad:
             # 并入已有实例
             spawn.launch(ctx, url, None,
                          proxy=inst["proxy"],
-                         extensions=inst["extensions"].split(",") if inst["extensions"] else None)
+                         extensions=inst["extensions"].split(",") if inst["extensions"] else None,
+                         dev_mode=db.get_state(conn, "dev_mode") == "1")
             print(f"[mudrad] open -> --app joined: {url} (ctx {ctx})")
             return {"mode": "joined", "port": inst["port"], "ctx": ctx}
         # 新实例：复用旧行（proxy/extensions），否则新建
@@ -206,7 +237,8 @@ class Mudrad:
         ext = (inst["extensions"] if inst else None) or None
         pid, udir = spawn.launch(ctx, url, port,
                                  proxy=proxy,
-                                 extensions=ext.split(",") if ext else None)
+                                 extensions=ext.split(",") if ext else None,
+                                 dev_mode=db.get_state(conn, "dev_mode") == "1")
         with db.connect() as conn:
             if inst and inst["id"]:
                 conn.execute(
@@ -304,6 +336,157 @@ class Mudrad:
         os.kill(inst["pid"], signal.SIGTERM)
         print(f"[mudrad] close ctx {ctx} (pid {inst['pid']})")
         return {"closed": ctx}
+
+    def ctl_ctx_status(self, data: dict) -> dict:
+        """状态栏数据源：tabId → (ctx, 页面 tags)。
+
+        扩展 SW 上报 tabId+页面 URL，这里反查实例→ctx 与 page_tag，一次往返。
+        """
+        tab_id = (data or {}).get("tabId")
+        url = (data or {}).get("url")
+        ctx = self._ctx_for_tab(tab_id, url) if tab_id else None
+        if not ctx:
+            ctx = self._ctx_for_url(url)
+        if not ctx:
+            ctx = (data or {}).get("ctx")
+        tags: list[str] = []
+        if ctx and url:
+            with db.connect() as conn:
+                inst = conn.execute(
+                    "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
+                    (ctx,),
+                ).fetchone()
+                if inst:
+                    row = conn.execute(
+                        "SELECT id FROM pages WHERE instance_id=? AND url LIKE ?"
+                        " AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                        (inst["id"], (url.split("#")[0] + "%")[:200]),
+                    ).fetchone()
+                    if row:
+                        tags = [
+                            r["name"]
+                            for r in conn.execute(
+                                "SELECT t.name FROM page_tag pt JOIN tag t ON t.id=pt.tag_id"
+                                " WHERE pt.page_id=?",
+                                (row["id"],),
+                            )
+                        ]
+        return {"ctx": ctx, "tags": tags}
+
+    def ctl_tag(self, data: dict) -> dict:
+        """给页面打/摘 tag：{tabId|url, tag: 名称}，存在则摘除（toggle）。"""
+        tag_name, url = (data or {}).get("tag"), (data or {}).get("url")
+        tab_id = (data or {}).get("tabId")
+        if not tag_name:
+            raise ValueError("need tag")
+        ctx = self._ctx_for_tab(tab_id, url) if tab_id else None
+        if not ctx or not url:
+            raise ValueError("need tabId and url to resolve page")
+        with db.connect() as conn:
+            t = conn.execute("SELECT id FROM tag WHERE name=? AND deleted=0", (tag_name,)).fetchone()
+            if not t:
+                raise ValueError(f"tag not found: {tag_name}")
+            inst = conn.execute(
+                "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1", (ctx,)
+            ).fetchone()
+            if not inst:
+                raise ValueError(f"no instance for ctx {ctx}")
+            page = conn.execute(
+                "SELECT id FROM pages WHERE instance_id=? AND url LIKE ? AND closed_at IS NULL"
+                " ORDER BY id DESC LIMIT 1",
+                (inst["id"], (url.split("#")[0] + "%")[:200]),
+            ).fetchone()
+            if not page:
+                raise ValueError("page not open in this ctx")
+            existing = conn.execute(
+                "SELECT 1 FROM page_tag WHERE page_id=? AND tag_id=?", (page["id"], t["id"])
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "DELETE FROM page_tag WHERE page_id=? AND tag_id=?", (page["id"], t["id"])
+                )
+                action = "removed"
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO page_tag(page_id, tag_id) VALUES(?,?)",
+                    (page["id"], t["id"]),
+                )
+                action = "added"
+            conn.commit()
+        ui._broadcast({"event": "pages_changed"})
+        return {"tag": tag_name, "action": action}
+
+    def ctl_tags(self, data: dict) -> dict:
+        """tag 树读取：{parent?: 名称} → 该父下子树（供扩展/面板补全 tag 名）。"""
+        with db.connect() as conn:
+            parent = (data or {}).get("parent")
+            if parent:
+                rows = conn.execute(
+                    "SELECT t.name, t.rank FROM tag t WHERE t.parent_id ="
+                    " (SELECT id FROM tag WHERE name=? AND deleted=0) AND t.deleted=0"
+                    " ORDER BY t.rank IS NULL, t.rank, t.name",
+                    (parent,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT name, rank FROM tag WHERE parent_id=-1 AND deleted=0"
+                    " ORDER BY name"
+                ).fetchall()
+        return {"tags": [r["name"] for r in rows]}
+
+    def ctl_pages(self, data: dict) -> dict:
+        """打开页列表（跨 ctx）：扩展 pages 命令的数据源（跳转其他 page，类似 tabs）。"""
+        ctx = (data or {}).get("ctx")
+        with db.connect() as conn:
+            if ctx:
+                cond = "i.profile=?"
+                args: tuple = (ctx,)
+            else:
+                cond = "1=1"
+                args = ()
+            rows = conn.execute(
+                "SELECT p.id, i.profile AS ctx, p.url, p.title, p.position"
+                " FROM pages p JOIN instances i ON i.id=p.instance_id"
+                f" WHERE p.closed_at IS NULL AND i.running=1 AND {cond}"
+                " ORDER BY i.profile, p.position",
+                args,
+            ).fetchall()
+        return {"pages": [
+            {"id": r["id"], "ctx": r["ctx"], "url": r["url"],
+             "title": r["title"] or r["url"], "position": r["position"]}
+            for r in rows
+        ]}
+
+    def ctl_focus_page(self, data: dict) -> dict:
+        """聚焦某页（page_id）：CDP 激活 target + niri 窗口带到前台。"""
+        page_id = int((data or {}).get("page_id") or 0)
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT i.port, i.pid, p.target_id, p.url, p.title FROM pages p"
+                " JOIN instances i ON i.id=p.instance_id"
+                " WHERE p.id=? AND p.closed_at IS NULL", (page_id,)
+            ).fetchone()
+        if not row or not row["port"] or not row["target_id"]:
+            raise ValueError(f"page {page_id} not found or instance down")
+        ctl.activate(row["port"], row["target_id"])
+        # CDP 只激活 tab；niri 窗口带到前台才算"切换"（与 CLI focus 一致）
+        if row["pid"]:
+            try:
+                title, url = row["title"] or "", row["url"] or ""
+                domain = url.split("//")[-1].split("/")[0]
+                mgr = wm.get()
+                for w in mgr.windows_for_instance(row["pid"]):
+                    wt = w.get("title") or ""
+                    if (title and wt == title) or (domain and domain in wt):
+                        mgr.focus_window(w["id"])
+                        break
+                else:
+                    wins = mgr.windows_for_instance(row["pid"])
+                    if wins:
+                        mgr.focus_window(wins[0]["id"])
+            except Exception:
+                pass  # niri 不可用不阻塞 CDP activate
+        return {"focused": page_id}
 
     def _open(self, data: dict) -> None:
         """拦截到的“新开 tab” → 在该上下文拉起 --app 窗口（并入已有实例）。"""

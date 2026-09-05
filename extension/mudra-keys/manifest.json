@@ -1,18 +1,30 @@
 {
   "manifest_version": 3,
   "name": "mudra-keys",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "mudra keyboard driving: letter hints, H/L history, qutebrowser-style status bar. Talks to mudrad (127.0.0.1:8899).",
-  "background": { "service_worker": "sw.js" },
-  "permissions": ["scripting", "activeTab", "storage"],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "storage"
+  ],
   "host_permissions": [
     "http://127.0.0.1:8899/*",
     "<all_urls>"
   ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["lib.js", "content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "lib.js",
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": false
     }

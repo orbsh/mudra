@@ -166,6 +166,18 @@ def cmd_reload(args) -> int:
     return _on_current(args, lambda p, t: ctl.reload(p, t))
 
 
+def cmd_dev(args: argparse.Namespace) -> int:
+    """扩展开发模式开关：spawn 前清 chromium 扩展缓存（源码直载的改动立即可见）。"""
+    with db.connect() as conn:
+        if args.on is None:
+            cur = db.get_state(conn, "dev_mode") == "1"
+            print(f"dev mode: {'on' if cur else 'off'}")
+            return 0
+        db.set_state(conn, "dev_mode", "1" if args.on else "0")
+    print(f"dev mode -> {'on' if args.on else 'off'}")
+    return 0
+
+
 def cmd_ctx(args: argparse.Namespace) -> int:
     """切换 / 显示当前上下文（situation 叶）。切换走 mudrad /ctx（后端广播面板）。"""
     with db.connect() as conn:
@@ -616,7 +628,11 @@ def main() -> int:
 
     x = sub.add_parser("ctx", help="set / show current context (situation leaf)")
     x.add_argument("ctx", nargs="?", help="context to switch to")
+    dv = sub.add_parser("dev", help="extension dev mode: clear chromium extension caches on spawn")
+    dv.add_argument("on", nargs="?", type=lambda s: s.lower() in ("on", "1", "true"),
+                    help="on / off (omit to show current)")
     x.set_defaults(fn=cmd_ctx)
+    dv.set_defaults(fn=cmd_dev)
 
     a = sub.add_parser("add", help="add a page to the running context instance")
     a.add_argument("url")

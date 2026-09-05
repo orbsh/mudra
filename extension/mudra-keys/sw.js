@@ -14,28 +14,51 @@ async function post(path, body) {
   return r.json();
 }
 
+const tabIdOf = (sender) => (sender && sender.tab ? sender.tab.id : undefined);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  console.log("[mudra-keys] msg", msg.type, "tab", sender.tab && sender.tab.id);
   (async () => {
     try {
       switch (msg.type) {
         case "open": {
           // hints / link activation: mudrad resolves ctx from sender tab id
-          const tabId = sender.tab ? sender.tab.id : msg.tabId;
-          const out = await post("/open", { url: msg.url, tabId });
+          const out = await post("/open", { url: msg.url, tabId: tabIdOf(sender) });
           sendResponse({ ok: true, ...out });
           break;
         }
-        case "back":
-        case "forward":
-          // history navigation happens page-side; SW only relays nothing.
-          // Kept as explicit no-op so content.js stays transport-uniform.
-          sendResponse({ ok: true });
-          break;
         case "status": {
-          // status bar push: page info -> mudrad log/tag endpoints later
-          const tabId = sender.tab ? sender.tab.id : msg.tabId;
-          await post("/ping", { tabId, title: msg.title, url: msg.url });
-          sendResponse({ ok: true });
+          // status bar data: ctx + page tags, one round trip
+          const out = await post("/ctx_status", {
+            tabId: tabIdOf(sender), url: msg.url,
+          });
+          sendResponse(out); // {ctx, tags}
+          break;
+        }
+        case "tag": {
+          // toggle a tag on the current page
+          const out = await post("/tag", {
+            tabId: tabIdOf(sender), url: msg.url, tag: msg.tag,
+          });
+          sendResponse(out); // {tag, action: added|removed}
+          break;
+        }
+        case "tags": {
+          // tag tree listing (for completion): {parent?} -> {tags: [...]}
+          const out = await post("/tags", { parent: msg.parent });
+          sendResponse(out);
+          break;
+        }
+        case "pages": {
+          // open page list across contexts (command `pages`)
+          const out = await post("/pages", { ctx: msg.ctx });
+          sendResponse(out);
+          break;
+        }
+        case "focus_page": {
+          // switch to another page via mudrad (CDP activate + WM raise)
+          const out = await post("/focus_page", { page_id: msg.page_id });
+          sendResponse(out);
           break;
         }
         default:
