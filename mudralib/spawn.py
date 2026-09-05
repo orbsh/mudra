@@ -47,7 +47,8 @@ def clear_extension_caches(name: str) -> None:
     密集开发期每次 spawn 前调用；代价只是冷启动。
     """
     d = profile_dir(name) / "Default"
-    for sub in ("Service Worker/ScriptCache", "Code Cache", "Cache"):
+    for sub in ("Service Worker/ScriptCache", "Code Cache", "Cache",
+                "Extension Scripts", "Extension Rules"):
         p = d / sub
         if p.exists():
             import shutil

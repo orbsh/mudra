@@ -14,11 +14,10 @@
   // ---- state ----
   let mode = "normal"; // normal | insert | hint | command
   let ctx = "";
+  let role = "page";   // page | console（mudrad 判定，前端不猜）
   let pageTags = [];   // 当前页已打 tag（mudrad 权威，本地只做显示缓存）
   let hintSession = null;
   let cmdApi = null;
-  // 控制台页面（mudra ui 总控面板）：扩展行为切换的开关
-  const isConsole = () => location.host === "127.0.0.1:9299" || location.host === "localhost:9299";
 
   const setMode = async (m) => { mode = m; if (m !== "command") await refreshBar(); };
   const scrollPct = () => {
@@ -41,13 +40,59 @@
     const r = await send({ type: "status", url: pageUrl() });
     if (r && r.ok !== false) {
       ctx = r.ctx || "";
+      role = r.role || "page";
       pageTags = r.tags || [];
+      await refreshBar(); // 状态到手才渲染（boot 时先渲染的是无 ctx 版）
     } else {
       flashBar("status: " + ((r && r.err) || "no response"));
     }
   };
 
+  // ---- open：按角色分叉（qutebrowser 式）----
+  // page 角色：输入 URL → /open
+  // console 角色：输入同时过滤现有 page 候选；Enter 选中候选 → focus_page，否则 → /open
+  function openOnPage(arg) {
+    if (!arg) return flashBar("usage: :open <url>");
+    return send({ type: "open", url: arg }).then((r) =>
+      flashBar(r.ok === false ? r.err || "open failed" : "open ok"));
+  }
+  async function openOnConsole(initial) {
+    const r = await send({ type: "pages" });
+    if (r.ok === false) return flashBar(r.err || "pages failed");
+    const pages = r.pages || [];
+    setMode("command");
+    cmdApi = await MudraBar.openCommand(
+      (q, api) => {
+        const s = (q || "").toLowerCase();
+        api.setItems(pages
+          .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
+          .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id })));
+      },
+      async (cand, raw, api) => {
+        api.close(); cmdApi = null; setMode("normal");
+        const q = (raw || "").trim();
+        if (cand && (!q || cand.label.slice(1).toLowerCase().startsWith(q.slice(0, 1)) === false)) {
+          // 选中候选 → 跳页
+          const res = await send({ type: "focus_page", page_id: cand.value });
+          return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
+        }
+        if (cand && !q.includes(" ") && pages.some((p) => p.id === cand.value)) {
+          const res = await send({ type: "focus_page", page_id: cand.value });
+          return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
+        }
+        // 没有匹配候选 → 当 URL 开
+        if (q) return openOnPage(q);
+      }
+    );
+    if (initial) {
+      // 把初始输入灌回输入框（:open foo → foo）
+      const input = document.getElementById("mudra-cmdinput");
+      if (input) { input.value = initial; input.dispatchEvent(new Event("input")); }
+    }
+  }
+
   // ---- commands（: 命令模式的目标；也是键绑定的目标）----
+  // run(arg) 按当前 role 分发——同一命令在不同页面不同行为。
   const COMMANDS = {
     hint:    { defaultKey: "f", desc: "link hints", run: () => setMode("hint").then(() => showHints().then((s) => { hintSession = s; })) },
     back:    { defaultKey: "h", desc: "history back", run: () => history.go(-1) },
@@ -55,7 +100,8 @@
     insert:  { defaultKey: "i", desc: "insert mode", run: () => setMode("insert") },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
-    open:    { defaultKey: "o", desc: "open url (mudrad)", run: (arg) => arg && send({ type: "open", url: arg }).then((r) => flashBar(r.ok === false ? r.err || "open failed" : "open ok")) },
+    open:    { defaultKey: "o", desc: "open url / filter pages (console)",
+               run: (arg) => role === "console" ? openOnConsole(arg) : openOnPage(arg) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     top:     { defaultKey: "g", desc: "scroll top", run: () => scrollTo({ top: 0 }) },
     bottom:  { defaultKey: "G", desc: "scroll bottom", run: () => scrollTo({ top: document.body.scrollHeight }) },
@@ -318,12 +364,12 @@
   const boot = async () => {
     await MudraBar.mount();
     await refreshBar();
-    if (!isConsole()) await syncStatus(); // console ui 页不属于任何 ctx，跳过反查
+    if (role !== "console") await syncStatus(); // console 页不属于任何 ctx，跳过反查
     addEventListener("scroll", refreshBar, { passive: true });
     // SPA 导航时 URL 变化 → 重拉状态
     let lastUrl = pageUrl();
     setInterval(async () => {
-      if (pageUrl() !== lastUrl) { lastUrl = pageUrl(); if (!isConsole()) await syncStatus(); }
+      if (pageUrl() !== lastUrl) { lastUrl = pageUrl(); if (role !== "console") await syncStatus(); }
     }, 1000);
   };
   if (document.readyState === "loading")

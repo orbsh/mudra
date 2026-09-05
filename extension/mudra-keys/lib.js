@@ -65,6 +65,12 @@ const MudraBar = {
       <span id="mudra-bar-left" style="display:flex;gap:8px;align-items:center"></span>
       <span id="mudra-bar-right" style="display:flex;gap:10px;align-items:center;overflow:hidden"></span>`;
     document.documentElement.appendChild(bar);
+    // 状态栏要在最外层：经典滚动条画在所有元素之上（z-index 压不住），
+    // 而滚动位置已在 bar 右侧显示 → 直接隐藏页面滚动条（滚轮/键盘滚动不受影响）。
+    const st = document.createElement("style");
+    st.id = "mudra-scrollbar-style";
+    st.textContent = "html { scrollbar-width: none !important; } html::-webkit-scrollbar { display: none !important; }";
+    document.documentElement.appendChild(st);
     this.el = bar;
     this.slots.left = bar.querySelector("#mudra-bar-left");
     this.slots.right = bar.querySelector("#mudra-bar-right");

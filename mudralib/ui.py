@@ -30,7 +30,7 @@ try:
 except ImportError:  # 面板依赖 websockets；缺失则 ui 命令报错
     websockets = None
 
-from . import ctl, db, wm
+from . import ctl, db, spawn, wm
 
 PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
 DIST = pathlib.Path(__file__).resolve().parent.parent / "ui" / "dist"
@@ -474,9 +474,11 @@ def launch(args: argparse.Namespace) -> int:
     url = f"http://127.0.0.1:{PANEL_PORT}/"
     udir = pathlib.Path.home() / ".local" / "share" / "mudra" / "panel-profile"
     udir.mkdir(parents=True, exist_ok=True)
+    # 控制台也跑 mudra-keys 扩展（角色 console：open 过滤现有 page 等）
+    ext_args = [f"--load-extension={e}" for e in spawn.DEFAULT_EXTENSIONS]
     proc = subprocess.Popen(
         ["chromium", f"--app={url}", f"--user-data-dir={udir}",
-         "--no-first-run", "--no-default-browser-check"],
+         "--no-first-run", "--no-default-browser-check", *ext_args],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )

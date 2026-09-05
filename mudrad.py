@@ -371,7 +371,15 @@ class Mudrad:
                                 (row["id"],),
                             )
                         ]
-        return {"ctx": ctx, "tags": tags}
+        return {"ctx": ctx, "tags": tags, "role": "console" if self._is_console(url) else "page"}
+
+    @staticmethod
+    def _is_console(url: str | None) -> bool:
+        """console ui（总控面板）页面判定——角色属于后端数据，前端不猜。"""
+        if not url:
+            return False
+        from mudralib.ui import PANEL_PORT
+        return url.startswith(f"http://127.0.0.1:{PANEL_PORT}/")
 
     def ctl_tag(self, data: dict) -> dict:
         """给页面打/摘 tag：{tabId|url, tag: 名称}，存在则摘除（toggle）。"""
