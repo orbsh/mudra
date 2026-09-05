@@ -364,14 +364,33 @@ def _ensure_mudrad() -> None:
     print("[mudra ui] started mudrad (holds panel services)")
 
 
+def _panel_window_ids() -> list[int]:
+    """已打开的面板窗口 id：niri 窗口 pid 的 cmdline 含 panel-profile（按进程身份识别，不依赖 title）。"""
+    ids = []
+    for w in wm.get().windows():
+        pid = w.get("pid")
+        try:
+            cmdline = (pathlib.Path("/proc") / str(pid) / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if b"panel-profile" in cmdline:
+            ids.append(w["id"])
+    return ids
+
+
 def launch(args: argparse.Namespace) -> int:
-    """`mudra ui`：确保 mudrad（持面板服务）在跑，spawn 浮动居中窗口载入面板。"""
+    """`mudra ui`：确保 mudrad（持面板服务）在跑；已有面板窗口则直接聚焦，否则 spawn。"""
     if websockets is None:
         print("panel requires 'websockets' python package")
         return 1
     if not DIST.exists():
         print(f"panel frontend not built: {DIST} (cd ui && npm run build)")
         return 1
+    existing = _panel_window_ids()
+    if existing:
+        wm.get().focus_window(existing[0])
+        print(f"mudra panel: focused existing window #{existing[0]}")
+        return 0
     _ensure_mudrad()
     if not _wait_port(PANEL_PORT) or not _wait_ws():
         print(f"panel services not up on :{PANEL_PORT}(+/ws)")
