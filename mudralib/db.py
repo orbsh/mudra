@@ -179,6 +179,21 @@ def page_upsert_by_target(
             (url, title, row["id"]),
         )
         return row["id"]
+    # 重开窗口 = 新 targetId。先找同实例同 URL 的已关闭页（最近优先），
+    # 命中则接管该行（换绑 target_id 并复活），不落新行。
+    closed = conn.execute(
+        "SELECT id FROM pages WHERE instance_id=? AND target_id IS NOT NULL"
+        " AND closed_at IS NOT NULL AND deleted_at IS NULL AND url=?"
+        " ORDER BY closed_at DESC LIMIT 1",
+        (inst_id, url),
+    ).fetchone()
+    if closed:
+        conn.execute(
+            "UPDATE pages SET target_id=?, title=?, closed_at=NULL, opened_at=?"
+            " WHERE id=?",
+            (target_id, title, int(time.time()), closed["id"]),
+        )
+        return closed["id"]
     conn.execute(
         "INSERT OR IGNORE INTO pages"
         "(instance_id,target_id,url,title,position,opened_at)"

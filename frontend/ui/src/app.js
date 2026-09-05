@@ -4,8 +4,6 @@
 // Solid 由 /shared/vendor/solid-bundle.js 提供（window.MudraSolid，与扩展共用同一份）。
 const { h, render, createSignal, createMemo, createEffect, For, Show } = window.MudraSolid;
 
-const MUDRAD_HTTP = "http://127.0.0.1:8899"; // 配置等少量 HTTP 直读（WS 只承载 op）
-
 // ---- WS client（请求/响应，id -> promise）----
 function makeClient() {
   const pending = new Map();
@@ -265,33 +263,11 @@ function App() {
     }, h("img", { src: s.data, alt: "" }));
   };
 
-  // 配置占位：只读展示 mudrad 生效配置（GET /config），编辑后续实现
-  const [cfgText, setCfgText] = createSignal(null);
-  const toggleCfg = () => {
-    if (cfgText() !== null) { setCfgText(null); return; }
-    fetch(`${MUDRAD_HTTP}/config`)
-      .then((r) => r.json())
-      .then(({ ok, config, err }) =>
-        setCfgText(ok ? JSON.stringify(config, null, 2) : `加载失败: ${err}`))
-      .catch((e) => setCfgText(`mudrad 不在线: ${e}`));
-  };
-  const cfgPane = () => h("div.cfg", [
-    h("div.cfg-note", "配置编辑占位 — 当前生效值（~/.config/mudra/config.kdl，只读）："),
-    h("pre.cfg-body", () => cfgText() ?? ""),
-  ]);
-
   // 开新窗口：底部地址栏已移除，用扩展的 :open 命令（console 角色过滤 page，兜底开 URL）
-  const [showCfg, setShowCfg] = createSignal(false);
   return h("div.panel", {
     onClick: () => popup() && popup().place === undefined && setPopup(null),
   }, () => [
-    h("header.hdr", [
-      hdrRow(),
-      h("button.b", { onClick: () => { setShowCfg(!showCfg()); toggleCfg(); } },
-        () => showCfg() ? "收起配置" : "配置"),
-      filts(),
-    ]),
-    h(Show, { when: showCfg() }, cfgPane),
+    h("header.hdr", [hdrRow(), filts()]),
     h("main.tree",
       () => h(For, { each: pageTree() }, (nd) => h(PageNode, { nd }))),
     h(Show, { when: popup() }, popupMenu),
