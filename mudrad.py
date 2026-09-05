@@ -120,6 +120,26 @@ class _InterceptHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默
         pass
 
+    def do_GET(self):
+        """GET /config：配置文件（~/.config/mudra/config.kdl）→ JSON。扩展启动时拉取。"""
+        if self.path == "/config":
+            from mudralib import config as config_mod
+            try:
+                payload = json.dumps({"ok": True, "config": config_mod.load()}).encode()
+                self.send_response(200)
+            except Exception as e:
+                payload = json.dumps({"ok": False, "err": f"config: {e}"}).encode()
+                self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
 
 class Mudrad:
     def __init__(self) -> None:

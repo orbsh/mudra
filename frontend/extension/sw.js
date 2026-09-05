@@ -70,3 +70,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })();
   return true; // async sendResponse
 });
+
+// ---- 配置拉取：扩展启动时 GET /config → chrome.storage.local ----
+// storage 优先级高于拉取值（:set 的运行时改键不被覆盖）：只写 defaults 里
+// 存在、且本地从未被 :set 改过的键（用 configSyncedAt 标记区分首轮）。
+async function syncConfig() {
+  try {
+    const r = await fetch(MUDRAD + "/config");
+    if (!r.ok) return;
+    const { ok, config } = await r.json();
+    if (!ok || !config) return;
+    const stored = await chrome.storage.local.get(null);
+    const patch = {};
+    for (const [k, v] of Object.entries(config)) {
+      if (!(k in stored) || stored[k] === undefined) patch[k] = v;
+    }
+    if (Object.keys(patch).length) await chrome.storage.local.set(patch);
+    await chrome.storage.local.set({ configSyncedAt: Date.now() });
+  } catch { /* mudrad 不在线：静默降级用本地 defaults */ }
+}
+
+chrome.runtime.onInstalled.addListener(syncConfig);
+chrome.runtime.onStartup.addListener(syncConfig);
+syncConfig(); // SW 每次冷启动都补一次（MV3 SW 频繁休眠，onStartup 不保证触发）
