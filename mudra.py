@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
-import signal
 import sqlite3
 import sys
 import time
@@ -64,85 +62,36 @@ def cmd_ls(args: argparse.Namespace) -> int:
     return 0
 
 
-def _pid_alive(pid: int) -> bool:
+def _ctl(path: str, body: dict) -> dict:
+    """CLI → mudrad 控制接口。窗口/实例/页面生命周期只由后端执行，CLI 只传话。"""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        f"http://127.0.0.1:8899{path}",
+        data=_json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
     try:
-        os.kill(pid, 0)  # 信号 0 = 只探存活
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return os.path.exists(f"/proc/{pid}")
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return _json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            err = _json.loads(e.read()).get("err", "")
+        except Exception:
+            err = e.reason
+        raise SystemExit(f"mudrad: {err}")
+    except urllib.error.URLError:
+        raise SystemExit("mudrad not running (start: mudrad run)")
 
 
 def cmd_open(args: argparse.Namespace) -> int:
-    now = int(time.time())
-    with db.connect() as conn:
-        s = conn.execute(
-            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
-        ).fetchone()
-        if s:
-            sid = s["id"]
-            inst = (
-                conn.execute(
-                    "SELECT * FROM instances WHERE id=? AND running=1", (s["instance_id"],)
-                ).fetchone()
-                if s["instance_id"]
-                else None
-            )
-        else:
-            cur = conn.execute(
-                "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
-                (args.name, f"web:{args.name}", now),
-            )
-            sid, inst, s = cur.lastrowid, None, {"id": cur.lastrowid, "instance_id": None}
-    if inst:
-        if _pid_alive(inst["pid"]):
-            print(f"session {args.name!r} already running (port {inst['port']})")
-            return 0
-        with db.connect() as conn:
-            conn.execute("UPDATE instances SET running=0 WHERE id=?", (inst["id"],))
-            conn.execute(
-                "UPDATE pages SET closed_at=? WHERE session_id=? AND closed_at IS NULL",
-                (int(time.time()), sid),
-            )
-            conn.commit()
-    # 复用 conf 预建的实例配置行(running=0),取 proxy/extensions
-    with db.connect() as conn:
-        irow = (
-            conn.execute(
-                "SELECT * FROM instances WHERE id=?", (s["instance_id"],)
-            ).fetchone()
-            if s and s["instance_id"]
-            else None
-        )
-    port = spawn.free_port(9200)
-    url = spawn.normalize_url(args.url)
-    proxy = irow["proxy"] if irow else None
-    ext = irow["extensions"] if irow and irow["extensions"] else None
-    pid, udir = spawn.launch(
-        args.name, url, port,
-        proxy=proxy,
-        extensions=ext.split(",") if ext else None,
-    )
-    if args.url:
-        _apply_site_width(url, pid)
-    with db.connect() as conn:
-        if irow:
-            conn.execute(
-                "UPDATE instances SET profile=?,port=?,pid=?,running=1 WHERE id=?",
-                (udir, port, pid, irow["id"]),
-            )
-            iid = irow["id"]
-        else:
-            cur = conn.execute(
-                "INSERT INTO instances(profile,port,pid,running,proxy,extensions)"
-                " VALUES(?,?,?,1,?,?)",
-                (udir, port, pid, proxy, ext),
-            )
-            iid = cur.lastrowid
-        conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
-    print(f"opened {args.url!r} in session {args.name!r} (port {port}, pid {pid})"
-          + (f" proxy={proxy}" if proxy else ""))
+    r = _ctl("/open", {"session": args.name, "url": args.url})
+    if r.get("mode") == "joined":
+        print(f"joined running instance of {args.name!r} (port {r['port']})")
+    else:
+        print(f"opened {args.url!r} in session {args.name!r}"
+              f" (port {r['port']}, pid {r['pid']})")
     print("pages 由 mudrad daemon 实时同步")
     return 0
 
@@ -274,89 +223,19 @@ def cmd_mode(args: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
-    with db.connect() as conn:
-        s = conn.execute(
-            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
-        ).fetchone()
-        inst = None
-        if s and s["instance_id"]:
-            inst = conn.execute(
-                "SELECT * FROM instances WHERE id=? AND running=1", (s["instance_id"],)
-            ).fetchone()
-    if not s:
-        print(f"no session {args.name!r}")
-        return 1
-    if not inst or not _pid_alive(inst["pid"]):
-        print(f"session {args.name!r} not running; use `mudra open` first")
-        return 1
-    url = spawn.normalize_url(args.url)
-    mgr = wm.get()
-    prev = mgr.focused_window_id() if args.bg else None
-    before = mgr.window_ids() if args.bg else None
-    ext = inst["extensions"] if inst["extensions"] else None
-    spawn.launch(
-        args.name, url, None,  # 无 debug 端口 → 并入已有实例的新 --app 窗口
-        proxy=inst["proxy"],
-        extensions=ext.split(",") if ext else None,
-    )
-    if args.bg:
-        assert before is not None
-        nwid = mgr.wait_for_new_window(before)
-        if nwid is not None and prev is not None:
-            import time
-            time.sleep(0.5)  # 等新窗抢焦落定，再还给旧窗
-            mgr.focus_window(prev)
-        print(f"added {url!r} to session {args.name!r} in BACKGROUND (focus kept on {prev})")
-    else:
-        _apply_site_width(url, inst["pid"])
-        print(f"added {url!r} to session {args.name!r} (new window in instance)")
+    r = _ctl("/add", {"session": args.name, "url": args.url})
+    print(f"added {args.url!r} to session {args.name!r}"
+          f" (new window in instance, port {r['port']})")
     return 0
 
 
 def cmd_close(args: argparse.Namespace) -> int:
-    with db.connect() as conn:
-        s = conn.execute(
-            "SELECT id,instance_id FROM sessions WHERE name=?", (args.name,)
-        ).fetchone()
-        if not s:
-            print(f"no session {args.name!r}")
-            return 1
-        inst = (
-            conn.execute(
-                "SELECT * FROM instances WHERE id=? AND running=1", (s["instance_id"],)
-            ).fetchone()
-            if s["instance_id"]
-            else None
-        )
-        if args.query:
-            # 按 tab 主动关闭：删除该页并关掉对应 target
-            if not inst or not _pid_alive(inst["pid"]):
-                print(f"session {args.name!r} not running")
-                return 1
-            cur = conn.execute(
-                "SELECT id,position,url,target_id FROM pages"
-                " WHERE session_id=? AND closed_at IS NULL AND url LIKE ?",
-                (s["id"], f"%{args.query}%"),
-            ).fetchone()
-            if not cur:
-                print(f"no open page in {args.name!r} matching {args.query!r}")
-                return 1
-            conn.execute("DELETE FROM pages WHERE id=?", (cur["id"],))  # 主动关 → 删除
-            conn.commit()
-            if cur["target_id"]:
-                ctl.close_target(inst["port"], cur["target_id"])
-            print(f"closed tab #{cur['position']} {cur['url']}")
-        else:
-            # 关整个 session
-            if inst and _pid_alive(inst["pid"]):
-                os.kill(inst["pid"], signal.SIGTERM)  # 主动关浏览器
-            conn.execute("DELETE FROM pages WHERE session_id=?", (s["id"],))
-            if inst:
-                conn.execute(
-                    "UPDATE instances SET running=0 WHERE id=?", (inst["id"],)
-                )
-            conn.commit()
-            print(f"closed session {args.name!r}")
+    if args.query:
+        r = _ctl("/close_page", {"session": args.name, "query": args.query})
+        print(f"closed tab {r['closed']}")
+    else:
+        _ctl("/close_session", {"session": args.name})
+        print(f"closed session {args.name!r}")
     return 0
 
 
@@ -443,28 +322,6 @@ def _focused_page(conn) -> dict | None:
         "SELECT * FROM pages WHERE target_id=? LIMIT 1",
         (page.get("targetId"),),
     ).fetchone()
-
-
-def _apply_site_width(url: str, pid: int) -> None:
-    """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用。"""
-    domain = _domain(url)
-    if not domain:
-        return
-    with db.connect() as conn:
-        w = conn.execute(
-            "SELECT proportion FROM site_widths WHERE site=?", (domain,)
-        ).fetchone()
-    if not w:
-        return
-    mgr = wm.get()
-    for _ in range(30):  # 等新窗落地并聚焦（新窗抢焦）
-        win = mgr.focused_window()
-        if win is not None and win.get("pid") == pid:
-            break
-        time.sleep(0.1)
-    time.sleep(0.2)
-    mgr.set_column_width(w["proportion"])
-    print(f"  applied remembered width {w['proportion']:.3f} for {domain}")
 
 
 def cmd_conf(args: argparse.Namespace) -> int:
@@ -696,11 +553,7 @@ def cmd_page(args) -> int:
     mgr = wm.get()
     wid = _window_for_page(row["pid"], page)
     if args.op == "close":
-        conn = db.connect()
-        conn.execute("DELETE FROM pages WHERE id=?", (page["id"],))
-        conn.commit()
-        if page["target_id"]:
-            ctl.close_target(port, page["target_id"])
+        _ctl("/close_page", {"session": name, "query": page["url"]})
         print(f"closed page {page['url']}")
         return 0
     if wid is None:

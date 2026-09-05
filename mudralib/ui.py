@@ -36,6 +36,20 @@ PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
 DIST = pathlib.Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
+def ctl_open(session: str, url: str) -> None:
+    """POST mudrad 控制接口 /open —— 开窗口统一由 mudrad 执行。"""
+    import urllib.request
+    req = urllib.request.Request(
+        "http://127.0.0.1:8899/open",
+        data=json.dumps({"session": session, "url": url}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        body = json.loads(r.read())
+    if not body.get("ok"):
+        raise RuntimeError(body.get("err", "open failed"))
+
+
 # ---------------------------------------------------------------- 数据查询
 # rank 轴 → emoji 图元（根名定轴）
 ROOT_AXIS = {"importance": "★", "quality": "♥", "urgency": "🔥"}
@@ -125,6 +139,11 @@ def _handle(msg: dict) -> str:
             elif op == "pages":
                 return _reply(msg, ok=True,
                               pages=_pages(conn, msg.get("session", "")))
+            elif op == "open":
+                # 开新 page 不在面板进程做——统一走 mudrad 控制接口：
+                # mudrad 是唯一开窗口者，开完经 CDP 同步写库并广播。
+                ctl_open(msg.get("session", ""), msg.get("url", ""))
+                return _reply(msg, ok=True)
             elif op == "set_tags":
                 _set_tags(conn, msg.get("page_id"), msg.get("tag_ids", []))
                 conn.commit()
@@ -150,24 +169,55 @@ def _handle(msg: dict) -> str:
         return _reply(msg, err=f"db connect: {e}")
 
 
-async def _ws_handler(ws) -> None:
-    async for raw in ws:
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        try:
-            async with asyncio.timeout(15):
-                reply = await asyncio.to_thread(_handle, msg)
-            await ws.send(reply)
-        except asyncio.TimeoutError:
+# ---------------------------------------------------------------- 广播
+# 面板客户端注册表：page 集变化（mudrad CDP 同步 / open / close）时推送，
+# 前端不做轮询。写侧任意线程，通过 loop.call_soon_threadsafe 投递。
+_CLIENTS: set = set()
+_LOOP = None  # asyncio loop 持有（_start_services 里赋值）
+
+
+def _broadcast(event: dict) -> None:
+    """向所有面板 WS 客户端推事件（线程安全）。"""
+    if _LOOP is None or not _CLIENTS:
+        return
+    payload = json.dumps(event)
+
+    async def _push():
+        dead = []
+        for ws in list(_CLIENTS):
             try:
-                await ws.send(_reply(msg, err="handler timeout"))
+                await ws.send(payload)
             except Exception:
-                pass
-        except (asyncio.CancelledError, ConnectionError, RuntimeError, OSError):
-            # 客户端断开/连接失效：清理退出，不让 handler 卡在 CLOSE-WAIT
-            break
+                dead.append(ws)
+        for ws in dead:
+            _CLIENTS.discard(ws)
+
+    _LOOP.call_soon_threadsafe(
+        lambda: asyncio.ensure_future(_push()))
+
+
+async def _ws_handler(ws) -> None:
+    _CLIENTS.add(ws)
+    try:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            try:
+                async with asyncio.timeout(15):
+                    reply = await asyncio.to_thread(_handle, msg)
+                await ws.send(reply)
+            except asyncio.TimeoutError:
+                try:
+                    await ws.send(_reply(msg, err="handler timeout"))
+                except Exception:
+                    pass
+            except (asyncio.CancelledError, ConnectionError, RuntimeError, OSError):
+                # 客户端断开/连接失效：清理退出，不让 handler 卡在 CLOSE-WAIT
+                break
+    finally:
+        _CLIENTS.discard(ws)
 
 
 def _set_tags(conn, page_id, tag_ids) -> None:
@@ -297,10 +347,14 @@ def _start_services() -> None:
     t = threading.Thread(target=_serve_static, daemon=True)
     t.start()
     # websockets v16: serve 是 async context manager，跑在独立线程 event loop
+    global _LOOP
+
     def run():
         import asyncio
 
         async def main():
+            global _LOOP
+            _LOOP = asyncio.get_running_loop()
             async with websockets.serve(
                 _ws_handler, "127.0.0.1", PANEL_PORT + 1,
                 ping_interval=15,   # 每个连接周期性 ping，探测死连接

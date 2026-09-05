@@ -21,6 +21,8 @@ function makeClient() {
         const { resolve, reject } = pending.get(m.id);
         pending.delete(m.id);
         m.ok ? resolve(m) : reject(new Error(m.err || "ws error"));
+      } else if (!m.id && client.onEvent) {
+        client.onEvent(m); // 服务端主动推送（pages_changed 等）
       }
     };
     ws.onclose = () => setTimeout(connect, 800);
@@ -34,7 +36,12 @@ function makeClient() {
       ws.send(JSON.stringify({ id, op, ...args }));
     });
   }
-  return { call, ready };
+  const client = {
+    call,
+    ready,
+    onEvent: null, // 服务端主动推送（无 id 的消息）回调，App 层赋值
+  };
+  return client;
 }
 const client = makeClient();
 
@@ -86,6 +93,12 @@ createEffect(() => {
   loadPages();
 });
 load().catch((e) => console.warn(e));
+
+// 服务端推送：mudrad 在 page 集变化（新开/关闭/标题更新）时广播 pages_changed，
+// 前端收到后重取当前会话页面——不做轮询。
+client.onEvent = (ev) => {
+  if (ev.event === "pages_changed") loadPages().catch(() => {});
+};
 
 // ---- page 树 ----
 const pageTree = createMemo(() => {

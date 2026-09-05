@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import signal
 import sys
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from mudralib import cdp, db, spawn, ui
+from mudralib import cdp, ctl, db, spawn, ui, wm
 
 # 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，mudrad 拉起 --app 窗口。
 _INTERCEPT_PORT = 8899
@@ -58,18 +60,47 @@ def _acquire_lock() -> None:
 
 
 class _InterceptHandler(BaseHTTPRequestHandler):
-    """页面注入脚本的 sendBeacon POST /open → mudrad._open 拉 --app 窗口。"""
+    """控制接口（唯一执行点：窗口/实例/页面生命周期全部在此完成）：
+    POST /open   {session,url}     实例活着 → 并入 --app 窗口；死了 → 新建实例（带 debug 端口）
+    POST /add    {session,url,bg}  并入 --app 窗口（会话必须活着）
+    POST /close_page   {session,query}   关一个 tab（target 关闭事件触发统一收尾）
+    POST /close_session {session}        关整个实例（kill → _mark_down 收尾）
+    """
     def do_POST(self):
         mudrad = self.server.mudrad
+        ok, err, out = True, None, {}
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
-            mudrad._open(body)
+            if self.path == "/open":
+                out = mudrad.ctl_open(body)
+            elif self.path == "/add":
+                out = mudrad.ctl_add(body)
+            elif self.path == "/close_page":
+                out = mudrad.ctl_close_page(body)
+            elif self.path == "/close_session":
+                out = mudrad.ctl_close_session(body)
+            else:
+                ok, err = False, f"unknown endpoint {self.path}"
         except Exception as e:
-            print(f"[mudrad] intercept err: {e}")
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
+            ok, err = False, str(e)
+            print(f"[mudrad] ctl err: {e}")
+        if ok:
+            payload = json.dumps({"ok": True, **out}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+        else:
+            payload = json.dumps({"ok": False, "err": err}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
 
     def log_message(self, *args):  # 静默
         pass
@@ -110,6 +141,152 @@ class Mudrad:
             ws.close()
         except Exception as e:
             print(f"[mudrad] inject {session}/{target_id} err: {e}")
+
+    # ---- 控制接口动词（唯一执行点：窗口 spawn / 进程 kill / 实例与页面生命周期写库都在这里）----
+    def _inst_for_session(self, conn, session: str) -> dict | None:
+        return conn.execute(
+            "SELECT i.*, s.id AS sid FROM sessions s"
+            " LEFT JOIN instances i ON i.id=s.instance_id WHERE s.name=?",
+            (session,),
+        ).fetchone()
+
+    def _ensure_session(self, conn, session: str) -> int:
+        """会话不存在则建（open 语义允许隐式创建）。"""
+        r = conn.execute("SELECT id FROM sessions WHERE name=?", (session,)).fetchone()
+        if r:
+            return r["id"]
+        cur = conn.execute(
+            "INSERT INTO sessions(name,workspace,created_at) VALUES(?,?,?)",
+            (session, f"web:{session}", int(time.time())),
+        )
+        return cur.lastrowid
+
+    def ctl_open(self, data: dict) -> dict:
+        """会话活着 → 并入 --app 窗口；死了/不存在 → 新建实例（debug 端口 + 复用 conf 配置）。"""
+        session = (data or {}).get("session")
+        url = spawn.normalize_url((data or {}).get("url") or "")
+        if not session or not url:
+            raise ValueError("need session and url")
+        with db.connect() as conn:
+            inst = self._inst_for_session(conn, session)
+            sid = self._ensure_session(conn, session)
+        if inst and inst["running"] and self._pid_alive(inst["pid"]):
+            # 并入已有实例
+            spawn.launch(session, url, None,
+                         proxy=inst["proxy"],
+                         extensions=inst["extensions"].split(",") if inst["extensions"] else None)
+            print(f"[mudrad] open -> --app joined: {url} (session {session})")
+            return {"mode": "joined", "port": inst["port"]}
+        # 新实例：复用 conf 预建行（proxy/extensions），否则新建
+        port = spawn.free_port(9200)
+        proxy = inst["proxy"] if inst else None
+        ext = (inst["extensions"] if inst else None) or None
+        pid, udir = spawn.launch(session, url, port,
+                                 proxy=proxy,
+                                 extensions=ext.split(",") if ext else None)
+        with db.connect() as conn:
+            if inst and inst["id"]:
+                conn.execute(
+                    "UPDATE instances SET profile=?,port=?,pid=?,running=1 WHERE id=?",
+                    (udir, port, pid, inst["id"]),
+                )
+                iid = inst["id"]
+            else:
+                cur = conn.execute(
+                    "INSERT INTO instances(profile,port,pid,running,proxy,extensions)"
+                    " VALUES(?,?,?,1,?,?)",
+                    (udir, port, pid, proxy, ext),
+                )
+                iid = cur.lastrowid
+            conn.execute("UPDATE sessions SET instance_id=? WHERE id=?", (iid, sid))
+            conn.commit()
+        print(f"[mudrad] open -> new instance :{port} pid {pid} (session {session})")
+        self._apply_site_width(url, pid)
+        return {"mode": "new", "port": port, "pid": pid}
+
+    def _apply_site_width(self, url: str, pid: int) -> None:
+        """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用（开窗副作用统一在后端）。"""
+        domain = (url or "").split("//")[-1].split("/")[0]
+        if not domain:
+            return
+        with db.connect() as conn:
+            w = conn.execute(
+                "SELECT proportion FROM site_widths WHERE site=?", (domain,)
+            ).fetchone()
+        if not w:
+            return
+        mgr = wm.get()
+        for _ in range(30):  # 等新窗落地并聚焦（新窗抢焦）
+            win = mgr.focused_window()
+            if win is not None and win.get("pid") == pid:
+                break
+            time.sleep(0.1)
+        time.sleep(0.2)
+        mgr.set_column_width(w["proportion"])
+        print(f"[mudrad] applied remembered width {w['proportion']:.3f} for {domain}")
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, TypeError):
+            return False
+        except PermissionError:
+            return os.path.exists(f"/proc/{pid}")
+
+    def ctl_add(self, data: dict) -> dict:
+        """并入已有实例的 --app 窗口（会话必须活着，否则报错而非静默新开）。"""
+        session = (data or {}).get("session")
+        url = spawn.normalize_url((data or {}).get("url") or "")
+        if not session or not url:
+            raise ValueError("need session and url")
+        with db.connect() as conn:
+            inst = self._inst_for_session(conn, session)
+        if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
+            raise ValueError(f"session {session!r} not running; use open first")
+        ext = inst["extensions"] or None
+        spawn.launch(session, url, None,
+                     proxy=inst["proxy"],
+                     extensions=ext.split(",") if ext else None)
+        print(f"[mudrad] add -> --app joined: {url} (session {session})")
+        return {"mode": "joined", "port": inst["port"]}
+
+    def ctl_close_page(self, data: dict) -> dict:
+        """关一个 tab：只关 CDP target，标 closed 由 targetDestroyed 事件统一走后端收尾。"""
+        session = (data or {}).get("session")
+        query = (data or {}).get("query") or ""
+        if not session or not query:
+            raise ValueError("need session and query")
+        with db.connect() as conn:
+            inst = self._inst_for_session(conn, session)
+            if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
+                raise ValueError(f"session {session!r} not running")
+            sid = self._ensure_session(conn, session)
+            cur = conn.execute(
+                "SELECT id,position,url,target_id FROM pages"
+                " WHERE session_id=? AND closed_at IS NULL AND url LIKE ?",
+                (sid, f"%{query}%"),
+            ).fetchone()
+            if not cur:
+                raise ValueError(f"no open page in {session!r} matching {query!r}")
+        if cur["target_id"]:
+            ctl.close_target(inst["port"], cur["target_id"])
+        print(f"[mudrad] close page #{cur['position']} {cur['url']} (session {session})")
+        return {"closed": cur["url"]}
+
+    def ctl_close_session(self, data: dict) -> dict:
+        """关整个会话实例：kill 浏览器进程；running=0 / pages closed 由 _mark_down 统一收尾。"""
+        session = (data or {}).get("session")
+        if not session:
+            raise ValueError("need session")
+        with db.connect() as conn:
+            inst = self._inst_for_session(conn, session)
+        if not inst or not inst["running"] or not self._pid_alive(inst["pid"]):
+            raise ValueError(f"session {session!r} not running")
+        os.kill(inst["pid"], signal.SIGTERM)
+        print(f"[mudrad] close session {session} (pid {inst['pid']})")
+        return {"closed": session}
 
     def _open(self, data: dict) -> None:
         """拦截到的“新开 tab” → 在该会话拉起 --app 窗口（并入已有实例）。"""
@@ -181,6 +358,7 @@ class Mudrad:
                         (p_id, cid),
                     )
             conn.commit()
+        ui._broadcast({"event": "pages_changed", "session_id": sid})
 
     def _close_target(self, inst_id: int, target_id: str) -> None:
         with db.connect() as conn:
@@ -193,6 +371,7 @@ class Mudrad:
                 (int(time.time()), sid, target_id),
             )
             conn.commit()
+        ui._broadcast({"event": "pages_changed", "session_id": sid})
 
     def _mark_down(self, inst_id: int) -> None:
         with db.connect() as conn:
