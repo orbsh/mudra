@@ -1,4 +1,4 @@
-"""chromium 实例拉起 / 端口分配."""
+"""chromium instance launching / port allocation."""
 
 from __future__ import annotations
 
@@ -27,24 +27,27 @@ def profile_dir(name: str) -> pathlib.Path:
     return PROFILES / name
 
 
-# 自带扩展：仓库内维护（extension/），chromium 直接从源码目录加载（纯 JS 零构建）
+# bundled extension: maintained in-repo (extension/); chromium loads it directly from the source directory (pure JS, zero build)
 EXT_ROOT = db.DB.parent / "extensions"
 REPO_FRONTEND = pathlib.Path(__file__).resolve().parent.parent / "frontend"
-DEFAULT_EXTENSIONS = [str(REPO_FRONTEND)]  # 扩展根 = frontend/，manifest.json 在根，共享库在 shared/
+DEFAULT_EXTENSIONS = [str(REPO_FRONTEND)]  # extension root = frontend/; manifest.json at the root, shared libs in shared/
 
 
 def normalize_url(url: str) -> str:
-    """无 scheme 则补 https://。bare host/域名 → https；要 http/IP 请自写 scheme。"""
+    """Add https:// when there is no scheme. Bare hosts/domains -> https; write the
+    scheme yourself for http/IP."""
     if "://" not in url:
         return "https://" + url
     return url
 
 
 def clear_extension_caches(name: str) -> None:
-    """清掉 chromium 对 --load-extension 目录文件的缓存（ScriptCache/Code Cache/HTTP Cache）。
+    """Clear chromium's caches of --load-extension directory files (ScriptCache/Code Cache/HTTP Cache).
 
-    源码目录直载的扩展改文件后 chromium 不会自动重读（会跑旧 SW/content script），
-    密集开发期每次 spawn 前调用；代价只是冷启动。
+    For extensions loaded straight from a source directory, chromium does not
+    re-read changed files automatically (it would run the old SW/content scripts),
+    so call this before every spawn during heavy development; the only cost is a
+    cold start.
     """
     d = profile_dir(name) / "Default"
     for sub in ("Service Worker/ScriptCache", "Code Cache", "Cache",
@@ -57,11 +60,14 @@ def clear_extension_caches(name: str) -> None:
 
 
 def launch(name, url, port, *, proxy=None, extensions=None, dev_mode=False) -> tuple[int, str]:
-    """拉起一个 chromium --app 窗口；返回 (pid, profile_dir).
+    """Launch a chromium --app window; return (pid, profile_dir).
 
-    port 非 None → 新实例（带 remote-debugging）；port=None → 并入已有实例（无 debug 端口）。
-    proxy 非 None → --proxy-server；extensions=None 用默认(mudra-keys)，否则按给定列表。
-    dev_mode → spawn 前清扩展缓存（改扩展源码后立即可见，冷启动换即时生效）。
+    port not None -> new instance (with remote-debugging); port=None -> join an
+    existing instance (no debug port).
+    proxy not None -> --proxy-server; extensions=None uses the default (mudra-keys),
+    otherwise the given list.
+    dev_mode -> clear extension caches before spawn (changes to extension sources
+    become visible immediately; a cold start buys instant effect).
     """
     udir = profile_dir(name)
     udir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +95,6 @@ def launch(name, url, port, *, proxy=None, extensions=None, dev_mode=False) -> t
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,  # 脱离父进程组 + 不占父管道，避免 mudra CLI 退出时被连带或挂起
+        start_new_session=True,  # leave the parent process group + keep parent pipes free, so the child isn't killed or hung when the mudra CLI exits
     )
     return proc.pid, str(udir)

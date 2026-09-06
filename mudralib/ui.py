@@ -1,15 +1,16 @@
-"""mudra 管理面板 — 独立 HTTP/WS 服务 + 拉起浮动窗口。
+"""mudra management panel -- standalone HTTP/WS service + floating window launcher.
 
-launcher 的 `` p `` 只管「热路径单动作」；tag 森林的一切（多选、批量指派、
-评分轴可视化）交给这个富 UI 面板。面板与 launcher 共用同一 sqlite 与
-`_focused_page()` 语义层，无状态分叉。
+The launcher's `` p `` handles only hot-path single actions; everything around the tag
+forest (multi-select, batch assignment, rank-axis visualization) lives in this rich UI
+panel. The panel and the launcher share the same sqlite and the `_focused_page()`
+semantics layer -- no state fork.
 
-- `launch()`：`mudra ui` — 起 HTTP(静态 dist) + WS，spawn chromium --app
-  载入面板 URL，niri 转浮动并居中。面板窗口与 launcher 类型无关。
-- WS 协议（JSON，请求/响应）：op in
-    forest        → tag 森林（根 + 完整路径 children）
-    pages [ctx] → 某上下文开页（含其 tag 集与 special 轴值）
-    set_tags {page_id, tag_ids} → 整组替换该页 tag（面板批量指派用）
+- `launch()`: `mudra ui` -- starts HTTP (static dist) + WS, spawns chromium --app with
+  the panel URL, floats and centers the window via niri. The panel window is launcher-agnostic.
+- WS protocol (JSON, request/response): op is one of
+    forest        -> tag forest (roots + children with full paths)
+    pages [ctx]   -> a context's open pages (with tag sets and special-axis values)
+    set_tags {page_id, tag_ids} -> replace the page's whole tag set (panel batch assignment)
     focus/close {page_id}
 """
 
@@ -27,19 +28,19 @@ import time
 try:
     import websockets
     import websockets.server
-except ImportError:  # 面板依赖 websockets；缺失则 ui 命令报错
+except ImportError:  # the panel depends on websockets; the ui command errors out without it
     websockets = None
 
 from . import ctl, db, spawn, wm
 
 PANEL_PORT = int(os.environ.get("MUDRA_PANEL_PORT", "9299"))
-# 零构建：panel 静态根 = frontend/ui/ 源码目录本身（源码即产物，无 vite）
+# Zero-build: the panel static root is the frontend/ui/ source directory itself (source is the artifact, no vite)
 FRONTEND = pathlib.Path(__file__).resolve().parent.parent / "frontend"
-DIST = FRONTEND / "ui"   # 静态根 = ui/；/shared/ 挂 FRONTEND/shared（扩展与 panel 共用）
+DIST = FRONTEND / "ui"   # static root = ui/; /shared/ is mounted from FRONTEND/shared (shared by extension and panel)
 
 
 def ctl_open(url: str, ctx: str | None = None) -> None:
-    """POST mudrad 控制接口 /open —— 开窗口统一由 mudrad 执行（ctx 缺省=当前上下文）。"""
+    """POST to the mudrad control endpoint /open -- window opens are executed exclusively by mudrad (ctx defaults to the current context)."""
     import urllib.request
     body = {"url": url}
     if ctx:
@@ -56,7 +57,7 @@ def ctl_open(url: str, ctx: str | None = None) -> None:
 
 
 def ctl_ctx(ctx: str) -> None:
-    """POST mudrad /ctx —— 切换当前上下文。"""
+    """POST to mudrad /ctx -- switch the current context."""
     import urllib.request
     req = urllib.request.Request(
         "http://127.0.0.1:8899/ctx",
@@ -69,13 +70,13 @@ def ctl_ctx(ctx: str) -> None:
         raise RuntimeError(resp.get("err", "ctx switch failed"))
 
 
-# ---------------------------------------------------------------- 数据查询
-# rank 轴 → emoji 图元（根名定轴）
+# ---------------------------------------------------------------- data queries
+# rank axis -> emoji glyph (axis is determined by the root name)
 ROOT_AXIS = {"importance": "★", "quality": "♥", "urgency": "🔥"}
 
 
 def _forest(conn) -> list[dict]:
-    """tag 森林：任意深度递归树。每个节点带完整 path、rank 轴、children。"""
+    """Tag forest: recursive tree of arbitrary depth. Each node carries a full path, rank axis, and children."""
     rows = conn.execute(
         "SELECT id,parent_id,name,alias,isolated,required,rank FROM tag"
         " WHERE deleted=0 ORDER BY id"
@@ -110,7 +111,7 @@ def _forest(conn) -> list[dict]:
 
 
 def _pages(conn, ctx: str) -> list[dict]:
-    """某上下文（situation 叶 → 实例）的页：未删全显示（open + closed）。"""
+    """Pages of a context (situation leaf -> instance): all undeleted pages shown (open + closed)."""
     rows = conn.execute(
         "SELECT p.id,p.url,p.title,p.position,p.target_id,p.parent_id,p.opened_at,p.closed_at"
         " FROM pages p JOIN instances i ON i.id=p.instance_id"
@@ -133,7 +134,7 @@ def _pages(conn, ctx: str) -> list[dict]:
 
 
 def _contexts(conn) -> list[str]:
-    """situation 树的叶名列表（面板顶部上下文切换）。"""
+    """Leaf-name list of the situation tree (top-of-panel context switcher)."""
     rows = conn.execute(
         "SELECT t.name FROM tag t WHERE t.parent_id="
         " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation') ORDER BY t.id"
@@ -141,9 +142,9 @@ def _contexts(conn) -> list[str]:
     return [r["name"] for r in rows]
 
 
-# ---------------------------------------------------------------- WS 循环
+# ---------------------------------------------------------------- WS loop
 def _reply(msg, **kw):
-    """构造带请求 id 的响应（前端按 id 匹配 pending promise）。"""
+    """Build a response carrying the request id (the frontend matches pending promises by id)."""
     resp = {"ok": False, "err": "unknown"} if not kw.get("ok") else {}
     resp.update(kw)
     if msg.get("id"):
@@ -152,8 +153,9 @@ def _reply(msg, **kw):
 
 
 def _handle(msg: dict) -> str:
-    """同步处理单个 WS 请求：DB 连接 + 操作 + 关闭，全程在同一线程。
-    返回 _reply 生成的 JSON 字符串；所有阻塞 IO（CDP/niri）也在此线程，不冻结 asyncio loop。"""
+    """Handle a single WS request synchronously: DB connect + work + close, all in one thread.
+    Returns the JSON string built by _reply; all blocking IO (CDP/niri) also runs in this
+    thread so the asyncio loop never freezes."""
     op = msg.get("op")
     try:
         conn = db.connect()
@@ -166,8 +168,8 @@ def _handle(msg: dict) -> str:
                 return _reply(msg, ok=True,
                               pages=_pages(conn, msg.get("ctx") or db.current_context(conn)))
             elif op == "open":
-                # 开新 page 不在面板进程做——统一走 mudrad 控制接口：
-                # mudrad 是唯一开窗口者，开完经 CDP 同步写库并广播。
+                # New pages are NOT opened in the panel process -- always via the mudrad control API:
+                # mudrad is the sole window opener; after opening it syncs the DB via CDP and broadcasts.
                 ctl_open(msg.get("url", ""), msg.get("ctx"))
                 return _reply(msg, ok=True)
             elif op == "set_ctx":
@@ -207,15 +209,15 @@ def _handle(msg: dict) -> str:
         return _reply(msg, err=f"db connect: {e}")
 
 
-# ---------------------------------------------------------------- 广播
-# 面板客户端注册表：page 集变化（mudrad CDP 同步 / open / close）时推送，
-# 前端不做轮询。写侧任意线程，通过 loop.call_soon_threadsafe 投递。
+# ---------------------------------------------------------------- broadcast
+# Panel client registry: pushes when the page set changes (mudrad CDP sync / open / close);
+# the frontend does no polling. Writers may be any thread, delivered via loop.call_soon_threadsafe.
 _CLIENTS: set = set()
-_LOOP = None  # asyncio loop 持有（_start_services 里赋值）
+_LOOP = None  # holds the asyncio loop (assigned in _start_services)
 
 
 def _broadcast(event: dict) -> None:
-    """向所有面板 WS 客户端推事件（线程安全）。"""
+    """Push an event to all panel WS clients (thread-safe)."""
     if _LOOP is None or not _CLIENTS:
         return
     payload = json.dumps(event)
@@ -252,7 +254,7 @@ async def _ws_handler(ws) -> None:
                 except Exception:
                     pass
             except (asyncio.CancelledError, ConnectionError, RuntimeError, OSError):
-                # 客户端断开/连接失效：清理退出，不让 handler 卡在 CLOSE-WAIT
+                # Client disconnected / connection dead: clean up and exit so the handler does not sit in CLOSE-WAIT
                 break
     finally:
         _CLIENTS.discard(ws)
@@ -276,7 +278,7 @@ def _set_tags(conn, page_id, tag_ids) -> None:
 
 
 def _focus(conn, page_id) -> None:
-    """聚焦某页：CDP 激活目标 + 定位其 niri 窗口（按 title/域名）并聚焦。"""
+    """Focus a page: activate the CDP target + locate its niri window (by title/domain) and focus it."""
     row = conn.execute(
         "SELECT i.port,p.target_id,p.url,p.title FROM pages p"
         " JOIN instances i ON i.id=p.instance_id"
@@ -299,7 +301,7 @@ def _focus(conn, page_id) -> None:
         if (title and wt == title) or (domain and domain in wt):
             mgr.focus_window(w["id"])
             return
-    # 退化：聚焦该实例任一窗口
+    # Fallback: focus any window of the instance
     for w in mgr.windows_for_instance(rid["pid"]):
         mgr.focus_window(w["id"])
         break
@@ -307,7 +309,7 @@ def _focus(conn, page_id) -> None:
 
 
 def _create_tag(conn, parent_id, name) -> int:
-    """在 parent_id 下新建一个 tag 节点（胶囊 + 添加子级）。返回新节点 id。"""
+    """Create a new tag node under parent_id (capsule + add-child). Returns the new node id."""
     name = (name or "").strip()
     if not name:
         raise ValueError("tag name required")
@@ -328,7 +330,7 @@ def _create_tag(conn, parent_id, name) -> int:
 
 
 def _shot(conn, page_id) -> str | None:
-    """抓页窗口截图（CDP Page.captureScreenshot）→ base64 data URL。"""
+    """Capture a page window screenshot (CDP Page.captureScreenshot) -> base64 data URL."""
     row = conn.execute(
         "SELECT i.port,p.target_id FROM pages p"
         " JOIN instances i ON i.id=p.instance_id"
@@ -339,7 +341,7 @@ def _shot(conn, page_id) -> str | None:
     return ctl.screenshot(row["port"], row["target_id"])
 
 
-# ---------------------------------------------------------------- 服务
+# ---------------------------------------------------------------- services
 def _serve_static() -> None:
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -348,7 +350,7 @@ def _serve_static() -> None:
             super().__init__(*a, directory=str(DIST), **kw)
 
         def translate_path(self, path):
-            # /shared/* → frontend/shared/（跨静态根的公共库引用）
+            # /shared/* -> frontend/shared/ (cross-static-root shared library references)
             p = super().translate_path(path)
             if path.startswith("/shared/"):
                 rel = pathlib.PurePosixPath(path).relative_to("/shared")
@@ -360,7 +362,7 @@ def _serve_static() -> None:
 
         def end_headers(self):
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache")  # dist 每次构建都换，禁缓存免硬刷新
+            self.send_header("Cache-Control", "no-cache")  # dist changes every build; disable cache to avoid hard refreshes
             super().end_headers()
 
         def do_GET(self):
@@ -373,12 +375,12 @@ def _serve_static() -> None:
 
 
 def _start_services() -> None:
-    """在后台线程里启动 HTTP(静态) + WS。幂等：端口被占视为已启动。"""
+    """Start HTTP (static) + WS in background threads. Idempotent: a busy port counts as already started."""
     if websockets is None:
         return
     t = threading.Thread(target=_serve_static, daemon=True)
     t.start()
-    # websockets v16: serve 是 async context manager，跑在独立线程 event loop
+    # websockets v16: serve is an async context manager running on a separate thread event loop
     global _LOOP
 
     def run():
@@ -389,9 +391,9 @@ def _start_services() -> None:
             _LOOP = asyncio.get_running_loop()
             async with websockets.serve(
                 _ws_handler, "127.0.0.1", PANEL_PORT + 1,
-                ping_interval=15,   # 每个连接周期性 ping，探测死连接
-                ping_timeout=10,    # ping 无响应 → 判定死连接 → 服务端回收（治 CLOSE-WAIT 堆积）
-                max_queue=64,       # 单连接读队列上限，防慢客户端无限堆积
+                ping_interval=15,   # periodic ping per connection to detect dead ones
+                ping_timeout=10,    # no ping response -> considered dead -> server reaps it (fixes CLOSE-WAIT pileup)
+                max_queue=64,       # per-connection read queue cap; keeps slow clients from piling up unbounded
             ):
                 await asyncio.Future()  # run forever
 
@@ -413,7 +415,7 @@ def _wait_port(port: int, timeout: float = 8.0) -> bool:
 
 
 def _wait_ws(timeout: float = 8.0) -> bool:
-    """等 WS 端口可做握手（不产生 handshake 噪音，区别于 _wait_port 的裸 TCP）。"""
+    """Wait until the WS port can complete a handshake (no handshake noise, unlike _wait_port's bare TCP)."""
     import asyncio
 
     async def probe() -> bool:
@@ -434,10 +436,10 @@ def _wait_ws(timeout: float = 8.0) -> bool:
 
 
 def _ensure_mudrad() -> None:
-    """确保 mudrad 守护进程在跑（它持有面板 /ui + /ws 服务）。没跑就拉起来。"""
+    """Make sure the mudrad daemon is running (it hosts the panel /ui + /ws services); start it if not."""
     try:
         subprocess.run(["pgrep", "-f", "mudrad.py"], capture_output=True, check=True)
-        return  # 已有 mudrad
+        return  # mudrad already running
     except subprocess.CalledProcessError:
         pass
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -451,7 +453,7 @@ def _ensure_mudrad() -> None:
 
 
 def _panel_window_ids() -> list[int]:
-    """已打开的面板窗口 id：niri 窗口 pid 的 cmdline 含 panel-profile（按进程身份识别，不依赖 title）。"""
+    """Ids of open panel windows: the niri window pid's cmdline contains panel-profile (identified by process identity, not title)."""
     ids = []
     for w in wm.get().windows():
         pid = w.get("pid")
@@ -465,7 +467,7 @@ def _panel_window_ids() -> list[int]:
 
 
 def launch(args: argparse.Namespace) -> int:
-    """`mudra ui`：确保 mudrad（持面板服务）在跑；已有面板窗口则直接聚焦，否则 spawn。"""
+    """`mudra ui`: ensure mudrad (which hosts the panel services) is running; focus the existing panel window if any, else spawn."""
     if websockets is None:
         print("panel requires 'websockets' python package")
         return 1
@@ -484,7 +486,7 @@ def launch(args: argparse.Namespace) -> int:
     url = f"http://127.0.0.1:{PANEL_PORT}/"
     udir = pathlib.Path.home() / ".local" / "share" / "mudra" / "panel-profile"
     udir.mkdir(parents=True, exist_ok=True)
-    # 控制台也跑 mudra-keys 扩展（角色 console：open 过滤现有 page 等）
+    # The console also runs the mudra-keys extension (role console: open filters existing pages, etc.)
     ext_args = [f"--load-extension={e}" for e in spawn.DEFAULT_EXTENSIONS]
     proc = subprocess.Popen(
         ["chromium", f"--app={url}", f"--user-data-dir={udir}",
@@ -492,7 +494,7 @@ def launch(args: argparse.Namespace) -> int:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    # 固定窗（平铺），不自转浮动：用户直接切 workspace / 正常窗口切换过去即可。
+    # Keep the window tiled (do not float it): the user can just switch workspaces or use normal window switching.
     time.sleep(1.5)
     print(f"mudra panel: {url} (pid {proc.pid})")
     return 0

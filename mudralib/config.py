@@ -1,21 +1,27 @@
-"""mudra 配置：KDL（kdl-py 1.2.0，tabatkins/kdlpy v2 语法）→ 与扩展
-MudraConfig.defaults 同键名的扁平 dict。
+"""mudra config: KDL (kdl-py 1.2.0, tabatkins/kdlpy v2 syntax) -> a flat dict
+whose key names mirror the extension's MudraConfig.defaults.
 
-两层来源：仓库根目录 config.kdl 是随代码分发的默认配置；
-~/.config/mudra/config.kdl 存在时按键覆盖合并（用户层 > 仓库层）。
+Two layers of sources: the repo-root config.kdl ships with the code as the
+default config; when ~/.config/mudra/config.kdl exists it overrides keys
+(user layer > repo layer).
 
-结构约定：顶层节点是配置组（bar/hint/keys/scroll/command/server），组内
-每个子节点是一项配置——单参数为值，keys 组的子节点名是按键、参数是命令。
-keys 的合并是按键级（用户层改一个键不动其他键）。
+Structure convention: top-level nodes are config groups (bar/hint/keys/scroll/
+command/server); each child node within a group is one setting — a single
+argument is the value, and in the keys group the child node name is the key
+and the argument is the command. The keys group merges per-key (changing one
+key in the user layer leaves other keys untouched).
 
-kdl-py 1.2.0（tabatkins/kdlpy，KDL v2 语法）实测怪癖（收敛在本模块）：
-- 数字解析为 float（`height 16` → 16.0）→ 对整型配置键强转 int；
-- 裸标识符不能做参数值（`j scrollDown` 报错）→ 字符串值必须加引号；
-- `#true` 不支持（# 是 tag 语法），裸 `true`/`false` → bool。
+Observed quirks of kdl-py 1.2.0 (tabatkins/kdlpy, KDL v2 syntax), all
+consolidated in this module:
+- numbers parse as float (`height 16` -> 16.0) -> int-coerce integer config keys;
+- bare identifiers cannot serve as argument values (`j scrollDown` errors)
+  -> string values must be quoted;
+- `#true` is unsupported (# is tag syntax); bare `true`/`false` -> bool.
 
-优先级（扩展侧）：chrome.storage.local（:set 运行时改键）> 用户层 kdl >
-仓库默认 kdl > 内置 defaults。
-server 组当前是占位（mudrad 端口仍由 mudrad.py 参数决定），解析但不消费。
+Priority (extension side): chrome.storage.local (:set runtime key changes) >
+user-layer kdl > repo default kdl > built-in defaults.
+The server group is currently a placeholder (the mudrad port is still decided
+by mudrad.py arguments) — parsed but not consumed.
 """
 
 from __future__ import annotations
@@ -24,11 +30,12 @@ import pathlib
 
 import kdl
 
-# 仓库默认配置（随代码分发）；用户层放 ~/.config/mudra/config.kdl，按键覆盖
+# repo default config (ships with the code); the user layer goes to
+# ~/.config/mudra/config.kdl and overrides per key
 DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "config.kdl"
 USER_PATH = pathlib.Path.home() / ".config" / "mudra" / "config.kdl"
 
-# 组名 → 扁平键名映射（与 frontend/shared/lib.js MudraConfig.defaults 对齐）
+# group name -> flat key name mapping (aligned with frontend/shared/lib.js MudraConfig.defaults)
 _BAR_KEYS = {
     "font": "statusFont",
     "height": "statusHeight",
@@ -44,23 +51,24 @@ _SCROLL_KEYS = {"stepLines": "scrollStepLines", "overlapLines": "pageOverlapLine
 _COMMAND_KEYS = {"maxCandidates": "maxCandidates"}
 _UI_KEYS = {"thumbnails": "thumbnails"}
 
-# 整型配置键（kdl-py 把数字解析成 float，这些键强转回 int）
+# integer config keys (kdl-py parses numbers as float; these keys are coerced back to int)
 _INT_KEYS = {"statusHeight", "hintFontSize", "scrollStepLines",
              "pageOverlapLines", "maxCandidates"}
 
-# 占位组：解析保留结构，暂不消费
+# placeholder groups: parsed to keep the structure valid, not consumed yet
 _PLACEHOLDER_GROUPS = ("server",)
 
 
 def _coerce(key: str, value):
-    """数值怪癖收敛：整型键 float → int。"""
+    """Consolidate the numeric quirk: float -> int for integer keys."""
     if key in _INT_KEYS and isinstance(value, float) and value.is_integer():
         return int(value)
     return value
 
 
 def parse(text: str) -> dict:
-    """KDL 文本 → 扁平配置 dict。未知组/键忽略（前向兼容：新字段旧后端不炸）。"""
+    """KDL text -> flat config dict. Unknown groups/keys are ignored (forward
+    compatibility: new fields don't break old backends)."""
     out: dict = {}
     doc = kdl.parse(text)
     for group in doc.nodes:
@@ -78,14 +86,16 @@ def parse(text: str) -> dict:
                 if child.args:
                     kb[child.name] = _coerce(child.name, child.args[0])
         elif g in _PLACEHOLDER_GROUPS:
-            continue  # 占位：结构合法即可，暂不消费
+            continue  # placeholder: structure only needs to be valid, not consumed yet
     return out
 
 
 def load() -> dict:
-    """仓库默认 config.kdl + 用户层 ~/.config/mudra/config.kdl 按键覆盖合并。
+    """Merge the repo default config.kdl with the user layer ~/.config/mudra/config.kdl,
+    overriding per key.
 
-    两层都缺失 → {}（全用扩展内置 defaults）；用户层解析错误向上抛（带文件位置）。
+    If both layers are missing -> {} (the extension's built-in defaults are used
+    throughout); user-layer parse errors propagate up (with file location).
     """
     out: dict = {}
     for path, required in ((DEFAULT_PATH, True), (USER_PATH, False)):
@@ -96,6 +106,6 @@ def load() -> dict:
         parsed = parse(path.read_text())
         kb = parsed.pop("keybindings", None)
         out.update(parsed)
-        if kb:  # keys 按键级合并：用户层改一个键不动其他键
+        if kb:  # per-key merge for keys: changing one key in the user layer leaves other keys untouched
             out.setdefault("keybindings", {}).update(kb)
     return out

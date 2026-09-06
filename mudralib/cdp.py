@@ -1,6 +1,7 @@
-"""最小 WebSocket(RFC6455, 客户端) + CDP 助手.
+"""Minimal WebSocket (RFC6455, client-side) + CDP helpers.
 
-仅标准库。够 CDP 通信用：文本帧、continuation、ping/pong、close。
+Stdlib only. Just enough for CDP communication: text frames, continuation,
+ping/pong, close.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class WsError(Exception):
 
 
 class WsClient:
-    """最小 RFC6455 客户端（只做 client→server 掩码、文本/二进制）。"""
+    """Minimal RFC6455 client (only client->server masking, text/binary frames)."""
 
     def __init__(self, url: str, timeout: float = 10.0):
         self.sock = self._connect(url, timeout)
@@ -95,7 +96,7 @@ class WsClient:
         self.send_frame(0x1, s.encode())
 
     def recv_text(self, timeout: float | None = None) -> str:
-        """读到一条完整文本消息；自动回 ping、处理 continuation/close。"""
+        """Read one full text message; replies to pings and handles continuation/close automatically."""
         self.sock.settimeout(timeout)
         out = bytearray()
         while True:
@@ -109,7 +110,7 @@ class WsClient:
                 out += payload
                 if fin:
                     return out.decode()
-            # 其他 opcode 忽略
+            # ignore other opcodes
 
     def close(self) -> None:
         try:
@@ -123,17 +124,18 @@ class WsClient:
 
 
 def get_browser_ws(port: int, timeout: float = 5.0) -> str:
-    """从 /json/version 拿 browser-level CDP websocket 地址。"""
+    """Get the browser-level CDP websocket address from /json/version."""
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
         return json.loads(r.read())["webSocketDebuggerUrl"]
 
 
 def call(ws: WsClient, method: str, params: dict | None = None, _id: int = 0):
-    """发一条 CDP 命令，阻塞等到同 id 的响应返回。"""
+    """Send a CDP command and block until the response with the same id returns."""
     cmd = {"id": _id, "method": method, "params": params or {}}
     ws.send_text(json.dumps(cmd))
     while True:
         msg = json.loads(ws.recv_text())
         if msg.get("id") == _id:
             return msg
-        # 其他消息（事件 / 别的响应）在这里丢弃；事件流由 mudrad 自行接管
+        # other messages (events / other responses) are dropped here; the event
+        # stream is taken over by mudrad itself

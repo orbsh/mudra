@@ -1,14 +1,17 @@
-"""WM 扩展接口：mudra 核心只经 WmExt 调用窗口/列宽操作，不感知具体 WM。
+"""WM extension interface: the mudra core calls window/column-width operations only
+through WmExt, without knowing the concrete WM.
 
-niri 实现走 `niri msg` IPC（socket 自动发现）。hyprland 未来按同一接口补实现。
-启用清单由配置决定（默认 niri），接口与选型见 docs/EXTENSIONS.md。
+The niri implementation uses the `niri msg` IPC (socket auto-discovered). hyprland will
+be added later behind the same interface. The enabled set is config-driven (default niri);
+see docs/EXTENSIONS.md for the interface and rationale.
 
-已验证的 niri 事实：
-- window JSON 含 pid -> windows_for_instance 按 chromium main pid 匹配。
-- focus 必须 `focus-window --id <id>`（位置参数报错）。
-- move `move-window-to-workspace <ref>`，数字 arg 是下标非 id；命名 ws 需 niri 声明。
-- 列宽：`set-column-width <N%>`(百分比)或 `-N`(像素减)；不支持 1/2 分数。
-- 列宽读取：聚焦窗 `layout.tile_size[0]`；output 逻辑宽 `focused-output.logical.width`。
+Verified niri facts:
+- window JSON includes pid -> windows_for_instance matches on the chromium main pid.
+- focus requires `focus-window --id <id>` (positional args error out).
+- move is `move-window-to-workspace <ref>`; the numeric arg is an index, not an id; named
+  workspaces must be declared in the niri config.
+- column width: `set-column-width <N%>` (percent) or `-N` (pixel reduction); 1/2 fractions unsupported.
+- column width read: focused window `layout.tile_size[0]`; output logical width `focused-output.logical.width`.
 """
 
 from __future__ import annotations
@@ -22,63 +25,63 @@ import time
 
 
 class WmExt(abc.ABC):
-    """窗口枚举/聚焦/移动/列宽——核心侧的 WM 抽象。"""
+    """Window enumeration/focus/move/column width -- the core-side WM abstraction."""
 
     @abc.abstractmethod
     def windows(self) -> list[dict]:
-        """当前所有窗口。"""
+        """All current windows."""
 
     @abc.abstractmethod
     def windows_for_instance(self, pid: int) -> list[dict]:
-        """属于某实例(=chromium main pid)的窗口。"""
+        """Windows belonging to an instance (= chromium main pid)."""
 
     @abc.abstractmethod
     def window_ids(self) -> set[int]:
-        """所有窗口 id 的集合(后台打开用集合差辨认新窗)。"""
+        """Set of all window ids (set-difference is used to spot new windows opened in background)."""
 
     @abc.abstractmethod
     def focused_window_id(self) -> int | None:
-        """当前聚焦窗口 id。"""
+        """Id of the currently focused window."""
 
     @abc.abstractmethod
     def focused_window(self) -> dict | None:
-        """当前聚焦窗口的完整 JSON。"""
+        """Full JSON of the currently focused window."""
 
     @abc.abstractmethod
     def focus_window(self, wid: int) -> None:
-        """聚焦一个窗口(需 id 形态)。"""
+        """Focus a window (expects an id-shaped ref)."""
 
     @abc.abstractmethod
     def move_to_workspace(self, ref: str) -> None:
-        """把聚焦窗口移到工作区 ref(名字或下标)。"""
+        """Move the focused window to workspace ref (name or index)."""
 
     @abc.abstractmethod
     def focus_workspace(self, ref: str) -> None:
-        """切到/创建工作区 ref。"""
+        """Switch to / create workspace ref."""
 
     @abc.abstractmethod
     def active_workspace(self) -> int:
-        """当前活动工作区 idx（move-window-to-workspace 的 ref 接受 idx）。"""
+        """Index of the active workspace (the move-window-to-workspace ref accepts an idx)."""
 
     @abc.abstractmethod
     def workspace_of_window(self, wid: int) -> int | None:
-        """窗口所在工作区 idx。"""
+        """Index of the workspace a window is on."""
 
     @abc.abstractmethod
     def float_and_center(self) -> None:
-        """把聚焦窗口转浮动并居中（管理面板用）。"""
+        """Float the focused window and center it (used by the management panel)."""
 
     @abc.abstractmethod
     def wait_for_new_window(self, before: set[int], timeout: float = 8.0) -> int | None:
-        """等一个(开窗前不存在)的新窗口出现，返回其 id(后台打开用)。"""
+        """Wait for a new window (absent before the open) to appear; return its id (used for background opens)."""
 
     @abc.abstractmethod
     def set_column_width(self, ratio: float) -> None:
-        """把聚焦列设成输出宽度的 ratio(0..1)。"""
+        """Set the focused column to ratio (0..1) of the output width."""
 
     @abc.abstractmethod
     def current_col_width(self) -> float:
-        """读聚焦列当前宽度比例(0..1): tile_size[0] / output 逻辑宽。"""
+        """Read the focused column's current width ratio (0..1): tile_size[0] / output logical width."""
 
 
 def _niri_socket() -> str | None:
@@ -100,7 +103,7 @@ def _niri_msg(args: list[str]) -> subprocess.CompletedProcess:
 
 
 class NiriExt(WmExt):
-    """niri 实现：走 niri msg IPC。"""
+    """niri implementation: via niri msg IPC."""
 
     def windows(self) -> list[dict]:
         r = _niri_msg(["-j", "windows"])
@@ -140,7 +143,7 @@ class NiriExt(WmExt):
         _niri_msg(["action", "center-window"])
 
     def active_workspace(self) -> int:
-        """当前活动工作区的 idx（供 move-window-to-workspace 用，ref 接受 idx）。"""
+        """Index of the active workspace (for move-window-to-workspace; the ref accepts an idx)."""
         r = _niri_msg(["-j", "workspaces"])
         if r.returncode != 0:
             raise RuntimeError(f"niri workspaces: {r.stderr.strip()}")
@@ -150,7 +153,7 @@ class NiriExt(WmExt):
         raise RuntimeError("no focused workspace")
 
     def workspace_of_window(self, wid: int) -> int | None:
-        """窗口所在工作区的 idx；查不到返回 None。"""
+        """Index of the workspace a window is on; None if not found."""
         for w in self.windows():
             if w["id"] == wid:
                 return w.get("workspace_id")
@@ -181,7 +184,7 @@ class NiriExt(WmExt):
         return tile_w / out_w
 
 
-# 列宽档位（niri preset-column-widths 梯度）
+# Column-width snap bands (niri preset-column-widths gradient)
 SNAP_BANDS: tuple[tuple[float, str], ...] = (
     (1 / 3, "1/3"),
     (1 / 2, "1/2"),
@@ -191,7 +194,7 @@ SNAP_BANDS: tuple[tuple[float, str], ...] = (
 
 
 def snap_column_width(ratio: float) -> tuple[float, str]:
-    """把任意比例吸到最近档位，返回 (比例, 档位字符串)。"""
+    """Snap any ratio to the nearest band; return (ratio, band string)."""
     band = min(SNAP_BANDS, key=lambda b: abs(b[0] - ratio))
     return band
 
@@ -200,7 +203,7 @@ _instance: WmExt | None = None
 
 
 def get() -> WmExt:
-    """当前启用的 WM backend(默认 niri；未来按配置选)。"""
+    """The currently enabled WM backend (default niri; config-selectable in the future)."""
     global _instance
     if _instance is None:
         _instance = NiriExt()

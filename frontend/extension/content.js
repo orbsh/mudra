@@ -1,6 +1,6 @@
-// mudra-keys content script: 模式机 normal/hint/insert/command（vimium 式），
-// 字母 hints、滚动命令（含数字前缀百分比跳转）、insert 模式焦点管理、
-// 状态栏、命令模式（:）、可配置键绑定。
+// mudra-keys content script: mode machine normal/hint/insert/command (vimium-style),
+// letter hints, scroll commands (including numeric-prefix percent jumps), insert-mode focus
+// management, status bar, command mode (:), and configurable keybindings.
 // Link opening / tag / page ops go through sw.js -> mudrad (tabId routing, ctx resolved there).
 (() => {
   if (window.__mudraKeys) return;
@@ -15,16 +15,16 @@
   // ---- state ----
   let mode = "normal"; // normal | hint | insert | command
   let ctx = "";
-  let role = "page";   // page | console（mudrad 判定，前端不猜）
-  let pageTags = [];   // 当前页已打 tag（mudrad 权威，本地只做显示缓存）
-  let hintSession = null;   // {overlay, nodes} 链接 hints
-  let inputHintSession = null; // {overlay, nodes} insert 模式的输入框选择
+  let role = "page";   // page | console (decided by mudrad, the frontend does not guess)
+  let pageTags = [];   // tags on the current page (mudrad is authoritative; local is display cache only)
+  let hintSession = null;   // {overlay, nodes} link hints
+  let inputHintSession = null; // {overlay, nodes} input picker in insert mode
   let cmdApi = null;
-  let numPrefix = "";       // 数字前缀（30g 百分比跳转）
+  let numPrefix = "";       // numeric prefix (30g percent jump)
 
   const setMode = async (m) => {
     mode = m;
-    // 模式切换必须同步焦点：离开 insert 时 blur，防止焦点滞留输入框吞 Esc
+    // Mode switches must sync focus: blur when leaving insert so a lingering input focus does not swallow Esc
     if (m !== "insert" && document.activeElement && isEditable(document.activeElement))
       document.activeElement.blur();
     await refreshBar();
@@ -42,26 +42,26 @@
       title: document.title.slice(0, 60),
       url: location.host + location.pathname,
       scroll: scrollPct(),
-      count: numPrefix || undefined, // 数字前缀输入中（30g）
+      count: numPrefix || undefined, // numeric prefix being typed (30g)
     });
   };
 
-  // 状态数据从 mudrad 拉取（导航/定时），失败静默（mudrad 不在时 bar 仍可用）
+  // Status data is fetched from mudrad (on navigation / timer); failures are silent (the bar still works without mudrad)
   const syncStatus = async () => {
     const r = await send({ type: "status", url: pageUrl() });
     if (r && r.ok !== false) {
       ctx = r.ctx || "";
       role = r.role || "page";
       pageTags = r.tags || [];
-      await refreshBar(); // 状态到手才渲染（boot 时先渲染的是无 ctx 版）
+      await refreshBar(); // render only once status arrives (boot first renders a ctx-less version)
     } else {
       flashBar("status: " + ((r && r.err) || "no response"));
     }
   };
 
-  // ---- open：按角色分叉（qutebrowser 式）----
-  // page 角色：输入 URL → /open
-  // console 角色：输入同时过滤现有 page 候选；Enter 选中候选 → focus_page，否则 → /open
+  // ---- open: branches by role (qutebrowser-style) ----
+  // page role: type a URL -> /open
+  // console role: typing also filters existing page candidates; Enter on a candidate -> focus_page, otherwise -> /open
   function openOnPage(arg) {
     if (!arg) return flashBar("usage: :open <url>");
     return send({ type: "open", url: arg }).then((r) =>
@@ -81,11 +81,11 @@
       cmdApi = null; await setMode("normal");
       const q = (raw || "").trim();
       if (cand) {
-        // 有选中候选 → 跳页（Tab 补全或 ↑↓ 选中）
+        // a selected candidate -> jump to the page (via Tab completion or arrow selection)
         const res = await send({ type: "focus_page", page_id: cand.value });
         return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
       }
-      // 没有匹配候选 → 当 URL 开
+      // no matching candidate -> open as a URL
       if (q) return openOnPage(q);
     };
     setMode("command");
@@ -98,7 +98,7 @@
   }
 
   // ---- commands ----
-  // run(arg, opts)：opts = {count}（数字前缀）、{newTab}（F 变体）
+  // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
   const COMMANDS = {
     hint:    { defaultKey: "f", desc: "link hints", run: (_a, o) => startHints(false, o) },
     hintNew: { defaultKey: "F", desc: "link hints (open in new window)", run: (_a, o) => startHints(true, o) },
@@ -118,13 +118,13 @@
     open:    { defaultKey: "o", desc: "open url / filter pages (console)",
                run: (arg) => role === "console" ? openOnConsole(arg) : openOnPage(arg) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
-    set:     { defaultKey: null, desc: ":set <key> <value>（如 set scrollStepLines 5）", run: (arg) => runSet(arg) },
+    set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
 
-  // ---- :set <key> <value>：写 chrome.storage.local（扩展本地配置，非 mudrad 全局）----
-  // keybindings 例外：set keybindings.j=scrollDown 形式（点号定位子键）。
+  // ---- :set <key> <value>: writes chrome.storage.local (extension-local config, not mudrad global) ----
+  // keybindings is special-cased: set keybindings.j=scrollDown form (dot notation targets a subkey).
   async function runSet(arg) {
-    // 三种形态：bare=显示配置；"key value" 或 "key=value"（keybindings.u=pageUp 常为单 token）
+    // Three forms: bare = show config; "key value" or "key=value" (keybindings.u=pageUp is often a single token)
     arg = (arg || "").trim();
     if (!arg) {
       const cfg = await MudraConfig.all();
@@ -146,12 +146,12 @@
     }
     if (!(key in MudraConfig.defaults)) return flashBar(`unknown key: ${key}`);
     let val;
-    try { val = JSON.parse(raw); } catch { val = raw; } // 数字/布尔/字符串自动判型
+    try { val = JSON.parse(raw); } catch { val = raw; } // auto-type numbers/booleans/strings
     await MudraConfig.set({ [key]: val });
     return flashBar(`${key} = ${JSON.stringify(val)}`);
   }
 
-  // 键绑定解析：配置 JSON 的 keybindings[key]=commandName 覆盖 defaultKey
+  // Keybinding resolution: config JSON keybindings[key]=commandName overrides defaultKey
   async function keyToCommand(key) {
     const cfg = await MudraConfig.all();
     const map = cfg.keybindings || {};
@@ -162,7 +162,7 @@
     return null;
   }
 
-  // ---- 滚动实现 ----
+  // ---- scrolling implementation ----
   async function scrollLines(dir, o) {
     const cfg = await MudraConfig.all();
     const line = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
@@ -182,7 +182,7 @@
     scrollBy({ top: dir * (innerHeight - overlap) });
     await refreshBar();
   }
-  // 数字前缀 + g：有前缀跳百分比（30g → 30%），无前缀回顶部
+  // Numeric prefix + g: with a prefix jump to a percentage (30g -> 30%), without it back to top
   async function scrollToPctOrTop(o) {
     if (o.count != null) {
       const h = document.documentElement.scrollHeight - innerHeight;
@@ -191,7 +191,7 @@
     await refreshBar();
   }
 
-  // ---- command mode（: 进入；bar 变输入栏，候选项向上展开过滤）----
+  // ---- command mode (enter with :; bar becomes an input, candidates expand upward and filter) ----
   function filterCmd(q) {
     if (!cmdApi) return;
     q = (q || "").replace(/^:/, "");
@@ -210,15 +210,15 @@
   async function pickCmd(cand, raw, api) {
     cmdApi = null;
     await setMode("normal");
-    if (!cand) return; // Esc / 空
+    if (!cand) return; // Esc / empty
     const q = (raw || "").replace(/^:/, "").trim();
     const [name, ...rest] = q.split(/\s+/);
     const c = COMMANDS[cand.value] || COMMANDS[name];
     if (!c) return flashBar(`no such command: ${name}`);
     if (!c.run.length && rest.length) return flashBar(`:${cand.value} takes no argument`);
     await c.run(rest.join(" "), {});
-    // 不统一 refreshBar：会盖掉命令自己的 flashBar 消息（如 :set 的配置回显）。
-    // 需要刷新的命令（scroll 等）内部已自行调用。
+    // No blanket refreshBar here: it would clobber the command's own flashBar message (e.g. the :set config echo).
+    // Commands that need a refresh (scroll etc.) call it internally already.
   }
 
   const enterCommand = async () => {
@@ -227,7 +227,7 @@
     filterCmd(":");
   };
 
-  // ---- pages 命令：mudrad 页列表 → 候选过滤 → focus_page ----
+  // ---- pages command: mudrad page list -> candidate filtering -> focus_page ----
   async function showPages() {
     const r = await send({ type: "pages" });
     if (r.ok === false) return flashBar(r.err || "pages failed");
@@ -247,11 +247,11 @@
         await flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
       }
     );
-    // 初始列表
+    // initial list
     cmdApi.setItems(pages.map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id })));
   }
 
-  // ---- hints（链接/可点元素）----
+  // ---- hints (links / clickable elements) ----
   const HINT_ATTR = "data-mudra-hint";
   const clickable = () => {
     const els = document.querySelectorAll(
@@ -265,7 +265,7 @@
     });
   };
 
-  // 字母序列：hintChars 池 + 短码优先（首字母尽量落在池首，单手区）
+  // Letter sequences: hintChars pool + short codes first (initials bias toward the pool head, the one-hand zone)
   function hintStrings(n, chars) {
     const out = [];
     let len = 1;
@@ -281,7 +281,7 @@
     return out;
   }
 
-  // vimium 式 hint：逐字符前缀过滤，唯一匹配立即激活
+  // vimium-style hints: char-by-char prefix filtering; a unique match activates immediately
   async function startHints(newWindow) {
     const c = await MudraConfig.all();
     const els = clickable();
@@ -317,13 +317,13 @@
     const typed = hintSession.typed;
     const matches = nodes.filter((n) => n.seq.startsWith(typed));
     if (typed && matches.length === 1 && matches[0].seq === typed) {
-      return activate(matches[0].el, hintSession.newWindow); // 唯一完整匹配 → 激活
+      return activate(matches[0].el, hintSession.newWindow); // unique full match -> activate
     }
-    if (matches.length === 0) return hideHints(); // 全部滤光 → 退出
+    if (matches.length === 0) return hideHints(); // all filtered out -> exit
     for (const n of nodes) {
       const on = n.seq.startsWith(typed);
       n.span.style.display = on ? "" : "none";
-      // 高亮已敲入部分
+      // highlight the already-typed portion
       n.span.textContent = on ? n.seq : n.seq;
     }
   }
@@ -333,9 +333,9 @@
     const a = el.closest("a");
     const href = a?.href;
     if (!newWindow && href && a.hash && a.pathname === location.pathname && a.search === location.search) {
-      location.hash = a.hash; // 同页锚点原地跳，不开新窗
+      location.hash = a.hash; // same-page anchor jump in place, no new window
     } else if (href && /^https?:/.test(href)) {
-      send({ type: "open", url: href }); // mudrad 拉新 --app 窗
+      send({ type: "open", url: href }); // mudrad pulls up a new --app window
     } else {
       el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     }
@@ -347,7 +347,7 @@
     setMode("normal");
   }
 
-  // ---- insert 模式：自动聚焦输入框；多个输入框用 hint 选择 ----
+  // ---- insert mode: auto-focus the input; with multiple inputs, pick via hints ----
   async function startInsert() {
     const inputs = [...document.querySelectorAll("input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, [contenteditable=true]")]
       .filter((el) => {
@@ -357,7 +357,7 @@
       });
     if (inputs.length === 0) return flashBar("no input on page");
     if (inputs.length === 1) return enterInsert(inputs[0]);
-    // 多个输入框 → hint 选择
+    // multiple inputs -> pick via hints
     const c = await MudraConfig.all();
     const seqs = hintStrings(inputs.length, c.hintChars.split(""));
     const overlay = document.createElement("div");
@@ -407,12 +407,12 @@
     setMode("insert");
   }
 
-  // ---- tag 提示条（按 t 呼出，选字母打 tag，Esc 取消）----
+  // ---- tag prompt bar (summon with t, press a letter to tag, Esc cancels) ----
   let tagPrompt = null;
   async function showTagPrompt() {
     const roots = await send({ type: "tags" });
     if (!roots.tags || !roots.tags.length) { await flashBar("no tags"); return; }
-    // 一级根 + 各自首层子节点平铺：根大写、子小写（够用即可，深树后面迭代）
+    // Flatten top-level roots + their first-level children: roots uppercase, children lowercase (good enough; deep trees iterate later)
     const items = [];
     for (const root of roots.tags) {
       items.push({ seq: root[0].toUpperCase(), tag: root });
@@ -452,27 +452,27 @@
     setTimeout(refreshBar, 1500);
   }
 
-  // ---- key handling：单一状态机，每模式一个分支 ----
+  // ---- key handling: a single state machine with one branch per mode ----
   const isEditable = (t) =>
     t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
   document.addEventListener("keydown", async (e) => {
-    // command 模式：输入框自己处理（lib.js 内 stopPropagation），这里只兜底
+    // command mode: the input handles itself (stopPropagation inside lib.js); this is only a fallback
     if (mode === "command") return;
 
-    // insert 模式：Esc 返回 normal（blur 由 setMode 统一处理），其余全放行
+    // insert mode: Esc returns to normal (blur handled uniformly in setMode); everything else passes through
     if (mode === "insert") {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setMode("normal"); }
       return;
     }
 
-    // 非 insert 模式下焦点落在可编辑元素：只拦 Esc（可能从 insert 残留），其余放行
+    // Focus on an editable element outside insert mode: intercept only Esc (possibly leftover from insert), let the rest through
     if (isEditable(e.target)) {
       if (e.key === "Escape") { e.target.blur(); setMode("normal"); }
       return;
     }
 
-    // hint 选择态（链接 hint 或 输入框 hint）共用一套按键
+    // Hint-selection state (link hints or input hints) shares one key set
     if (mode === "hint") {
       e.preventDefault();
       if (e.key === "Escape") {
@@ -487,22 +487,22 @@
       return;
     }
 
-    // ---- normal 模式 ----
-    // 数字前缀累积（30g 百分比跳转）
+    // ---- normal mode ----
+    // Numeric prefix accumulation (30g percent jump)
     if (/^[0-9]$/.test(e.key)) {
       e.preventDefault();
       numPrefix = (numPrefix + e.key).replace(/^0+(?=.)/, "");
-      await refreshBar(); // 状态栏显示已敲数字
+      await refreshBar(); // show the typed digits in the status bar
       return;
     }
 
-    // : 进入命令模式
+    // : enters command mode
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === ":") {
       e.preventDefault();
       return enterCommand();
     }
 
-    // 键位 → 命令（可配置）；数字前缀作为 count 传给支持它的命令
+    // key -> command (configurable); the numeric prefix is passed as count to commands that support it
     const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
     if (plain) {
       const count = numPrefix ? parseInt(numPrefix, 10) : null;
@@ -512,7 +512,7 @@
         e.preventDefault();
         COMMANDS[name].run("", { count });
       } else {
-        refreshBar(); // 无效键清掉数字前缀显示
+        refreshBar(); // an invalid key clears the numeric-prefix display
       }
     }
   }, true);
@@ -521,9 +521,9 @@
   const boot = async () => {
     await MudraBar.mount();
     await refreshBar();
-    if (role !== "console") await syncStatus(); // console 页不属于任何 ctx，跳过反查
+    if (role !== "console") await syncStatus(); // the console page belongs to no ctx; skip the reverse lookup
     addEventListener("scroll", refreshBar, { passive: true });
-    // SPA 导航时 URL 变化 → 重拉状态
+    // On SPA navigation the URL changes -> refetch status
     let lastUrl = pageUrl();
     setInterval(async () => {
       if (pageUrl() !== lastUrl) { lastUrl = pageUrl(); if (role !== "console") await syncStatus(); }

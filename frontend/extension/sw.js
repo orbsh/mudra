@@ -71,9 +71,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // async sendResponse
 });
 
-// ---- 配置拉取：扩展启动时 GET /config → chrome.storage.local ----
-// storage 优先级高于拉取值（:set 的运行时改键不被覆盖）：只写 defaults 里
-// 存在、且本地从未被 :set 改过的键（用 configSyncedAt 标记区分首轮）。
+// ---- config fetch: GET /config at extension startup -> chrome.storage.local ----
+// storage takes precedence over fetched values (runtime keys changed via :set are not clobbered):
+// only write keys that exist in defaults and were never locally changed via :set
+// (configSyncedAt marks whether the first round already ran).
 async function syncConfig() {
   try {
     const r = await fetch(MUDRAD + "/config");
@@ -87,9 +88,9 @@ async function syncConfig() {
     }
     if (Object.keys(patch).length) await chrome.storage.local.set(patch);
     await chrome.storage.local.set({ configSyncedAt: Date.now() });
-  } catch { /* mudrad 不在线：静默降级用本地 defaults */ }
+  } catch { /* mudrad offline: silently fall back to local defaults */ }
 }
 
 chrome.runtime.onInstalled.addListener(syncConfig);
 chrome.runtime.onStartup.addListener(syncConfig);
-syncConfig(); // SW 每次冷启动都补一次（MV3 SW 频繁休眠，onStartup 不保证触发）
+syncConfig(); // re-sync on every SW cold start (MV3 SWs sleep often; onStartup is not guaranteed to fire)

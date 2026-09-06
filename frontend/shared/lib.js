@@ -5,20 +5,20 @@
 
 const MudraConfig = {
   defaults: {
-    hintChars: "asdfghjkl",          // 字母池，顺序即分配顺序
+    hintChars: "asdfghjkl",          // letter pool; assignment follows this order
     hintFontSize: 12,                // px
-    statusHeight: 16,                // px, 一个字符高
+    statusHeight: 16,                // px, one character tall
     statusFont: "12px monospace",
-    statusFg: "#ffffff",             // 普通模式白字
-    statusBg: "#000000",             // 普通模式黑底
+    statusFg: "#ffffff",             // normal mode white text
+    statusBg: "#000000",             // normal mode black background
     insertFg: "#000000",
     insertBg: "#e8e8e8",
     hintFg: "#000000",
     hintBg: "#ffd76e",
-    keybindings: null,               // {key: command}；null = 用 COMMANDS 的 defaultKey
-    scrollStepLines: 3,              // j/k 每次滚动行数
-    pageOverlapLines: 5,             // w/s 翻页时保留的行数（重叠）
-    maxCandidates: 10,               // 命令模式弹出菜单最多显示条目数
+    keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
+    scrollStepLines: 3,              // lines per j/k scroll
+    pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
+    maxCandidates: 10,               // max entries shown in the command-mode popup menu
   },
   storage: chrome.storage.local,
 
@@ -32,7 +32,7 @@ const MudraConfig = {
     return this.all();
   },
 
-  // 从 JSON 字符串导入（整体替换 keybindings）
+  // Import from a JSON string (replaces keybindings wholesale)
   async importJson(text) {
     const obj = JSON.parse(text);
     if (obj.keybindings !== undefined) await this.set({ keybindings: obj.keybindings });
@@ -45,9 +45,9 @@ const MudraConfig = {
   },
 };
 
-// ---- status bar（qutebrowser 风格：底部一条，一字符高）----
-// Solid 实现：bar 是一个 Solid root，render() 只改 signal，DOM 增量更新。
-// 左侧：ctx · 数字前缀 · 模式 · tag 胶囊串；右侧：title + url + 滚动位置。
+// ---- status bar (qutebrowser style: a single strip at the bottom, one character tall) ----
+// Solid implementation: the bar is a Solid root; render() only flips signals and the DOM updates incrementally.
+// Left: ctx - numeric prefix - mode - tag capsule string; right: title + url + scroll position.
 const MudraBar = {
   el: null,
   _setState: null, // {data, cfg} signals
@@ -59,7 +59,7 @@ const MudraBar = {
     const cfg = await MudraConfig.all();
 
     const [data, setData] = createSignal({});
-    const [command, setCommand] = createSignal(false); // command 输入行接管中
+    const [command, setCommand] = createSignal(false); // command input line has taken over
     const [cfgSig] = createSignal(cfg);
     this._setState = { data, setData, command, setCommand, cfg: cfgSig };
 
@@ -69,8 +69,8 @@ const MudraBar = {
       hint:   { fg: cfg.statusFg, bg: "#204080" },
     }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg });
 
-    // 胶囊串：tags 是路径数组（state::未读），复用 panel 的 Capsule 渲染逻辑。
-    // 浏览器侧胶囊是只读显示（点击行为后续接菜单），先渲染段结构。
+    // Capsule string: tags is an array of paths (state::unread); reuses the panel Capsule rendering logic.
+    // The browser-side capsule is read-only display (click actions get menus later); render the segment structure first.
     const Capsule = (path) => {
       const segs = path.split("::");
       return h("span.capsule",
@@ -78,8 +78,8 @@ const MudraBar = {
     };
 
     const Bar = () => {
-      // Solid 组件体只运行一次：顶层读 data() 不被追踪，DOM 会停在首次渲染。
-      // 动态内容必须以函数子节点传入 h()，由 Solid 建立 reactive insertion。
+      // A Solid component body runs only once: reading data() at top level is untracked, so the DOM would freeze at first render.
+      // Dynamic content must be passed to h() as function children so Solid establishes reactive insertion.
       const c = cfgSig();
       const left = () => {
         const d = data();
@@ -121,15 +121,15 @@ const MudraBar = {
     const root = document.createElement("div");
     root.id = "mudra-bar-root";
     document.documentElement.appendChild(root);
-    // 状态栏要在最外层：经典滚动条画在所有元素之上（z-index 压不住），
-    // 而滚动位置已在 bar 右侧显示 → 直接隐藏页面滚动条。
+    // The status bar must be outermost: the classic scrollbar paints above all elements (z-index cannot suppress it),
+    // and the scroll position is already shown on the bar's right -> hide the page scrollbar outright.
     const st = document.createElement("style");
     st.id = "mudra-scrollbar-style";
     st.textContent = "html { scrollbar-width: none !important; } html::-webkit-scrollbar { display: none !important; }";
     document.documentElement.appendChild(st);
     this.el = root;
     this._dispose = render(Bar, root);
-    // 胶囊/模式段的样式与 panel 共用（styles.css 只在 panel 加载），这里内联注入
+    // Capsule/mode segment styles are shared with the panel (styles.css loads only in the panel), so inject them inline here
     const css = document.createElement("style");
     css.id = "mudra-tags-style";
     css.textContent = [
@@ -142,24 +142,24 @@ const MudraBar = {
     return this;
   },
 
-  // data: {ctx, mode, title, url, scroll, tags(path 数组), message, count}
+  // data: {ctx, mode, title, url, scroll, tags(path array), message, count}
   async render(data) {
     if (!this.el) return;
-    // command 模式时 bar 是输入行，render 不覆盖（输入行由 openCommand 自己维护）
+    // In command mode the bar is an input line; render must not overwrite it (openCommand maintains the input itself)
     if (document.getElementById("mudra-cmdinput")) return;
     this._setState.setData({ ...data });
   },
 
-  // ---- command 模式：bar 整条变输入行（: 提示符 + 输入框占满），
-  // 候选浮层在输入行上方，宽度 100%，最多 maxCandidates 条，超出滚动。----
-  // onInput(query, api) 由宿主过滤候选；onPick(candidate, query, api) 处理选中；
+  // ---- command mode: the whole bar becomes an input line (: prompt + input filling it),
+  // candidate popup above the input, full width, at most maxCandidates entries, scrollable beyond that. ----
+  // onInput(query, api) filters candidates on the host side; onPick(candidate, query, api) handles selection;
   // candidate = {label, value}；Esc → onPick(null, ...)。
   async openCommand(onInput, onPick) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
     const { setCommand } = this._setState;
 
-    // 候选浮层：贴在 bar 上缘，宽度 100%（left0/right0），高度最多 maxCandidates 行
+    // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
     const rowH = cfg.statusHeight + 2;
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
@@ -173,7 +173,7 @@ const MudraBar = {
     box.appendChild(list);
     document.documentElement.appendChild(box);
 
-    // 输入行接管整条 bar：右槽隐藏（Solid 渲染），输入框 append 到 bar 内
+    // The input line takes over the whole bar: right slots hidden (Solid-rendered), input appended inside the bar
     setCommand(true);
     const bar = document.getElementById("mudra-bar");
     bar.style.color = cfg.insertFg;
@@ -210,7 +210,7 @@ const MudraBar = {
       input.remove();
       document.getElementById("mudra-cmdbox")?.remove();
       setCommand(false);
-      this._setState.setData((d) => ({ ...d })); // 恢复普通渲染（颜色由 mode signal 决定）
+      this._setState.setData((d) => ({ ...d })); // restore normal rendering (colors come from the mode signal)
     };
 
     const api = {
@@ -226,7 +226,7 @@ const MudraBar = {
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
-        // Tab 补全：把当前选中候选的命令名（value，非含描述的 label）填入输入框，重新过滤
+        // Tab completion: fill the input with the selected candidate's command name (value, not the descriptive label) and refilter
         e.preventDefault();
         if (items[sel]) { input.value = ":" + items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
       }

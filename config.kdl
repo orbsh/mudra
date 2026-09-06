@@ -1,25 +1,26 @@
-// mudra 配置示例（KDL v2）。复制到 ~/.config/mudra/config.kdl 生效。
-// 缺失的项用内置默认值（frontend/shared/lib.js MudraConfig.defaults）。
-// 扩展启动时经 GET /config 拉取；:set 的运行时修改（chrome.storage.local）优先于本文件。
+// mudra example config (KDL v2). Copy to ~/.config/mudra/config.kdl to take effect.
+// Missing entries fall back to built-in defaults (frontend/shared/lib.js MudraConfig.defaults).
+// The extension fetches this via GET /config at startup; runtime changes from :set
+// (chrome.storage.local) take precedence over this file.
 
 bar {
-    font "12px monospace"      // 状态栏字体
-    height 16                  // 状态栏高度 px
-    fg "#ffffff"               // 普通模式前景
-    bg "#000000"               // 普通模式背景
-    insertFg "#000000"         // 插入模式前景
-    insertBg "#e8e8e8"         // 插入模式背景
-    hintFg "#000000"           // hint 标签前景
-    hintBg "#ffd76e"           // hint 标签背景
+    font "12px monospace"      // status bar font
+    height 16                  // status bar height px
+    fg "#ffffff"               // normal mode foreground
+    bg "#000000"               // normal mode background
+    insertFg "#000000"         // insert mode foreground
+    insertBg "#e8e8e8"         // insert mode background
+    hintFg "#000000"           // hint label foreground
+    hintBg "#ffd76e"           // hint label background
 }
 
 hint {
-    chars "asdfghjkl;qwertyuiopzxcv" // 字母池，顺序即分配顺序
-    fontSize 12                // hint 标签字号 px
+    chars "asdfghjkl;qwertyuiopzxcv" // letter pool; assignment follows this order
+    fontSize 12                // hint label font size px
 }
 
 keys {
-    // 值 = 命令名（content.js COMMANDS）；kdl-py 1.2.0 字符串值须加引号
+    // value = command name (content.js COMMANDS); kdl-py 1.2.0 requires quoted string values
     j "scrollDown"
     k "scrollUp"
     h "scrollLeft"
@@ -34,19 +35,19 @@ keys {
 }
 
 scroll {
-    stepLines 3                // j/k 每次滚动行数
-    overlapLines 5             // w/s 翻页保留行数
+    stepLines 3                // lines per j/k scroll
+    overlapLines 5             // lines kept when paging with w/s (overlap)
 }
 
 command {
-    maxCandidates 10           // 命令模式弹出菜单最多条目
+    maxCandidates 10           // max entries in the command-mode popup menu
 }
 
-// 占位：解析但不消费，端口仍由 mudrad.py 启动参数决定
+// Placeholder: parsed but not consumed; the port is still decided by mudrad.py startup args
 server {
     port 8899
 }
 
 ui {
-    thumbnails false   // panel 悬停链接的截图浮窗
+    thumbnails false   // screenshot hover preview for panel link hover
 }

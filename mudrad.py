@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""mudrad — mudra 守护进程。
+"""mudrad — the mudra daemon.
 
-常驻：对每个 running=1 的 instance 连它的 browser-level CDP WebSocket，
-订阅 Target.setDiscoverTargets 的 targetCreated / infoChanged / Destroyed，
-把页面的开/关/URL 变化实时同步进 sqlite 的 pages 表（单一数据源 = CDP）。
+Long-running: for each instance with running=1, connect to its browser-level CDP
+WebSocket, subscribe to Target.setDiscoverTargets events (targetCreated /
+infoChanged / Destroyed), and sync page open/close/URL changes into the sqlite
+pages table in real time (CDP is the single source of truth).
 
-用法：mudrad start | stop | status  （P1 先支持直接前台跑，start/stop 后续加）
+Usage: mudrad start | stop | status  (P1 supports foreground run only;
+start/stop to be added later)
 """
 
 from __future__ import annotations
@@ -22,7 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from mudralib import cdp, ctl, db, ops, spawn, ui, wm
 
-# 新窗口拦截：页面注入脚本把 window.open / target=_blank 发送到这里，mudrad 拉起 --app 窗口。
+# New-window interception: the page-injected script forwards window.open /
+# target=_blank here, and mudrad spawns an --app window.
 _INTERCEPT_PORT = 8899
 _INJECT_JS = r"""(() => {
   if (window.__mudraInjected) return; window.__mudraInjected = true;
@@ -47,7 +50,7 @@ _INJECT_JS = r"""(() => {
 
 
 def _acquire_lock() -> None:
-    """单例锁：同一时间只允许一个 mudrad 运行（flock 随进程退出自动释放）。"""
+    """Singleton lock: only one mudrad may run at a time (flock auto-releases on exit)."""
     db.DB.parent.mkdir(parents=True, exist_ok=True)
     fh = open(db.DB.parent / "mudrad.lock", "w")
     try:
@@ -56,17 +59,18 @@ def _acquire_lock() -> None:
         print("[mudrad] another daemon is already running")
         sys.exit(1)
         return
-    globals()["_LOCK_FH"] = fh  # 持引用防 GC 释放锁
+    globals()["_LOCK_FH"] = fh  # keep a reference so GC never releases the lock
 
 
 class _InterceptHandler(BaseHTTPRequestHandler):
-    """控制接口（唯一执行点：窗口/实例/页面生命周期全部在此完成）：
-    POST /open        {url, ctx?}  上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（带 debug 端口）
-    POST /add         {url, ctx?}  并入 --app 窗口（实例必须活着）
-    POST /close_page  {query, ctx?}   关一个 tab（target 关闭事件触发统一收尾）
-    POST /close_ctx   {ctx?}          关整个实例（kill → _mark_down 收尾）
-    POST /ctx         {ctx}           切换当前上下文（situation 叶）
-    ctx 缺省 = 当前上下文（state.current_context）。
+    """Control API (single execution point: all window/instance/page lifecycle
+    transitions happen here):
+    POST /open        {url, ctx?}  instance alive -> join as an --app window; dead -> new instance (with debug port)
+    POST /add         {url, ctx?}  join as an --app window (instance must be alive)
+    POST /close_page  {query, ctx?}   close one tab (target-destroyed event triggers the unified teardown)
+    POST /close_ctx   {ctx?}          close the whole instance (kill -> _mark_down teardown)
+    POST /ctx         {ctx}           switch the current context (situation leaf)
+    ctx omitted = current context (state.current_context).
     """
     def do_POST(self):
         print(f"[mudrad] POST {self.path}")
@@ -117,11 +121,11 @@ class _InterceptHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
 
-    def log_message(self, *args):  # 静默
+    def log_message(self, *args):  # silence
         pass
 
     def do_GET(self):
-        """GET /config：配置文件（~/.config/mudra/config.kdl）→ JSON。扩展启动时拉取。"""
+        """GET /config: config file (~/.config/mudra/config.kdl) -> JSON. Fetched by the extension at startup."""
         if self.path == "/config":
             from mudralib import config as config_mod
             try:
@@ -145,14 +149,14 @@ class Mudrad:
     def __init__(self) -> None:
         self._threads: dict[int, threading.Thread] = {}
 
-    # ---- tab→ctx 反查：语义在 ops.ctx_for_tab / ops.ctx_for_url ----
+    # ---- tab->ctx reverse lookup: semantics live in ops.ctx_for_tab / ops.ctx_for_url ----
     def _ctx_for_tab(self, tab_id: str | int | None, url: str | None = None) -> str | None:
         return ops.ctx_for_tab(tab_id, url)
 
     def _ctx_for_url(self, url: str | None) -> str | None:
         return ops.ctx_for_url(url)
 
-    # ---- 新窗口拦截：给页面注入脚本，把新 tab 交给 mudrad 拉 --app ----
+    # ---- New-window interception: inject the script into pages so new tabs get handed to mudrad to spawn --app ----
     def _inject_page(self, port: int, target_id: str, ctx: str) -> None:
         try:
             with urllib.request.urlopen(
@@ -166,18 +170,19 @@ class Mudrad:
             ws = cdp.WsClient(wsurl, timeout=8)
             src = _INJECT_JS.replace("__CTX__", ctx).replace("__PORT__", str(_INTERCEPT_PORT))
             cdp.call(ws, "Page.addScriptToEvaluateOnNewDocument", {"source": src})
-            cdp.call(ws, "Runtime.evaluate", {"expression": src})  # 已加载页立即注入
+            cdp.call(ws, "Runtime.evaluate", {"expression": src})  # inject immediately into already-loaded pages
             ws.close()
         except Exception as e:
             print(f"[mudrad] inject {ctx}/{target_id} err: {e}")
 
-    # ---- 控制接口动词（唯一执行点：窗口 spawn / 进程 kill / 实例与页面生命周期写库都在这里）----
+    # ---- Control-API verbs (single execution point: window spawn / process kill / instance & page lifecycle DB writes all happen here) ----
     def _inst_for_ctx(self, conn, ctx: str) -> dict | None:
-        """上下文（situation 叶）对应实例；沿用旧实例行（profile 存叶名）复用 proxy/extensions。"""
+        """Instance for a context (situation leaf); reuse the existing instance row
+        (profile stores the leaf name) so proxy/extensions carry over."""
         return db.instance_for_context(conn, ctx)
 
     def ctl_ctx(self, data: dict) -> dict:
-        """切换当前上下文（situation 叶）。"""
+        """Switch the current context (situation leaf)."""
         ctx = (data or {}).get("ctx") or ""
         with db.connect() as conn:
             if not db.set_context(conn, ctx):
@@ -187,10 +192,11 @@ class Mudrad:
         return {"ctx": ctx}
 
     def ctl_open(self, data: dict) -> dict:
-        """上下文实例活着 → 并入 --app 窗口；死了 → 新建实例（debug 端口 + 复用 proxy/extensions）。
+        """Instance alive -> join as an --app window; dead -> new instance (debug port +
+        reused proxy/extensions).
 
-        ctx 缺省：先按 tabId（SK background 上报的 sender tab）反查所属实例 → ctx；
-        再兜底当前上下文。
+        ctx fallback order: first reverse-lookup the owning instance by tabId (the
+        sender tab reported by the SK background), then fall back to the current context.
         """
         url = spawn.normalize_url((data or {}).get("url") or "")
         if not url:
@@ -201,14 +207,14 @@ class Mudrad:
                 ctx = self._ctx_for_tab((data or {}).get("tabId")) or db.current_context(conn)
             inst = self._inst_for_ctx(conn, ctx)
         if inst and inst["running"] and self._pid_alive(inst["pid"]):
-            # 并入已有实例
+            # join an existing instance
             spawn.launch(ctx, url, None,
                          proxy=inst["proxy"],
                          extensions=inst["extensions"].split(",") if inst["extensions"] else None,
                          dev_mode=db.get_state(conn, "dev_mode") == "1")
             print(f"[mudrad] open -> --app joined: {url} (ctx {ctx})")
             return {"mode": "joined", "port": inst["port"], "ctx": ctx}
-        # 新实例：复用旧行（proxy/extensions），否则新建
+        # new instance: reuse the old row (proxy/extensions) if present, else create
         port = spawn.free_port(9200)
         proxy = inst["proxy"] if inst else None
         ext = (inst["extensions"] if inst else None) or None
@@ -224,7 +230,8 @@ class Mudrad:
         return {"mode": "new", "port": port, "pid": pid, "ctx": ctx}
 
     def _apply_site_width(self, url: str, pid: int) -> None:
-        """按页面 domain 查记忆列宽；等该实例窗口聚焦后应用（开窗副作用统一在后端）。"""
+        """Look up the remembered column width by page domain; apply it once the
+        instance window gains focus (window-opening side effects live in the backend)."""
         domain = (url or "").split("//")[-1].split("/")[0]
         if not domain:
             return
@@ -233,7 +240,7 @@ class Mudrad:
         if not w:
             return
         mgr = wm.get()
-        for _ in range(30):  # 等新窗落地并聚焦（新窗抢焦）
+        for _ in range(30):  # wait for the new window to land and take focus (new windows grab focus)
             win = mgr.focused_window()
             if win is not None and win.get("pid") == pid:
                 break
@@ -253,7 +260,8 @@ class Mudrad:
             return os.path.exists(f"/proc/{pid}")
 
     def ctl_add(self, data: dict) -> dict:
-        """并入已有实例的 --app 窗口（上下文实例必须活着，否则报错而非静默新开）。"""
+        """Join an existing instance as an --app window (the context instance must be
+        alive; error out rather than silently spawning a new one)."""
         url = spawn.normalize_url((data or {}).get("url") or "")
         if not url:
             raise ValueError("need url")
@@ -270,7 +278,8 @@ class Mudrad:
         return {"mode": "joined", "port": inst["port"], "ctx": ctx}
 
     def ctl_close_page(self, data: dict) -> dict:
-        """关一个 tab：只关 CDP target，标 closed 由 targetDestroyed 事件统一走后端收尾。"""
+        """Close one tab: only close the CDP target; marking it closed is handled by the
+        backend teardown on the targetDestroyed event."""
         query = (data or {}).get("query") or ""
         if not query:
             raise ValueError("need query")
@@ -288,7 +297,8 @@ class Mudrad:
         return {"closed": cur["url"]}
 
     def ctl_close_ctx(self, data: dict) -> dict:
-        """关整个上下文实例：kill 浏览器进程；running=0 / pages closed 由 _mark_down 统一收尾。"""
+        """Close the whole context instance: kill the browser process; running=0 / pages
+        closed are handled by the unified _mark_down teardown."""
         with db.connect() as conn:
             ctx = (data or {}).get("ctx") or db.current_context(conn)
             inst = self._inst_for_ctx(conn, ctx)
@@ -299,38 +309,38 @@ class Mudrad:
         return {"closed": ctx}
 
     def ctl_ctx_status(self, data: dict) -> dict:
-        """状态栏数据源：tabId → (ctx, 页面 tags)。编排收敛到 ops.page_info_for_tab。"""
+        """Status-bar data source: tabId -> (ctx, page tags). Orchestration is consolidated in ops.page_info_for_tab."""
         d = data or {}
         return ops.page_info_for_tab(d.get("tabId"), d.get("url"))
 
     @staticmethod
     def _is_console(url: str | None) -> bool:
-        """console ui（总控面板）页面判定——角色属于后端数据，前端不猜。"""
+        """Detect the console UI (master panel) page — that role is backend data; the frontend never guesses."""
         if not url:
             return False
         from mudralib.ui import PANEL_PORT
         return url.startswith(f"http://127.0.0.1:{PANEL_PORT}/")
 
     def ctl_tag(self, data: dict) -> dict:
-        """给页面打/摘 tag（toggle）。语义在 ops.tag_page。"""
+        """Add/remove a tag on a page (toggle). Semantics live in ops.tag_page."""
         d = data or {}
         return ops.tag_page(d.get("tabId"), d.get("url"), d.get("tag"))
 
     def ctl_tags(self, data: dict) -> dict:
-        """tag 树读取：{parent?: 名称} → 该父下子树。语义在 ops.tags_children。"""
+        """Read the tag tree: {parent?: name} -> subtree under that parent. Semantics live in ops.tags_children."""
         return {"tags": ops.tags_children((data or {}).get("parent"))}
 
     def ctl_pages(self, data: dict) -> dict:
-        """打开页列表（跨 ctx）：扩展 pages 命令的数据源。语义在 ops.list_open_pages。"""
+        """Open-page list (across contexts): data source for the extension's pages command. Semantics live in ops.list_open_pages."""
         return {"pages": ops.list_open_pages((data or {}).get("ctx"))}
 
     def ctl_focus_page(self, data: dict) -> dict:
-        """聚焦某页（page_id）：CDP 激活 + niri 前台。语义在 ops.focus_page。"""
+        """Focus a page (page_id): CDP activation + bring the niri window forward. Semantics live in ops.focus_page."""
         page_id = int((data or {}).get("page_id") or 0)
         return ops.focus_page(page_id)
 
     def _open(self, data: dict) -> None:
-        """拦截到的“新开 tab” → 在该上下文拉起 --app 窗口（并入已有实例）。"""
+        """An intercepted "new tab" -> spawn an --app window in that context (joining an existing instance)."""
         url, ctx = (data or {}).get("url"), (data or {}).get("ctx")
         if not url or not ctx:
             return
@@ -341,7 +351,7 @@ class Mudrad:
             print(f"[mudrad] open err: {e}")
 
     def _sync_infos(self, inst_id: int, infos: list[dict]) -> None:
-        """CDP targetInfo → pages 表（写路径在 db.page_upsert_by_target，父子回填仅在首次）。"""
+        """CDP targetInfo -> pages table (write path is db.page_upsert_by_target; parent backfill happens only on first sight)."""
         with db.connect() as conn:
             pages = [t for t in infos if t.get("type") == "page"]
             t2id: dict[str, int] = {}
@@ -350,7 +360,7 @@ class Mudrad:
                     conn, inst_id, t["targetId"],
                     t.get("url", ""), t.get("title", ""),
                 )
-            # 回填父子关系：子页 parent_id = 打开它的页（CDP openerId）
+            # backfill parent-child: child's parent_id = the page that opened it (CDP openerId)
             for t in pages:
                 oid = t.get("openerId")
                 if not oid:
@@ -359,7 +369,7 @@ class Mudrad:
                 if cid is None:
                     continue
                 p_id = t2id.get(oid)
-                if p_id is None:  # opener 不在本批，回查库
+                if p_id is None:  # opener not in this batch; look it up in the DB
                     p_id = db.page_id_by_target(conn, inst_id, oid)
                 if p_id is not None:
                     db.page_set_parent_once(conn, cid, p_id)
@@ -378,10 +388,11 @@ class Mudrad:
             db.pages_close_all(conn, inst_id, int(time.time()))
             conn.commit()
 
-    # ---- 单 instance 监听 ----
+    # ---- per-instance watcher ----
     def _watch(self, inst: dict) -> None:
         iid, port = inst["id"], inst["port"]
-        # 竞态防护：chromium 刚 spawn，端口可能还没绑定。重试十多秒，真起不来才标 down。
+        # race guard: chromium was just spawned, so the port may not be bound yet.
+        # Retry for ~10s; only mark down if it truly never comes up.
         ws = None
         for attempt in range(12):
             try:
@@ -398,7 +409,8 @@ class Mudrad:
             self._threads.pop(iid, None)
             return
         try:
-            # 基线：先全量同步一次，再开发现；并给每个页面注入新窗口拦截脚本
+            # baseline: full sync once, then enable discovery; also inject the
+            # new-window interception script into every page
             r = cdp.call(ws, "Target.getTargets")
             infos = r["result"]["targetInfos"]
             self._sync_infos(iid, infos)
@@ -425,13 +437,13 @@ class Mudrad:
                         self._sync_infos(iid, [info])
                 elif method == "Target.targetDestroyed":
                     self._close_target(iid, p.get("targetId", ""))
-        except Exception as e:  # 连接断开/崩 = instance 掉了
+        except Exception as e:  # connection lost/crashed = instance is gone
             print(f"[mudrad] instance {iid} disconnected: {e}")
         finally:
             self._mark_down(iid)
             self._threads.pop(iid, None)
 
-    # ---- 主循环 ----
+    # ---- main loop ----
     def _start_intercept_server(self) -> None:
         srv = ThreadingHTTPServer(("127.0.0.1", _INTERCEPT_PORT), _InterceptHandler)
         srv.mudrad = self

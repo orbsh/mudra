@@ -1,7 +1,7 @@
-"""CDP 控制动词：导航 / 历史 / 聚焦。
+"""CDP control verbs: navigation / history / focus.
 
-连实例的 browser-level WS 或具体 page WS，发命令。端口从 sqlite 的 instance 取
-（会话名 → instance.port）。
+Connects to an instance's browser-level WS or a specific page WS and sends
+commands. Ports are read from the sqlite instance row (context name -> instance.port).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def list_pages(port: int) -> list[dict]:
 
 
 def current_target_id(name: str) -> tuple[int, str] | None:
-    """该上下文最靠右（position 最大）且仍打开的页面 target_id。"""
+    """The target_id of the rightmost (largest position) still-open page of that context."""
     with db.connect() as conn:
         r = conn.execute(
             "SELECT i.port, p.target_id, p.url FROM instances i"
@@ -103,7 +103,7 @@ def reload(port: int, target_id: str) -> None:
 
 
 def screenshot(port: int, target_id: str) -> str | None:
-    """抓目标页内容截图，返回 base64 PNG（'data:image/png;base64,...'）；失败返回 None。"""
+    """Capture a screenshot of the target page and return a base64 PNG ('data:image/png;base64,...'); None on failure."""
     try:
         ws = cdp.WsClient(_page_ws(port, target_id), timeout=10)
         r = cdp.call(ws, "Page.captureScreenshot", {"format": "png"})

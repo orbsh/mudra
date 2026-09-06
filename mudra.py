@@ -1,4 +1,4 @@
-"""mudra 浏览器会话管理——命令行入口 (P0: new / ls)."""
+"""mudra browser session management — CLI entry point (P0: new / ls)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mudralib import ctl, db, ops, spawn, ui, wm
 def cmd_ls(args: argparse.Namespace) -> int:
     with db.connect() as conn:
         if args.ctx:
-            # 某上下文的页列表（situation 叶 → 实例 → pages）
+            # page list of one context (situation leaf -> instance -> pages)
             inst = conn.execute(
                 "SELECT id FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1",
                 (args.ctx,),
@@ -35,7 +35,7 @@ def cmd_ls(args: argparse.Namespace) -> int:
                 mark = "[closed]" if p["closed_at"] else "[open]"
                 print(f"  {mark} #{p['position']} {p['url']}  {p['title'] or ''}")
         else:
-            # 全部上下文概览：situation 叶 → 页数，当前项标 *
+            # overview of all contexts: situation leaf -> page count, current one marked *
             cur = db.current_context(conn)
             rows = conn.execute(
                 "SELECT t.name AS leaf,"
@@ -52,7 +52,8 @@ def cmd_ls(args: argparse.Namespace) -> int:
 
 
 def _ctl(path: str, body: dict) -> dict:
-    """CLI → mudrad 控制接口。窗口/实例/页面生命周期只由后端执行，CLI 只传话。"""
+    """CLI -> mudrad control API. Window/instance/page lifecycle is executed only by the
+    backend; the CLI just relays messages."""
     import json as _json
     import urllib.error
     import urllib.request
@@ -149,7 +150,7 @@ def cmd_reload(args) -> int:
 
 
 def cmd_dev(args: argparse.Namespace) -> int:
-    """扩展开发模式开关：spawn 前清 chromium 扩展缓存（源码直载的改动立即可见）。"""
+    """Extension dev-mode switch: clear the chromium extension cache before spawn (source-loaded changes take effect immediately)."""
     with db.connect() as conn:
         if args.on is None:
             cur = db.get_state(conn, "dev_mode") == "1"
@@ -161,7 +162,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
 
 
 def cmd_ctx(args: argparse.Namespace) -> int:
-    """切换 / 显示当前上下文（situation 叶）。切换走 mudrad /ctx（后端广播面板）。"""
+    """Switch / show the current context (situation leaf). Switching goes through mudrad /ctx (backend broadcasts to the panel)."""
     with db.connect() as conn:
         if args.ctx:
             leaf = conn.execute(
@@ -203,7 +204,7 @@ def _domain(url: str) -> str:
 
 
 def cmd_col(args: argparse.Namespace) -> int:
-    """列宽记忆：remember 捕获聚焦窗口宽度→site_widths；show 列出。"""
+    """Column-width memory: remember captures the focused window width -> site_widths; show lists them."""
     mgr = wm.get()
     if args.action == "remember":
         win = mgr.focused_window()
@@ -257,10 +258,11 @@ def cmd_col(args: argparse.Namespace) -> int:
 
 
 def _focused_page(conn) -> dict | None:
-    """解析当前聚焦 niri 窗口 → 对应 mudra 页（共享动作对象）。
+    """Resolve the currently focused niri window -> its mudra page (shared action target).
 
-    Action(act copy) / tag 指派都以此为目标页。返回 pages 行（含 instance_id/title/url/target_id）。
-    focused 窗口非 mudra 实例、或找不到匹配 CDP 页时返回 None。
+    Action(act copy) / tag assignment both target this page. Returns the pages row
+    (including instance_id/title/url/target_id). Returns None when the focused window
+    is not a mudra instance or no matching CDP page is found.
     """
     win = wm.get().focused_window()
     if not win:
@@ -284,7 +286,8 @@ def _focused_page(conn) -> dict | None:
 
 
 def cmd_conf(args: argparse.Namespace) -> int:
-    """per-context 代理/扩展配置；预建 running=0 的实例行（profile=叶名），open 时复用。"""
+    """Per-context proxy/extension config; pre-create an instance row with running=0
+    (profile = leaf name) so `open` can reuse it."""
     with db.connect() as conn:
         leaf = conn.execute(
             "SELECT id FROM tag WHERE name=? AND parent_id="
@@ -322,8 +325,8 @@ def cmd_conf(args: argparse.Namespace) -> int:
 
 
 def _menu_pages(conn, query: str) -> int:
-    """Page 模式(p) 菜单数据：当前上下文的开页，TAB 三列（title / url / url）。
-    elephant menus 脚本按这行格式解析成 Text/Subtext/Value。
+    """Page mode (p) menu data: open pages of the current context, three TAB columns (title / url / url).
+    The elephant menus script parses each line into Text/Subtext/Value in this format.
     """
     cur = db.current_context(conn)
     if not cur:
@@ -345,7 +348,8 @@ def _menu_pages(conn, query: str) -> int:
 
 
 def _seed_tags(conn):
-    """幂等 seed 初始 tag 森林（situation 单选树 / importance·urgency 评分树 / topic 多选树）。"""
+    """Idempotently seed the initial tag forest (situation single-select tree /
+    importance·urgency rating trees / topic multi-select tree)."""
     import time as _t
     now = int(_t.time())
     created = 0
@@ -376,23 +380,23 @@ def _seed_tags(conn):
         created += 1
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-    sit = root("situation", "当前上下文（树内单选）")
-    importance = root("importance", "重要性（评分树）")
-    urgency = root("urgency", "时效性（评分树）")
-    quality = root("quality", "内容质量（评分树，重要≠质量高）")
-    state = root("state", "处理状态（树内单选）")
-    topic = root("topic", "主题（可多选）")
+    sit = root("situation", "current context (single-select within the tree)")
+    importance = root("importance", "importance (rating tree)")
+    urgency = root("urgency", "urgency (rating tree)")
+    quality = root("quality", "content quality (rating tree; important != high quality)")
+    state = root("state", "processing state (single-select within the tree)")
+    topic = root("topic", "topic (multi-select)")
 
-    child(sit, "inbox", "默认收入箱", isolated=1, required=1, alias="待处理")
-    child(sit, "work", "工作", isolated=1, alias="工作上下文")
-    child(sit, "personal", "个人", isolated=1, alias="生活")
-    child(sit, "privacy", "隐私", isolated=1, alias="隔离")
+    child(sit, "inbox", "default inbox", isolated=1, required=1, alias="pending")
+    child(sit, "work", "work", isolated=1, alias="work context")
+    child(sit, "personal", "personal", isolated=1, alias="life")
+    child(sit, "privacy", "privacy", isolated=1, alias="isolated")
     for i, star in enumerate(["☆", "☆☆", "☆☆☆", "☆☆☆☆", "☆☆☆☆☆"], 1):
         child(importance, star, rank=i)
         child(urgency, star, rank=i)
         child(quality, star, rank=i)
-    for name, alias in [("未读", "unread"), ("在读", "reading"),
-                        ("已提炼", "distilled"), ("已归档", "archived")]:
+    for name, alias in [("to-read", "unread"), ("reading", "reading"),
+                        ("distilled", "distilled"), ("archived", "archived")]:
         child(state, name, alias=alias)
     return created
 
@@ -402,7 +406,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
         if args.action == "init":
             n = _seed_tags(conn)
             conn.commit()
-            print(f"tag 森林 seed 完成（新增 {n} 节点，幂等）")
+            print(f"tag forest seeded ({n} new nodes, idempotent)")
             return 0
         if args.action in ("add", "remove"):
             return _tag_set(conn, args.tag_id, on=args.action == "add", page_id=args.page_id)
@@ -410,9 +414,10 @@ def cmd_tag(args: argparse.Namespace) -> int:
 
 
 def _tag_set(conn, tag_id: str, on: bool, page_id: str | None = None) -> int:
-    """指派/移除 tag 到页（写 page_tag）。page_id 省略时用当前聚焦页（面板批量/单页都可）。
+    """Assign/remove a tag on a page (writes page_tag). When page_id is omitted, the
+    currently focused page is used (works for both panel batch and single-page).
 
-    返回 (0 成功 / 1 失败)。
+    Returns (0 success / 1 failure).
     """
     if not str(tag_id).lstrip("-").isdigit():
         print(f"invalid tag_id {tag_id!r}")
@@ -426,7 +431,7 @@ def _tag_set(conn, tag_id: str, on: bool, page_id: str | None = None) -> int:
     else:
         page = _focused_page(conn)
     if page is None:
-        print("no page to tag (聚焦窗不是 mudra 页，或 page_id 无效)")
+        print("no page to tag (focused window is not a mudra page, or page_id is invalid)")
         return 1
     if on:
         conn.execute(
@@ -439,26 +444,26 @@ def _tag_set(conn, tag_id: str, on: bool, page_id: str | None = None) -> int:
             (page["id"], tag_id),
         )
     conn.commit()
-    verb = "指派" if on else "移除"
+    verb = "assigned" if on else "removed"
     print(f"{verb} tag {row['name']} -> {page['title'] or page['url']} (page#{page['id']})")
     return 0
 
 
 def cmd_ui(args: argparse.Namespace) -> int:
-    """拉起管理面板：mudrad 服务 /ui + /ws，再开一个浮动居中窗口载入它。"""
+    """Launch the management panel: mudrad serves /ui + /ws, then opens a floating centered window that loads it."""
     return ui.launch(args)
 
 
 def cmd_menu(args: argparse.Namespace) -> int:
-    """launcher 菜单数据出口（TAB 三列，供 elephant/walker menus provider）。
-    kind: pages（p 模式菜单数据）。tag 森林管理已交管理面板。"""
+    """Launcher menu data output (three TAB columns, for the elephant/walker menus provider).
+    kind: pages (p-mode menu data). Tag forest management has moved to the management panel."""
     with db.connect() as conn:
         if args.kind == "pages":
             return _menu_pages(conn, args.query)
         return 0
 
 def cmd_sort(args) -> int:
-    # 保留（面板排序可选）；MRU/时间默认在 page 列表走 position。
+    # kept (panel sorting is optional); MRU/time default to position order in page lists.
     with db.connect() as conn:
         db.set_state(conn, "sort", args.kind)
         conn.commit()
@@ -467,7 +472,7 @@ def cmd_sort(args) -> int:
 
 
 def _page_for_url(conn, ctx: str, url: str) -> dict | None:
-    """在某上下文里按 url 找 open 页行（page 模式的选中项）。"""
+    """Find the open page row by url in a context (the selected item of page mode)."""
     return conn.execute(
         "SELECT p.* FROM pages p JOIN instances i ON i.id=p.instance_id"
         " WHERE i.profile=? AND p.closed_at IS NULL AND p.url=?"
@@ -477,7 +482,7 @@ def _page_for_url(conn, ctx: str, url: str) -> dict | None:
 
 
 def _window_for_page(pid: int, page: dict) -> int | None:
-    """某实例 pid 下、标题匹配给定页（来自 CDP list_pages）的 niri 窗口 id。"""
+    """The niri window id under an instance pid whose title matches the given page (from CDP list_pages)."""
     title = page.get("title") or ""
     domain = (page.get("url") or "").split("//")[-1].split("/")[0]
     for w in wm.get().windows_for_instance(pid):
@@ -490,8 +495,8 @@ def _window_for_page(pid: int, page: dict) -> int | None:
 
 
 def cmd_page(args) -> int:
-    """Page 模式动作：对选中页执行 move-here / swap / close（选中项=url）。
-    move-here: 移到当前活动工作区; swap: 与当前聚焦窗交换工作区; close: 关该页。
+    """Page mode actions: move-here / swap / close on the selected page (selection = url).
+    move-here: move to the active workspace; swap: swap workspaces with the focused window; close: close the page.
     """
     if not getattr(args, "ctx", None):
         with db.connect() as conn:
@@ -518,7 +523,7 @@ def cmd_page(args) -> int:
         print(f"closed page {page['url']}")
         return 0
     if wid is None:
-        print("no niri window matches that page (page 未聚焦成独立窗口?)")
+        print("no niri window matches that page (page not focused into its own window?)")
         return 1
     if args.op == "move-here":
         mgr.focus_window(wid)
@@ -597,7 +602,7 @@ def main() -> int:
     rl.add_argument("--ctx")
     rl.set_defaults(fn=cmd_reload)
 
-    pg = sub.add_parser("page", help="page 模式动作：对选中页 move-here / swap / close")
+    pg = sub.add_parser("page", help="page mode actions: move-here / swap / close on the selected page")
     pg.add_argument("op", choices=["move-here", "swap", "close"])
     pg.add_argument("url")
     pg.add_argument("--ctx", help="situation leaf (default: current)")
@@ -640,10 +645,10 @@ def main() -> int:
     col.add_argument("site", nargs="?", help="filter by site in show")
     col.set_defaults(fn=cmd_col)
 
-    tag = sub.add_parser("tag", help="tag 森林：init seed / add|remove 指派到页")
+    tag = sub.add_parser("tag", help="tag forest: init seed / add|remove assignment to pages")
     tag.add_argument("action", choices=["init", "add", "remove"])
-    tag.add_argument("tag_id", nargs="?", help="tag id（add/remove）")
-    tag.add_argument("page_id", nargs="?", help="目标页 id（省略=当前聚焦页，供面板批量）")
+    tag.add_argument("tag_id", nargs="?", help="tag id (add/remove)")
+    tag.add_argument("page_id", nargs="?", help="target page id (omit = currently focused page, for panel batch ops)")
     tag.set_defaults(fn=cmd_tag)
 
     ui = sub.add_parser("ui", help="launch the management panel (floating window + ws)")

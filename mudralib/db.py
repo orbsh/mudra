@@ -1,7 +1,7 @@
-"""mudra 浏览器页管理 sqlite 存储层.
+"""mudra browser-page management sqlite storage layer.
 
-schema（tag-forest 模型，session 已废弃）:
-instances(1 isolated tag ↔ 1 chromium 实例), pages(直接挂实例), tag, page_tag, site_widths, state.
+schema (tag-forest model; the session concept is deprecated):
+instances (1 isolated tag <-> 1 chromium instance), pages (attached directly to an instance), tag, page_tag, site_widths, state.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ DB = pathlib.Path.home() / ".local" / "share" / "mudra" / "mudra.sqlite"
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS instances(
     id         INTEGER PRIMARY KEY,
-    profile    TEXT,          -- situation 叶名（inbox/work/personal/privacy）
+    profile    TEXT,          -- situation leaf name (inbox/work/personal/privacy)
     port       INTEGER,
     pid        INTEGER,
     running    INTEGER NOT NULL DEFAULT 0,
@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS pages(
     position   INTEGER,
     opened_at  INTEGER,
     closed_at  INTEGER,
-    deleted_at INTEGER,                                        -- 软删（只删 closed 页）
-    parent_id  INTEGER REFERENCES pages(id)   -- 子页：由谁(target)打开（CDP openerId）
+    deleted_at INTEGER,                                        -- soft delete (only closed pages can be deleted)
+    parent_id  INTEGER REFERENCES pages(id)   -- child page: which target opened it (CDP openerId)
 );
 
 CREATE TABLE IF NOT EXISTS site_widths(
@@ -42,15 +42,15 @@ CREATE TABLE IF NOT EXISTS site_widths(
 );
 CREATE TABLE IF NOT EXISTS tag(
     id         INTEGER PRIMARY KEY,
-    parent_id  INTEGER,                      -- -1 = 根哨兵（无真实父），见 tag-forest
+    parent_id  INTEGER,                      -- -1 = root sentinel (no real parent), see tag-forest
     name       TEXT NOT NULL,
     alias      TEXT,
-    isolated   INTEGER NOT NULL DEFAULT 0,   -- 命中 → 独立实例/工作区
-    required   INTEGER NOT NULL DEFAULT 0,   -- 树内必选（如 situation）
-    rank       INTEGER,                      -- 同父内排序（评分树叶 ☆..☆☆☆☆☆）
+    isolated   INTEGER NOT NULL DEFAULT 0,   -- when matched -> isolated instance/workspace
+    required   INTEGER NOT NULL DEFAULT 0,   -- mandatory within the tree (e.g. situation)
+    rank       INTEGER,                      -- ordering within the same parent (rating-tree leaves ☆..☆☆☆☆☆)
     hidden     INTEGER NOT NULL DEFAULT 0,
     note       TEXT,
-    deleted    INTEGER NOT NULL DEFAULT 0,   -- 软删
+    deleted    INTEGER NOT NULL DEFAULT 0,   -- soft delete
     created    INTEGER,
     updated    INTEGER,
     UNIQUE(parent_id, name)
@@ -75,8 +75,8 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
-    # 原型阶段不做 ALTER 迁移：schema 变更删 mudra.sqlite 重建（见 PLAN §4 迁移策略）
-    # 去重 pages(instance_id,target_id) 并加唯一约束（防御多 daemon/并发竞态重复插入）
+    # no ALTER migrations in the prototype stage: on schema change, delete mudra.sqlite and rebuild (see PLAN §4 migration strategy)
+    # dedupe pages(instance_id,target_id) and add a unique constraint (guards against duplicate inserts from multi-daemon/concurrency races)
     conn.execute(
         "DELETE FROM pages WHERE id NOT IN"
         " (SELECT MIN(id) FROM pages GROUP BY instance_id, target_id)"
@@ -104,12 +104,12 @@ def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def current_context(conn: sqlite3.Connection) -> str:
-    """当前 situation 叶名（树内单选的值）。"""
+    """The current situation leaf name (the single-select value within the tree)."""
     return get_state(conn, "current_context") or DEFAULT_CONTEXT
 
 
 def set_context(conn: sqlite3.Connection, name: str) -> bool:
-    """切上下文；必须是 situation 树的叶。"""
+    """Switch context; must be a leaf of the situation tree."""
     r = conn.execute(
         "SELECT t.id FROM tag t WHERE t.name=? AND t.parent_id="
         " (SELECT id FROM tag WHERE parent_id=-1 AND name='situation')",
@@ -122,14 +122,14 @@ def set_context(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def instance_for_context(conn: sqlite3.Connection, ctx: str | None = None) -> dict | None:
-    """上下文（situation 叶）对应的实例行。"""
+    """The instance row for a context (situation leaf)."""
     ctx = ctx or current_context(conn)
     return conn.execute(
         "SELECT * FROM instances WHERE profile=? ORDER BY id DESC LIMIT 1", (ctx,)
     ).fetchone()
 
 
-# ---- 页面写路径（业务 SQL 唯一所在地；mudrad/_sync 等只做事件→调用） ----
+# ---- page write paths (the single home for business SQL; mudrad/_sync etc. only map events -> calls) ----
 
 def instance_set_running(conn: sqlite3.Connection, inst_id: int, running: int) -> None:
     conn.execute("UPDATE instances SET running=? WHERE id=?", (running, inst_id))
@@ -168,7 +168,7 @@ def page_id_by_target(conn: sqlite3.Connection, inst_id: int, target_id: str) ->
 def page_upsert_by_target(
     conn: sqlite3.Connection, inst_id: int, target_id: str, url: str, title: str
 ) -> int:
-    """同步 CDP targetInfo → pages 行（存在则刷新并复活，不存在则落新行），返回 page id。"""
+    """Sync CDP targetInfo -> pages row (refresh & revive if it exists, insert a new row otherwise); returns the page id."""
     row = conn.execute(
         "SELECT id FROM pages WHERE instance_id=? AND target_id=?",
         (inst_id, target_id),
@@ -179,8 +179,9 @@ def page_upsert_by_target(
             (url, title, row["id"]),
         )
         return row["id"]
-    # 重开窗口 = 新 targetId。先找同实例同 URL 的已关闭页（最近优先），
-    # 命中则接管该行（换绑 target_id 并复活），不落新行。
+    # reopening a window = new targetId. First look for a closed page of the same
+    # instance with the same URL (most recent first); on a hit, take over that row
+    # (rebind target_id and revive it) instead of inserting a new row.
     closed = conn.execute(
         "SELECT id FROM pages WHERE instance_id=? AND target_id IS NOT NULL"
         " AND closed_at IS NOT NULL AND deleted_at IS NULL AND url=?"
@@ -210,7 +211,7 @@ def page_upsert_by_target(
 def page_set_parent_once(
     conn: sqlite3.Connection, child_id: int, parent_id: int
 ) -> None:
-    """回填父子关系（仅首次设置，不覆盖人工值）。"""
+    """Backfill parent-child (set only the first time; never overwrites manual values)."""
     conn.execute(
         "UPDATE pages SET parent_id=? WHERE id=? AND parent_id IS NULL",
         (parent_id, child_id),
@@ -218,7 +219,7 @@ def page_set_parent_once(
 
 
 def page_by_id_joined(conn: sqlite3.Connection, page_id: int) -> sqlite3.Row | None:
-    """pages 行 + 所属实例 port/pid（focus 等动作的目标解析）。"""
+    """pages row + owning instance port/pid (target resolution for focus and similar actions)."""
     return conn.execute(
         "SELECT p.id, i.port, i.pid, p.target_id, p.url, p.title FROM pages p"
         " JOIN instances i ON i.id=p.instance_id"
@@ -238,7 +239,7 @@ def running_instances(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def page_ctx_for_url(conn: sqlite3.Connection, url_prefix: str) -> str | None:
-    """按 URL 匹配打开中的 page → 实例唯一时返回其 ctx。"""
+    """Match an open page by URL -> return its ctx when the instance is unambiguous."""
     row = conn.execute(
         "SELECT i.profile FROM pages p JOIN instances i ON i.id=p.instance_id"
         " WHERE p.closed_at IS NULL AND p.deleted_at IS NULL AND p.url LIKE ?"
@@ -270,9 +271,9 @@ def page_tag_names(conn: sqlite3.Connection, page_id: int) -> list[str]:
 
 
 def page_tag_paths(conn: sqlite3.Connection, page_id: int) -> list[str]:
-    """页面 tags 的完整路径（state::未读 形式），胶囊渲染用。
+    """Full paths of a page's tags (in "state::to-read" form), for capsule rendering.
 
-    tag 无 parent（根级孤立 tag）时路径就是 name。
+    When a tag has no parent (a root-level orphan tag), the path is just its name.
     """
     rows = conn.execute(
         "SELECT t.name, t.parent_id FROM page_tag pt JOIN tag t ON t.id=pt.tag_id"
@@ -296,7 +297,7 @@ def page_tag_paths(conn: sqlite3.Connection, page_id: int) -> list[str]:
 
 
 def page_soft_delete(conn: sqlite3.Connection, page_id: int, ts: int) -> None:
-    """软删页（仅允许 closed 页调用，调用方负责校验）。"""
+    """Soft-delete a page (allowed only for closed pages; the caller validates)."""
     conn.execute("UPDATE pages SET deleted_at=? WHERE id=?", (ts, page_id))
 
 
@@ -315,7 +316,7 @@ def site_width(conn: sqlite3.Connection, domain: str) -> sqlite3.Row | None:
 def page_open_by_url_substring(
     conn: sqlite3.Connection, inst_id: int, query: str
 ) -> sqlite3.Row | None:
-    """实例内按 URL 子串找打开中的页（close page 用）。"""
+    """Find an open page by URL substring within an instance (used by close page)."""
     return conn.execute(
         "SELECT id,position,url,target_id FROM pages"
         " WHERE instance_id=? AND closed_at IS NULL AND deleted_at IS NULL"
@@ -328,7 +329,7 @@ def instance_launch_started(
     conn: sqlite3.Connection, inst_id: int | None, ctx: str,
     port: int, pid: int, proxy: str | None, ext: str | None,
 ) -> None:
-    """实例拉起落库：沿用旧行则更新端口/pid 并标 running，否则新建行。"""
+    """Record an instance launch: if reusing an old row, update port/pid and mark running; otherwise create a new row."""
     if inst_id:
         conn.execute(
             "UPDATE instances SET port=?,pid=?,running=1 WHERE id=?",
@@ -343,7 +344,7 @@ def instance_launch_started(
     conn.commit()
 
 
-# ---- tag 森林 ----
+# ---- tag forest ----
 
 def tag_id_by_name(conn: sqlite3.Connection, name: str) -> int | None:
     r = conn.execute(
@@ -353,7 +354,7 @@ def tag_id_by_name(conn: sqlite3.Connection, name: str) -> int | None:
 
 
 def page_tag_toggle(conn: sqlite3.Connection, page_id: int, tag_id: int) -> str:
-    """页↔tag toggle。返回 'added' | 'removed'。"""
+    """Toggle a tag on a page. Returns 'added' | 'removed'."""
     existing = conn.execute(
         "SELECT 1 FROM page_tag WHERE page_id=? AND tag_id=?", (page_id, tag_id)
     ).fetchone()
@@ -370,7 +371,7 @@ def page_tag_toggle(conn: sqlite3.Connection, page_id: int, tag_id: int) -> str:
 
 
 def tag_children(conn: sqlite3.Connection, parent: str | None) -> list[sqlite3.Row]:
-    """父名下子 tag（parent=None → 根层）。"""
+    """Child tags under a parent (parent=None -> root layer)."""
     if parent:
         return conn.execute(
             "SELECT t.name, t.rank FROM tag t WHERE t.parent_id ="
@@ -385,7 +386,7 @@ def tag_children(conn: sqlite3.Connection, parent: str | None) -> list[sqlite3.R
 
 
 def pages_open(conn: sqlite3.Connection, ctx: str | None = None) -> list[sqlite3.Row]:
-    """打开页列表（跨 ctx；ctx 给定时只看该上下文实例）。"""
+    """Open-page list (across contexts; when ctx is given, only that context's instance is considered)."""
     if ctx:
         return conn.execute(
             "SELECT p.id, p.title, p.url, i.profile AS ctx FROM pages p"

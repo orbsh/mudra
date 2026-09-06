@@ -1,10 +1,10 @@
-// mudra panel — SolidJS hyperscript 版（零构建）。
-// h() 返回的是惰性工厂（[$ELEMENT] 标记），插入 DOM 时才求值；
-// 组件就是返回 h() 工厂的普通函数，Solid 会自动当 component 调用。
-// Solid 由 /shared/vendor/solid-bundle.js 提供（window.MudraSolid，与扩展共用同一份）。
+// mudra panel -- SolidJS hyperscript edition (zero-build).
+// h() returns a lazy factory ([$ELEMENT] marker) that is only evaluated when inserted into the DOM;
+// a component is just a plain function returning an h() factory, which Solid calls as a component automatically.
+// Solid comes from /shared/vendor/solid-bundle.js (window.MudraSolid, the same copy shared with the extension).
 const { h, render, createSignal, createMemo, createEffect, For, Show } = window.MudraSolid;
 
-// ---- WS client（请求/响应，id -> promise）----
+// ---- WS client (request/response, id -> promise) ----
 function makeClient() {
   const pending = new Map();
   let ws = null;
@@ -24,7 +24,7 @@ function makeClient() {
         pending.delete(m.id);
         m.ok ? resolve(m) : reject(new Error(m.err || "ws error"));
       } else if (!m.id && client.onEvent) {
-        client.onEvent(m); // 服务端主动推送（pages_changed 等）
+        client.onEvent(m); // server-initiated push (pages_changed etc.)
       }
     };
     ws.onclose = () => setTimeout(connect, 800);
@@ -41,23 +41,23 @@ function makeClient() {
   const client = {
     call,
     ready,
-    onEvent: null, // 服务端主动推送（无 id 的消息）回调，App 层赋值
+    onEvent: null, // callback for server-initiated pushes (messages without id), assigned by the App layer
   };
   return client;
 }
 const client = makeClient();
 
 // ---- state ----
-const [contexts, setContexts] = createSignal([]);   // situation 叶名列表
-const [ctx, setCtx] = createSignal("");             // 当前查看/切换的上下文
+const [contexts, setContexts] = createSignal([]);   // situation leaf-name list
+const [ctx, setCtx] = createSignal("");             // context currently viewed / switched to
 const [pages, setPages] = createSignal([]);   // flat
 const [roots, setRoots] = createSignal([]);   // deep tag tree
 const [sortNew, setSortNew] = createSignal(true);
 const [filters, setFilters] = createSignal(new Set());
 const [collapsed, setCollapsed] = createSignal(new Set());
 const [shot, setShot] = createSignal(null);   // {x,y,url}
-const [popup, setPopup] = createSignal(null); // 胶囊切换菜单 {x,y,items[],cb}
-const [thumbnails, setThumbnails] = createSignal(false); // 悬停截图开关（config.kdl ui.thumbnails，默认禁用）
+const [popup, setPopup] = createSignal(null); // capsule switch menu {x,y,items[],cb}
+const [thumbnails, setThumbnails] = createSignal(false); // hover-screenshot toggle (config.kdl ui.thumbnails, disabled by default)
 
 let byId = new Map();
 let rankRoots = [];
@@ -79,7 +79,7 @@ function indexTagTree(trees) {
 }
 
 async function load() {
-  await client.ready;           // 等 WS 连上再取数（避免初次 Forest 调用被拒）
+  await client.ready;           // wait for the WS connection before fetching (so the initial Forest call is not rejected)
   const r = await client.call("forest");
   setRoots(r.forest);
   setContexts(r.contexts);
@@ -94,7 +94,7 @@ async function loadPages() {
 }
 async function switchCtx(name) {
   setCtx(name);
-  // 切换走后端（mudrad /ctx），后端广播 context_changed → 广播回来时已一致
+  // Switching goes through the backend (mudrad /ctx); the backend broadcasts context_changed -> state is consistent by the time the broadcast returns
   try { await client.call("set_ctx", { ctx: name }); } catch (e) { console.warn(e); }
 }
 createEffect(() => {
@@ -102,17 +102,17 @@ createEffect(() => {
   loadPages();
 });
 load().catch((e) => console.warn(e));
-// 悬停截图开关：读不到配置（WS 断连/旧后端）按默认禁用处理
+// Hover-screenshot toggle: if config is unavailable (WS down / old backend), treat as disabled by default
 client.call("config").then((r) => setThumbnails(!!r.config?.thumbnails)).catch(() => {});
 
-// 服务端推送：mudrad 在 page 集变化（新开/关闭/标题更新）时广播 pages_changed，
-// 前端收到后重取当前上下文页面——不做轮询。
+// Server push: mudrad broadcasts pages_changed when the page set changes (open/close/title update);
+// the frontend refetches the current context's pages on receipt -- no polling.
 client.onEvent = (ev) => {
   if (ev.event === "pages_changed") loadPages().catch(() => {});
   else if (ev.event === "context_changed" && ev.ctx) setCtx(ev.ctx);
 };
 
-// ---- page 树 ----
+// ---- page tree ----
 const pageTree = createMemo(() => {
   const list = pages();
   const byParent = new Map();
@@ -140,13 +140,13 @@ const pageTree = createMemo(() => {
 const timeAgo = (t) => {
   if (!t) return "";
   const s = Date.now() / 1000 - t;
-  if (s < 60) return "刚刚";
-  if (s < 3600) return `${Math.floor(s / 60)}分前`;
-  if (s < 86400) return `${Math.floor(s / 3600)}时前`;
-  return `${Math.floor(s / 86400)}天前`;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 };
 
-// 页在某 rank 根下选中的节点
+// The node selected for a page under a given rank root
 const rankSel = (page, root) => root.children.find((c) => page.tag_ids.includes(c.id));
 
 async function setRank(page, root, k) {
@@ -165,18 +165,18 @@ async function setTags(page, ids) {
   await loadPages();
 }
 
-// 普通 tag（非 rank 根的叶）——按路径拆成胶囊
+// Plain tag (a leaf not under a rank root) -- split its path into capsules
 const normalTags = (page) =>
   page.tag_ids.map((t) => byId.get(t)).filter((n) => n && !n.root && n.rank === null);
 
-// 段级切换：在该段父下选同级
+// Segment-level switch: select a sibling under that segment's parent
 function capsuleSwitch(page, tagNode, depth) {
   const parts = tagNode.path.split("::");
   const root = roots().find((r) => r.name === parts[0]);
   if (!root) return;
   let parentChildren = [];
   if (depth === 0) {
-    parentChildren = root.children.filter((c) => c.rank === null); // 同级（同根下的普通 tag）
+    parentChildren = root.children.filter((c) => c.rank === null); // siblings (plain tags under the same root)
   } else {
     let node = root;
     for (let i = 1; i <= depth; i++) {
@@ -193,13 +193,13 @@ function capsuleSwitch(page, tagNode, depth) {
 }
 
 async function addChild(page, parentId) {
-  const name = prompt("新建子 tag 名");
+  const name = prompt("New child tag name");
   if (!name) return;
   try {
     const { id } = await client.call("create_tag", { parent_id: parentId, name });
     await setTags(page, page.tag_ids.concat(id));
     load().catch(() => {});
-  } catch (e) { alert("创建失败 " + e.message); }
+  } catch (e) { alert("Failed to create: " + e.message); }
 }
 
 async function addTagToPage(page) {
@@ -210,7 +210,7 @@ async function addTagToPage(page) {
   });
 }
 
-// 聚焦 + 悬停截图（ui.thumbnails=false 时短路：不请求不渲染）
+// Focus + hover screenshot (short-circuits when ui.thumbnails=false: no request, no render)
 let shotTimer = null;
 function hover(page, on, e) {
   if (!thumbnails()) return;
@@ -231,12 +231,12 @@ function App() {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  // 头部：上下文 + 排序 + 过滤
+  // Header: context + sorting + filter
   const hdrRow = () => h("div.hdr-row", [
     h("select", { value: ctx, onChange: (e) => switchCtx(e.currentTarget.value) },
       () => h(For, { each: contexts() }, (c) => h("option", { value: c }, c))),
-    h("button.b", { onClick: () => setSortNew(!sortNew()) }, () => sortNew() ? "新→旧" : "旧→新"),
-    h("span.count", () => `${pageSet().length} 页`),
+    h("button.b", { onClick: () => setSortNew(!sortNew()) }, () => sortNew() ? "new->old" : "old->new"),
+    h("span.count", () => `${pageSet().length} pages`),
   ]);
   const filts = () => h("div.filts",
     () => h(For, { each: allLeaves }, (n) =>
@@ -245,21 +245,21 @@ function App() {
         onClick: () => toggleFilter(n.id),
       }, n.path)));
 
-  // 胶囊切换菜单（x/y 由 setPopup 调用方给定）
+  // Capsule switch menu (x/y given by the setPopup caller)
   const popupMenu = () => {
     const p = popup();
     return h("div.menu", {
       onClick: (e) => e.stopPropagation(),
       style: `left:${p.x}px;top:${p.y}px;`,
     }, [
-      p.place === "add" ? h("div.menu-title", "指派 tag") : null,
+      p.place === "add" ? h("div.menu-title", "Assign tag") : null,
       h(For, { each: p.items }, (it) => h("button.menu-item", {
         onClick: () => { const cb = p.cb; setPopup(null); cb(it.id); },
       }, it.label)),
     ]);
   };
 
-  // 悬停截图浮窗
+  // Hover screenshot popup
   const shotBox = () => {
     const s = shot();
     return h("div.shot", {
@@ -267,7 +267,7 @@ function App() {
     }, h("img", { src: s.data, alt: "" }));
   };
 
-  // 开新窗口：底部地址栏已移除，用扩展的 :open 命令（console 角色过滤 page，兜底开 URL）
+  // Open new window: the bottom address bar was removed; use the extension's :open command (the console role filters existing pages, falling back to opening the URL)
   return h("div.panel", {
     onClick: () => popup() && popup().place === undefined && setPopup(null),
   }, () => [
@@ -283,18 +283,18 @@ function PageNode(props) {
   const p = () => props.nd.p;
   return h("div.node", [
     h("div.ncard", { class: () => (p().closed ? "closed" : ""), style: { "margin-left": () => `${props.nd.lvl * 16}px` } }, [
-      // 行1：关闭/打开 + 删除 + 标题 + 链接 + 折叠
+      // Row 1: close/open + delete + title + link + collapse
       h("div.row1", [
         h("button.act", {
-          title: () => (p().closed ? "打开" : "关闭窗口"),
+          title: () => (p().closed ? "Open" : "Close window"),
           onClick: (e) => {
             e.stopPropagation();
             client.call(p().closed ? "reopen" : "close", { page_id: p().id }).catch(() => {});
           },
         }, () => (p().closed ? "↻" : "⨯")),
         h("button.act.del", {
-          title: "删除（仅关闭状态可用）",
-          // 打开状态灰占位，点击无效果；删除为软删
+          title: "Delete (only while closed)",
+          // Grayed placeholder while open, click does nothing; delete is a soft delete
           disabled: () => !p().closed,
           onClick: (e) => {
             e.stopPropagation();
@@ -315,7 +315,7 @@ function PageNode(props) {
         }, () => p().title),
         h("span.meta", () => timeAgo(p().opened_at)),
       ]),
-      // 行2：rank + 普通胶囊 + 添加
+      // Row 2: rank + plain capsules + add
       h("div.row2", [
         h(For, { each: rankRoots }, (root) => h(RankAxis, { page: p(), root })),
         h(For, { each: () => normalTags(p()) }, (t) => h(Capsule, { page: p(), t })),
@@ -338,7 +338,7 @@ function RankAxis(props) {
 
 function Capsule(props) {
   const t = () => props.t;
-  // 普通 tag 胶囊：每段一级路径，点击段切换同级；头✕删，尾＋加子级
+  // Plain tag capsule: each segment is one path level; clicking a segment switches to a sibling; leading x removes, trailing + adds a child
   return window.MudraTags.Capsule({
     tag: t(),
     onSeg: (tag, i, el) => openSegMenu(props.page, tag, i, el.getBoundingClientRect()),
