@@ -42,6 +42,7 @@ _BAR_KEYS = {
 _HINT_KEYS = {"chars": "hintChars", "fontSize": "hintFontSize"}
 _SCROLL_KEYS = {"stepLines": "scrollStepLines", "overlapLines": "pageOverlapLines"}
 _COMMAND_KEYS = {"maxCandidates": "maxCandidates"}
+_UI_KEYS = {"thumbnails": "thumbnails"}
 
 # 整型配置键（kdl-py 把数字解析成 float，这些键强转回 int）
 _INT_KEYS = {"statusHeight", "hintFontSize", "scrollStepLines",
@@ -64,8 +65,8 @@ def parse(text: str) -> dict:
     doc = kdl.parse(text)
     for group in doc.nodes:
         g = group.name
-        table = {"bar": _BAR_KEYS, "hint": _HINT_KEYS,
-                 "scroll": _SCROLL_KEYS, "command": _COMMAND_KEYS}.get(g)
+        table = {"bar": _BAR_KEYS, "hint": _HINT_KEYS, "scroll": _SCROLL_KEYS,
+                 "command": _COMMAND_KEYS, "ui": _UI_KEYS}.get(g)
         if table:
             for child in group.nodes:
                 key = table.get(child.name)

@@ -144,7 +144,8 @@ def _contexts(conn) -> list[str]:
 # ---------------------------------------------------------------- WS 循环
 def _reply(msg, **kw):
     """构造带请求 id 的响应（前端按 id 匹配 pending promise）。"""
-    resp = {"ok": False, "err": "unknown", **kw}
+    resp = {"ok": False, "err": "unknown"} if not kw.get("ok") else {}
+    resp.update(kw)
     if msg.get("id"):
         resp["id"] = msg.get("id")
     return json.dumps(resp)
@@ -191,6 +192,9 @@ def _handle(msg: dict) -> str:
             elif op == "create_tag":
                 nid = _create_tag(conn, msg.get("parent_id"), msg.get("name"))
                 return _reply(msg, ok=True, id=nid)
+            elif op == "config":
+                from mudralib.config import load
+                return _reply(msg, ok=True, config=load())
             elif op == "shot":
                 data = _shot(conn, msg.get("page_id"))
                 return _reply(msg, ok=True, data=data)

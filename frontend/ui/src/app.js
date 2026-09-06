@@ -57,6 +57,7 @@ const [filters, setFilters] = createSignal(new Set());
 const [collapsed, setCollapsed] = createSignal(new Set());
 const [shot, setShot] = createSignal(null);   // {x,y,url}
 const [popup, setPopup] = createSignal(null); // 胶囊切换菜单 {x,y,items[],cb}
+const [thumbnails, setThumbnails] = createSignal(false); // 悬停截图开关（config.kdl ui.thumbnails，默认禁用）
 
 let byId = new Map();
 let rankRoots = [];
@@ -101,6 +102,8 @@ createEffect(() => {
   loadPages();
 });
 load().catch((e) => console.warn(e));
+// 悬停截图开关：读不到配置（WS 断连/旧后端）按默认禁用处理
+client.call("config").then((r) => setThumbnails(!!r.config?.thumbnails)).catch(() => {});
 
 // 服务端推送：mudrad 在 page 集变化（新开/关闭/标题更新）时广播 pages_changed，
 // 前端收到后重取当前上下文页面——不做轮询。
@@ -207,9 +210,10 @@ async function addTagToPage(page) {
   });
 }
 
-// 聚焦 + 悬停截图
+// 聚焦 + 悬停截图（ui.thumbnails=false 时短路：不请求不渲染）
 let shotTimer = null;
 function hover(page, on, e) {
+  if (!thumbnails()) return;
   clearTimeout(shotTimer);
   if (!on) { setShot(null); return; }
   const x = e.clientX, y = e.clientY;

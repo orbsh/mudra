@@ -14,7 +14,7 @@ bar {
 }
 
 hint {
-    chars "asdfghjkl"          // 字母池，顺序即分配顺序
+    chars "asdfghjkl;qwertyuiopzxcv" // 字母池，顺序即分配顺序
     fontSize 12                // hint 标签字号 px
 }
 
@@ -45,4 +45,8 @@ command {
 // 占位：解析但不消费，端口仍由 mudrad.py 启动参数决定
 server {
     port 8899
+}
+
+ui {
+    thumbnails false   // panel 悬停链接的截图浮窗
 }
