@@ -407,45 +407,67 @@
     setMode("insert");
   }
 
-  // ---- tag prompt bar (summon with t, press a letter to tag, Esc cancels) ----
-  let tagPrompt = null;
-  async function showTagPrompt() {
-    const roots = await send({ type: "tags" });
-    if (!roots.tags || !roots.tags.length) { await flashBar("no tags"); return; }
-    // Flatten top-level roots + their first-level children: roots uppercase, children lowercase (good enough; deep trees iterate later)
-    const items = [];
-    for (const root of roots.tags) {
-      items.push({ seq: root[0].toUpperCase(), tag: root });
-      const kids = await send({ type: "tags", parent: root });
-      for (const k of (kids.tags || [])) {
-        if (!items.some((it) => it.seq === k[0])) items.push({ seq: k[0], tag: k });
-      }
-    }
-    const c = await MudraConfig.all();
-    const p = document.createElement("div");
-    p.id = "mudra-tagprompt";
-    p.style.cssText = [
-      "position:fixed", "left:0", `bottom:${c.statusHeight}px`, "z-index:2147483647",
-      `font:${c.statusFont}`, `color:${c.statusFg}`, `background:${c.statusBg}`,
-      "padding:2px 8px", "max-width:100%", "box-sizing:border-box", "overflow:hidden",
-    ].join(";");
-    p.textContent = "tag: " + items.map((it) => `${it.seq}=${it.tag}`).join("  ");
-    document.documentElement.appendChild(p);
-    tagPrompt = { items };
-    setMode("hint");
+  // ---- tag picker (summon with t): the command popup with tree drilling ----
+  // Candidates are one layer of the tag tree (label shows the full "a::b" path);
+  // Tab drills into a branch, Backspace on an empty input goes back up, Enter toggles a leaf.
+  // /tags and /tag both address nodes by bare name (not path), so the layer stack keeps
+  // {path, name} per level: path is display-only, name feeds the API.
+  let tagStack = []; // [{path, name}] from root down; empty = root layer, session-only
+  const tagParentName = () => (tagStack.length ? tagStack[tagStack.length - 1].name : undefined);
+  const tagLayerPath = () => tagStack.map((s) => s.path).join("::");
+  async function tagLayerItems() {
+    const r = await send({ type: "tags", parent: tagParentName() });
+    const tags = r.tags || [];
+    const base = tagLayerPath();
+    return tags.map((name) => ({ label: base ? `${base}::${name}` : name, value: name }));
   }
-  function hideTagPrompt() {
-    document.getElementById("mudra-tagprompt")?.remove();
-    tagPrompt = null;
-    setMode("normal");
-  }
-  async function pickTag(seq) {
-    const hit = tagPrompt?.items.find((it) => it.seq === seq);
-    hideTagPrompt();
-    if (!hit) return;
-    const r = await send({ type: "tag", url: pageUrl(), tag: hit.tag });
-    await flashBar(r.action ? `${hit.tag} ${r.action}` : (r.err || "tag failed"));
+  const tagFilter = (q, api) => {
+    const s = (q || "").replace(/^:/, "").replace(/::$/, "").toLowerCase();
+    api.setItems(tagLayerCache.filter((it) => !s || it.label.toLowerCase().includes(s)));
+  };
+  let tagLayerCache = [];
+  async function tagToggle(cand) {
+    cmdApi = null; await setMode("normal");
+    const r = await send({ type: "tag", url: pageUrl(), tag: cand.value });
+    await flashBar(r.action ? `${cand.label} ${r.action}` : (r.err || "tag failed"));
     await syncStatus();
+  }
+  async function tagRender() {
+    const api = cmdApi;
+    tagLayerCache = await tagLayerItems();
+    if (!tagLayerCache.length && !tagStack.length) {
+      api.close(); cmdApi = null; await setMode("normal");
+      return flashBar("no tags");
+    }
+    api.setItems(tagLayerCache);
+    // no path prefix in the input: rows already show full paths, and an empty input
+    // is what enables the Backspace layer-up hook
+  }
+  async function showTagPrompt() {
+    tagStack = [];
+    setMode("command");
+    cmdApi = await MudraBar.openCommand(
+      tagFilter,
+      // Enter: toggle the tag. Only meaningful on a leaf, but a toggle on a branch name is
+      // harmless at the API level — the tag exists either way, so just do it.
+      async (cand, _raw, _api) => { if (cand) await tagToggle(cand); },
+      // Tab: drill into the branch. A leaf has no children, so falling back to toggle keeps
+      // Tab = "go deeper if you can" without a separate probe round trip on render.
+      async (cand, api) => {
+        const kids = await send({ type: "tags", parent: cand.value });
+        if (kids.tags && kids.tags.length) {
+          tagStack.push({ path: cand.label, name: cand.value });
+          cmdApi = api; await tagRender();
+        } else await tagToggle(cand);
+      },
+      // Backspace on empty input: back up one layer
+      async (_api) => {
+        if (!tagStack.length) return;
+        tagStack.pop();
+        await tagRender();
+      }
+    );
+    await tagRender();
   }
   async function flashBar(text) {
     await MudraBar.render({ ctx, mode, tags: pageTags, message: text });
@@ -478,12 +500,10 @@
       if (e.key === "Escape") {
         document.getElementById("mudra-hints")?.remove();
         hintSession = null; inputHintSession = null;
-        hideTagPrompt();
         return setMode("normal");
       }
       if (hintSession) return hintFilter(e.key);
       if (inputHintSession) return inputHintFilter(e.key);
-      if (tagPrompt && /^[a-zA-Z]$/.test(e.key)) return pickTag(e.key);
       return;
     }
 

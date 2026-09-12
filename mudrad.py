@@ -42,9 +42,11 @@ _INJECT_JS = r"""(() => {
   };
   document.addEventListener("click", function(e) {
     const a = e.target && e.target.closest ? e.target.closest("a") : null;
-    if (a && a.href && (a.target === "_blank" || e.ctrlKey || e.metaKey || e.button === 1)) {
-      e.preventDefault(); openUrl(a.href);
-    }
+    if (!a || !a.href || !/^https?:/.test(a.href)) return;
+    // same-page anchor jump: navigate in place, no new window
+    if (a.hash && a.pathname === location.pathname && a.search === location.search) return;
+    // ALL left-click link navigations go to mudrad (--app windows only); ctrl/meta/middle included
+    e.preventDefault(); openUrl(a.href);
   }, true);
 })();"""
 
@@ -251,10 +253,13 @@ class Mudrad:
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
+        # A zombie (exited but unreaped) must count as dead: os.kill(pid, 0)
+        # succeeds for zombies and would make /open join a dead instance.
         try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, TypeError):
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                # state sits after the (potentially space-containing) comm field
+                return f.read().split(b")", 1)[1].split()[0] != b"Z"
+        except (FileNotFoundError, ProcessLookupError, IndexError, TypeError):
             return False
         except PermissionError:
             return os.path.exists(f"/proc/{pid}")

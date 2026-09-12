@@ -154,7 +154,10 @@ const MudraBar = {
   // candidate popup above the input, full width, at most maxCandidates entries, scrollable beyond that. ----
   // onInput(query, api) filters candidates on the host side; onPick(candidate, query, api) handles selection;
   // candidate = {label, value}；Esc → onPick(null, ...)。
-  async openCommand(onInput, onPick) {
+  // Optional host hooks for non-command pickers: onTab(candidate, api) replaces the default
+  // fill-and-refilter (drill-down semantics), onBackspace(api) fires when Backspace is pressed
+  // on an empty input (layer-up semantics).
+  async openCommand(onInput, onPick, onTab, onBackspace) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
     const { setCommand } = this._setState;
@@ -173,20 +176,31 @@ const MudraBar = {
     box.appendChild(list);
     document.documentElement.appendChild(box);
 
-    // The input line takes over the whole bar: right slots hidden (Solid-rendered), input appended inside the bar
+    // The input line REPLACES the bar (not appended into it): Solid owns every child of
+    // #mudra-bar and re-renders on any signal update, so manually added nodes inside it
+    // get shuffled/interleaved with status segments. A standalone fixed line at the same
+    // position avoids all ownership conflicts; the Solid bar is hidden while open.
     setCommand(true);
-    const bar = document.getElementById("mudra-bar");
-    bar.style.color = cfg.insertFg;
-    bar.style.background = cfg.insertBg;
-    const left = document.getElementById("mudra-bar-left");
-    left.textContent = ":";
+    document.getElementById("mudra-bar").style.visibility = "hidden";
+    const line = document.createElement("div");
+    line.id = "mudra-cmdline";
+    line.style.cssText = [
+      "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
+      `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
+      `color:${cfg.insertFg}`, `background:${cfg.insertBg}`,
+      "display:flex", "align-items:center", "padding:0 6px", "box-sizing:border-box",
+    ].join(";");
+    const promptEl = document.createElement("span");
+    promptEl.textContent = ":";
     const input = document.createElement("input");
     input.id = "mudra-cmdinput";
     input.style.cssText = [
       "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
       `color:${cfg.insertFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
-    bar.appendChild(input);
+    line.appendChild(promptEl);
+    line.appendChild(input);
+    document.documentElement.appendChild(line);
     input.focus();
 
     let items = [];
@@ -207,8 +221,10 @@ const MudraBar = {
     };
 
     const close = () => {
-      input.remove();
+      document.getElementById("mudra-cmdline")?.remove();
       document.getElementById("mudra-cmdbox")?.remove();
+      const bar = document.getElementById("mudra-bar");
+      if (bar) bar.style.visibility = "";
       setCommand(false);
       this._setState.setData((d) => ({ ...d })); // restore normal rendering (colors come from the mode signal)
     };
@@ -226,9 +242,15 @@ const MudraBar = {
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
-        // Tab completion: fill the input with the selected candidate's command name (value, not the descriptive label) and refilter
         e.preventDefault();
-        if (items[sel]) { input.value = ":" + items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
+        if (!items[sel]) return;
+        // Drill-down hosts take over Tab entirely; default is fill the selected value and refilter
+        if (onTab) onTab(items[sel], api);
+        else { input.value = ":" + items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
+      }
+      else if (e.key === "Backspace" && input.value === "" && onBackspace) {
+        // Layer-up hook: only fires on an empty input, so normal text editing is unaffected
+        e.preventDefault(); onBackspace(api);
       }
       else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, input.value, api); }
     });
