@@ -366,15 +366,18 @@ impl MudraStore {
             .collect()
     }
 
-    /// The live row whose CDP target id is exactly `target_id`. A reopen
-    /// re-targets the row (mudrad rebinds target_id on revival), so at
-    /// most one row carries a given id among live pages; if history rows
-    /// linger, the newest open wins.
+    /// The live row whose CDP target id is exactly `target_id`. Consumers
+    /// are CDP-driven (`/open {tabId}`, focus): a target that exists is
+    /// an open page, so closed rows do not match. A rebind of target_id
+    /// moves the index entry (see lifecycle `upsert_target`).
     pub fn page_by_target(&self, target_id: &str) -> Option<(PageKey, Page)> {
         self.pages
             .scan::<ByTarget>(target_id.as_bytes())
             .into_iter()
-            .filter_map(|(pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
+            .filter_map(|(pk, row)| {
+                row.filter(|p| p.closed_at == 0 && p.deleted_at == 0)
+                    .map(|p| (pk.decoded, p))
+            })
             .max_by_key(|(_, p)| p.opened_at)
     }
 

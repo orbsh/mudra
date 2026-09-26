@@ -165,7 +165,12 @@ fn close_target_marks_closed_and_repeat_close_is_silent() {
     let (_d, mut s) = open_tmp();
     s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000);
     assert_eq!(s.close_target(7, "T1", 1500), Some(2)); // epoch after sync = 1
-    let row = s.page_by_target("T1").unwrap().1;
+    let row = s
+        .pages_of_instance(7, false)
+        .into_iter()
+        .find(|(_, p)| p.target_id == "T1")
+        .expect("closed row still in the live (non-deleted) list")
+        .1;
     assert_eq!(row.closed_at, 1500);
     assert_eq!(s.close_target(7, "T1", 1600), None);
     assert_eq!(s.close_target(7, "T-none", 1700), None);
