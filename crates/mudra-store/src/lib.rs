@@ -252,6 +252,14 @@ impl MudraStore {
     pub fn persist(&self) -> fjall::Result<()> {
         self.db.persist()
     }
+
+    /// The shared engine handle (FjallStore clones are Arc-handle views
+    /// of the same keyspace). The daemon's panel WS receiver builds a
+    /// bare `NestStorage` over this — frames execute byte-identical in
+    /// the collections' keyspace (SCHEMA's wire-protocol section).
+    pub fn engine(&self) -> FjallStore {
+        self.db.clone()
+    }
 }
 
 // ================= counters & epoch =================

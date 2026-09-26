@@ -15,6 +15,7 @@
 
 pub mod cdp;
 pub mod control;
+pub mod daemon;
 pub mod runtime;
 pub mod spawn;
 pub mod watch;
