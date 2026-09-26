@@ -47,6 +47,11 @@ Namespaces are assigned in declaration order.
   - URL reverse lookup: n-gram index (`okm-ngram` recipe — multi-value
     func index, n-gram → entries, caller-side rerank). Replaces the
     earlier full-scan-plus-predicate plan.
+- (instance, target) uniqueness: the sqlite tree guarded it with a
+  UNIQUE index against multi-daemon races. Rust mudrad needs no DB-layer
+  constraint — fjall's file lock makes a second writer impossible to
+  open the store at all, and `upsert_target`'s identity order never
+  inserts a row for a target that already has one.
 
 ### page_tag
 

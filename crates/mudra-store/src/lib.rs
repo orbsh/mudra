@@ -21,6 +21,9 @@ use okm_core::{
 };
 use std::path::Path;
 
+pub mod lifecycle;
+pub use lifecycle::{TargetInfo, UpsertMode};
+
 // ================= keys =================
 
 /// Tag identity: surrogate id only (tree position lives on the row).

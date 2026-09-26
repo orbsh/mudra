@@ -44,6 +44,9 @@ Rust 重写的 mudrad 用单一 fjall store 取代 sqlite 文件，经 okm 静�
     `focus_page` 的反查；URL 反查降为 fallback。
   - URL 反查：n-gram 索引（`okm-ngram` 配方——多值 func 索引，
     n-gram → 条目，BM25 精排在调用方）。取代早期的全表扫 + 谓词方案。
+- (instance, target) 唯一性：sqlite 版用 UNIQUE 索引防多 daemon 竞写。
+  Rust 版不需要库层约束——fjall 的文件锁让第二个写者根本打不开 store，
+  且 `upsert_target` 的身份次序对已有 target 永不另起新行。
 
 ### page_tag
 
