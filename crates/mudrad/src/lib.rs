@@ -13,6 +13,7 @@
 //! - `panel`    — static file server + WS frame endpoint
 //!   (NestStorage::apply + epoch invalidation hint frames)
 
+pub mod cdp;
 pub mod spawn;
 
 pub fn _r1_skeleton() {

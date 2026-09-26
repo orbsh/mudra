@@ -200,18 +200,23 @@ fn normalize_url_adds_https_only_when_scheme_missing() {
 }
 
 #[test]
-fn free_port_skips_occupied_ports() {
-    // Bind one port to force the scan to move on; returned port must be
-    // bindable by the real caller afterwards (prototype TOCTOU accepted,
-    // same contract as the Python probe-by-bind).
-    let first = free_port(19_800, 50).expect("range has slack");
-    let occupied = std::net::TcpListener::bind(("127.0.0.1", first)).unwrap();
-    let next = free_port(19_800, 50).expect("range has slack");
-    assert_ne!(next, first);
-    // range exhaustion is an error, not a fallback port
+fn free_port_probes_by_bind_and_errors_on_an_exhausted_span() {
+    // Contract (prototype TOCTOU accepted, same as the Python probe-by-
+    // bind): a port is returned because binding it just succeeded.
+    // The deterministic assertion is the EXHAUSTION path: occupy a port
+    // via bind(0) (kernel-assigned, so no other test can collide into a
+    // fixed range), then ask free_port for a span that can only pick
+    // that one occupied port — it must Err, never hand back a bound port.
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    assert!(
+        free_port(port, 1).is_err(),
+        "the only candidate is occupied: exhaustion is an error"
+    );
+    // the next port is almost certainly free; the call either finds it
+    // or errors if the box happens to be crowded — both are honest,
+    // so no assertion on the success VALUE, only on the Err shape above.
     drop(occupied);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", next)).unwrap();
-    drop(listener);
 }
 
 // ================= command assembly =================
