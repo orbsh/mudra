@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/mudra-store", "crates/mudrad"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+# okm: schema derives + fjall engine (docs/SCHEMA.md is the layout contract).
+# git source matches sibling repos (aura, krystallizer, prism); branch main is
+# pinned by Cargo.lock.
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
+okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
+okm-ngram = { git = "https://github.com/orbsh/okm", branch = "main" }
+fjall = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
