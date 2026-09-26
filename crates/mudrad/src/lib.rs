@@ -14,6 +14,8 @@
 //!   (NestStorage::apply + epoch invalidation hint frames)
 
 pub mod cdp;
+pub mod control;
+pub mod runtime;
 pub mod spawn;
 pub mod watch;
 
