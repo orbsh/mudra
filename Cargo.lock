@@ -252,6 +252,7 @@ dependencies = [
 name = "mudrad"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mudra-store",
  "okm-core",
  "tokio",

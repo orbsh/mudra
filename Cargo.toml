@@ -14,10 +14,13 @@ okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = [
 okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-ngram = { git = "https://github.com/orbsh/okm", branch = "main" }
 fjall = "3"
+libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# deny (not forbid): pre_exec/prctl-style syscall sites need a narrow,
+# commented #[allow(unsafe_code)]; an unconditional allow must not hide there
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

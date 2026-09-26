@@ -13,6 +13,8 @@
 //! - `panel`    — static file server + WS frame endpoint
 //!   (NestStorage::apply + epoch invalidation hint frames)
 
+pub mod spawn;
+
 pub fn _r1_skeleton() {
     // The crate family starts here; SCHEMA.md is implemented in mudra-store.
     let _ = mudra_store::url_site("https://example.com/a/b");
