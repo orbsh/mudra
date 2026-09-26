@@ -1,6 +1,13 @@
 //! Instance watcher — the port of `mudrad.py::_watch`: the per-instance
-//! task that keeps the pages table in step with CDP reality (CDP is the
-//! single source of truth, mudrad.py docstring).
+//! session that keeps the pages table in step with CDP reality (CDP is
+//! the single source of truth, mudrad.py docstring).
+//!
+//! Shape: `WatchSession` drives ONE step at a time — `baseline` (the
+//! getTargets sync, awaited commands, short store lock per write) and
+//! `on_event` (pure store writes, no await inside). The awaiting event
+//! loop belongs to the daemon task: the store mutex must never be held
+//! across an await (a watcher parked on events would starve the HTTP
+//! verbs of the single writer — the async+lock discipline).
 //!
 //! Blood-lesson inventory (each maps to a test in `tests/watcher_test.rs`):
 //!
@@ -69,73 +76,85 @@ pub fn page_infos(arr: &Value) -> Vec<TargetInfo> {
         .unwrap_or_default()
 }
 
-/// Run the watcher loop to completion. `inject` is called per page target
-/// (baseline + created) with (port, target_id, ctx) — the daemon wires the
-/// new-window interception script; tests record. `notify` receives every
-/// bumped epoch (panel invalidation frames). Returns when the event
-/// stream ends or a command fails; either way the instance is marked down
-/// and pages closed before returning.
-pub async fn run_watcher<Inject, Notify>(
-    store: &mut MudraStore,
-    instance_id: u32,
-    port: u16,
-    ctx: &str,
-    conn: &CdpConn,
-    inject: &mut Inject,
-    notify: &mut Notify,
-) where
-    Inject: FnMut(u16, &str, &str),
-    Notify: FnMut(u64),
-{
-    // baseline: full sync once, then enable discovery (Python order kept —
-    // subscribing first would double-sync targets the baseline already has)
-    match conn.call("Target.getTargets", json!({})).await {
-        Ok(r) => {
-            let infos = page_infos(&r["targetInfos"]);
-            for t in &infos {
-                inject(port, &t.target_id, ctx);
-            }
-            if let Some(epoch) = store.sync_targets(instance_id, &infos, now_ms()) {
-                notify(epoch);
-            }
-        }
-        Err(_) => {
-            teardown(store, instance_id, notify);
-            return;
-        }
-    }
-    if let Err(e) = conn
-        .call("Target.setDiscoverTargets", json!({"discover": true}))
-        .await
-    {
-        eprintln!("[watcher] {ctx}: discovery failed: {e}");
-        teardown(store, instance_id, notify);
-        return;
+/// One instance's watch session. Steps take `&mut MudraStore` for the
+/// duration of one write burst only — the daemon's event loop awaits
+/// OUTSIDE any store borrow.
+pub struct WatchSession {
+    pub instance_id: u32,
+    pub port: u16,
+    pub ctx: String,
+    discovery_enabled: bool,
+}
+
+/// Effect of one processed CDP event.
+pub enum Step {
+    /// The event was handled; zero or more epochs were notified (the
+    /// daemon already pushed the frames — bookkeeping for tests/logs).
+    Handled { epochs: Vec<u64> },
+    /// Not a page-lifecycle event.
+    Ignored,
+}
+
+impl WatchSession {
+    pub fn new(instance_id: u32, port: u16, ctx: &str) -> Self {
+        WatchSession { instance_id, port, ctx: ctx.to_string(), discovery_enabled: false }
     }
 
-    // event loop until the socket dies
-    while let Some(ev) = conn.next_event().await {
+    /// Phase 1 (awaits only, never touches the store): fetch the
+    /// baseline snapshot and arm discovery. Err = the instance died
+    /// between connect and first use: the caller tears down and stops.
+    /// Splitting the awaits from the writes keeps the store lock off
+    /// every await point (async+lock discipline).
+    pub async fn start(&mut self, conn: &CdpConn) -> Result<Vec<TargetInfo>, crate::cdp::CdpError> {
+        let r = conn.call("Target.getTargets", json!({})).await?;
+        let infos = page_infos(&r["targetInfos"]);
+        conn.call("Target.setDiscoverTargets", json!({"discover": true}))
+            .await?;
+        self.discovery_enabled = true;
+        Ok(infos)
+    }
+
+    /// Phase 2 (writes only, no awaits): apply the baseline snapshot —
+    /// inject per page (interception script), one batched sync, one bump.
+    pub fn apply_baseline<F, N>(&self, store: &mut MudraStore, infos: &[TargetInfo], inject: &mut F, notify: &mut N) -> Option<u64>
+    where
+        F: FnMut(u16, &str, &str),
+        N: FnMut(u64),
+    {
+        for t in infos {
+            inject(self.port, &t.target_id, &self.ctx);
+        }
+        let epoch = store.sync_targets(self.instance_id, infos, now_ms())?;
+        notify(epoch);
+        Some(epoch)
+    }
+
+    /// Apply one event envelope to the store (no awaits inside). The
+    /// daemon feeds it while holding the store lock, then releases.
+    pub fn on_event<F, N>(&self, store: &mut MudraStore, ev: &Value, inject: &mut F, notify: &mut N) -> Step
+    where
+        F: FnMut(u16, &str, &str),
+        N: FnMut(u64),
+    {
+        let mut epochs = Vec::new();
         match ev.get("method").and_then(Value::as_str) {
             Some("Target.targetCreated") | Some("Target.targetInfoChanged") => {
+                let created = ev.get("method").and_then(Value::as_str) == Some("Target.targetCreated");
                 let infos = ev
                     .get("params")
                     .and_then(|p| p.get("targetInfo"))
-                    .map(|t| {
-                        if t.get("type").and_then(Value::as_str) == Some("page") {
-                            page_infos(&Value::Array(vec![t.clone()]))
-                        } else {
-                            Vec::new()
-                        }
-                    })
+                    .filter(|t| t.get("type").and_then(Value::as_str) == Some("page"))
+                    .map(|t| page_infos(&Value::Array(vec![t.clone()])))
                     .unwrap_or_default();
                 if infos.is_empty() {
-                    continue;
+                    return Step::Ignored;
                 }
-                if ev.get("method").and_then(Value::as_str) == Some("Target.targetCreated") {
-                    inject(port, &infos[0].target_id, ctx);
+                if created {
+                    inject(self.port, &infos[0].target_id, &self.ctx);
                 }
-                if let Some(epoch) = store.sync_targets(instance_id, &infos, now_ms()) {
-                    notify(epoch);
+                if let Some(e) = store.sync_targets(self.instance_id, &infos, now_ms()) {
+                    epochs.push(e);
+                    notify(e);
                 }
             }
             Some("Target.targetDestroyed") => {
@@ -144,19 +163,28 @@ pub async fn run_watcher<Inject, Notify>(
                     .and_then(|p| p.get("targetId"))
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if let Some(epoch) = store.close_target(instance_id, target_id, now_ms()) {
-                    notify(epoch);
+                if let Some(e) = store.close_target(self.instance_id, target_id, now_ms()) {
+                    epochs.push(e);
+                    notify(e);
                 }
             }
-            _ => {} // other events are not page lifecycle
+            _ => return Step::Ignored,
+        }
+        Step::Handled { epochs }
+    }
+
+    /// The unified teardown: instance down, all pages closed, one notify.
+    /// Public so the daemon's stream-end branch (event loop exits) can
+    /// call it without consuming the session.
+    pub fn teardown<N: FnMut(u64)>(store: &mut MudraStore, instance_id: u32, notify: &mut N) {
+        if let Some(epoch) = store.mark_down(instance_id, now_ms()) {
+            notify(epoch);
         }
     }
-    teardown(store, instance_id, notify);
-}
 
-/// The unified teardown: instance down, all pages closed, one notify.
-fn teardown<Notify: FnMut(u64)>(store: &mut MudraStore, instance_id: u32, notify: &mut Notify) {
-    if let Some(epoch) = store.mark_down(instance_id, now_ms()) {
-        notify(epoch);
+    /// Whether the baseline finished and discovery is live (daemon's
+    /// bookkeeping for reconnect decisions).
+    pub fn ready(&self) -> bool {
+        self.discovery_enabled
     }
 }

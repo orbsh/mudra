@@ -1,11 +1,13 @@
 //! Watcher tests — the port of `mudrad.py::_watch`'s contracts against a
 //! scripted mock CDP endpoint (real sockets; the mock answers getTargets/
 //! setDiscoverTargets, pushes lifecycle events, and optionally hangs up).
+//! Tests drive `WatchSession` exactly the way the daemon task does:
+//! await the event OUTSIDE the store borrow, apply it inside.
 //! Run: `cargo test -p mudrad --test watcher_test`.
 
 use futures_util::{SinkExt, StreamExt};
-use mudrad::watch::{connect_ready, page_infos, run_watcher};
-use mudra_store::MudraStore;
+use mudrad::watch::{WatchSession, connect_ready, now_ms, page_infos};
+use mudra_store::{MudraStore, TargetInfo};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -49,7 +51,7 @@ async fn start_scripted_cdp(
                                 let _ = ws.close(None).await;
                                 return;
                             }
-                            // stay open: the caller's timeout parks the watcher
+                            // stay open: the caller's timeout parks the loop
                             std::future::pending::<()>().await;
                         }
                         _ => {}
@@ -69,6 +71,15 @@ fn mk_store() -> (tempfile::TempDir, MudraStore) {
     let dir = tempfile::TempDir::new().unwrap();
     let store = MudraStore::open(dir.path()).unwrap(); // borrow before the move
     (dir, store)
+}
+
+/// Collect injections and notifies from a session step. Closures below
+/// capture the two fields separately (disjoint closure captures), so one
+/// Recorder serves both callback slots without borrow conflicts.
+#[derive(Default)]
+struct Recorder {
+    injected: Vec<String>,
+    epochs: Vec<u64>,
 }
 
 // ================= never-ready retry ring =================
@@ -146,7 +157,7 @@ fn page_infos_drops_non_page_targets() {
     assert_eq!(pages[0].target_id, "T1");
 }
 
-// ================= baseline + events (mock stays open; timeout parks) =================
+// ================= baseline =================
 
 #[tokio::test]
 async fn baseline_sync_injects_pages_and_notifies_epoch_once() {
@@ -165,24 +176,14 @@ async fn baseline_sync_injects_pages_and_notifies_epoch_once() {
     .await;
     let conn = mudrad::cdp::CdpConn::connect(&format!("ws://{addr}/")).await.unwrap();
 
-    let mut injected: Vec<String> = Vec::new();
-    let mut epochs: Vec<u64> = Vec::new();
-    let _ = tokio::time::timeout(
-        Duration::from_millis(600),
-        run_watcher(
-            &mut store,
-            inst.id,
-            addr.port(),
-            "work",
-            &conn,
-            &mut |_p, tid, _ctx| injected.push(tid.to_string()),
-            &mut |e| epochs.push(e),
-        ),
-    )
-    .await; // timeout = still parked on the open stream: expected
+    let mut session = WatchSession::new(inst.id, addr.port(), "work");
+    let infos: Vec<TargetInfo> = session.start(&conn).await.expect("baseline snapshot");
+    assert!(session.ready(), "discovery armed");
+    let mut rec = Recorder::default();
+    let epoch = session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
 
-    assert_eq!(injected, vec!["T1", "T2"]); // baseline injects every page
-    assert_eq!(epochs.len(), 1, "batch = one epoch bump");
+    assert_eq!(epoch, Some(1), "batch = one epoch bump");
+    assert_eq!(rec.injected, vec!["T1", "T2"]); // baseline injects every page
     assert_eq!(store.pages_of_instance(inst.id, false).len(), 2);
     let (_, t2) = store.page_by_target("T2").unwrap();
     let (t1k, _) = store.page_by_target("T1").unwrap();
@@ -190,42 +191,42 @@ async fn baseline_sync_injects_pages_and_notifies_epoch_once() {
 }
 
 #[tokio::test]
-async fn created_changed_destroyed_events_drive_the_store() {
-    // Contract: targetCreated (page) -> inject + sync + notify;
-    // infoChanged -> sync only (no re-inject); non-page created ->
-    // ignored; targetDestroyed -> close_target + notify.
+async fn events_drive_the_store_through_the_daemon_step_shape() {
+    // Contract: created (page) -> inject + sync + notify; infoChanged ->
+    // sync only (no re-inject); non-page -> Ignored; destroyed ->
+    // close_target + notify. Driven exactly as the daemon task does it.
     let (_d, mut store) = mk_store();
     let inst = store.launch_started(None, "work", 9211, 4242, None, None);
+    let events = vec![
+        json!({"method": "Target.targetCreated", "params": {"targetInfo": page_target("T2", "https://c.test", "C", None)}}),
+        json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "W9", "type": "service_worker", "url": "chrome-extension://x"}}}),
+        json!({"method": "Target.targetInfoChanged", "params": {"targetInfo": page_target("T1", "https://a.test/next", "A new", None)}}),
+        json!({"method": "Target.targetDestroyed", "params": {"targetId": "T2"}}),
+    ];
     let addr = start_scripted_cdp(
         vec![page_target("T1", "https://a.test", "A", None)],
-        vec![
-            json!({"method": "Target.targetCreated", "params": {"targetInfo": page_target("T2", "https://c.test", "C", None)}}),
-            json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "W9", "type": "service_worker", "url": "chrome-extension://x"}}}),
-            json!({"method": "Target.targetInfoChanged", "params": {"targetInfo": page_target("T1", "https://a.test/next", "A new", None)}}),
-            json!({"method": "Target.targetDestroyed", "params": {"targetId": "T2"}}),
-        ],
+        events.clone(),
         None,
     )
     .await;
     let conn = mudrad::cdp::CdpConn::connect(&format!("ws://{addr}/")).await.unwrap();
 
-    let mut injected: Vec<String> = Vec::new();
-    let mut epochs: Vec<u64> = Vec::new();
-    let _ = tokio::time::timeout(
-        Duration::from_millis(800),
-        run_watcher(
-            &mut store,
-            inst.id,
-            addr.port(),
-            "work",
-            &conn,
-            &mut |_p, tid, _ctx| injected.push(tid.to_string()),
-            &mut |e| epochs.push(e),
-        ),
-    )
-    .await;
+    let mut session = WatchSession::new(inst.id, addr.port(), "work");
+    let infos = session.start(&conn).await.expect("baseline");
+    let mut rec = Recorder::default();
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
 
-    assert_eq!(injected, vec!["T1", "T2"]); // worker skipped, infoChanged not re-injected
+    // drain the scripted events as the daemon loop does: await OUTSIDE
+    // the store, step INSIDE it
+    for _ in 0..events.len() {
+        let ev = tokio::time::timeout(Duration::from_secs(5), conn.next_event())
+            .await
+            .expect("event arrives")
+            .expect("stream open");
+        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    }
+
+    assert_eq!(rec.injected, vec!["T1", "T2"]); // worker skipped, changed not re-injected
     let (_, t1) = store.page_by_target("T1").expect("changed row");
     assert_eq!(t1.url, "https://a.test/next"); // infoChanged refreshed
     assert!(store.page_by_target("T2").is_none()); // destroyed -> out of live view
@@ -234,17 +235,26 @@ async fn created_changed_destroyed_events_drive_the_store() {
         .iter()
         .any(|(_, p)| p.target_id == "T2" && p.closed_at != 0)); // still in history
     // epochs: baseline, T2 create, T1 change, T2 destroy — consecutive
-    assert_eq!(epochs.len(), 4, "{epochs:?}");
-    assert!(epochs.windows(2).all(|w| w[1] == w[0] + 1));
+    assert_eq!(rec.epochs.len(), 4, "{:?}", rec.epochs);
+    assert!(rec.epochs.windows(2).all(|w| w[1] == w[0] + 1));
+
+    // a non-lifecycle event reports Ignored
+    let step = session.on_event(
+        &mut store,
+        &json!({"method": "Storage.watcher.updated"}),
+        &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()),
+        &mut |e: u64| rec.epochs.push(e),
+    );
+    assert!(matches!(step, mudrad::watch::Step::Ignored));
 }
 
-// ================= teardown (mock hangs up; watcher returns) =================
+// ================= teardown =================
 
 #[tokio::test]
 async fn disconnect_marks_down_and_notifies_teardown() {
     // Contract (the recv-exception -> finally teardown path): when the
-    // socket dies, the watcher marks the instance down, closes every open
-    // page, notifies that final epoch, and RETURNS.
+    // event stream ends, the daemon calls teardown: instance down, every
+    // open page closed, final epoch notified. The mock hangs up on schedule.
     let (_d, mut store) = mk_store();
     let inst = store.launch_started(None, "work", 9212, 4242, None, None);
     let addr = start_scripted_cdp(
@@ -255,37 +265,33 @@ async fn disconnect_marks_down_and_notifies_teardown() {
     .await;
     let conn = mudrad::cdp::CdpConn::connect(&format!("ws://{addr}/")).await.unwrap();
 
-    let mut injected = Vec::new();
-    let mut epochs: Vec<u64> = Vec::new();
-    tokio::time::timeout(
-        Duration::from_secs(6),
-        run_watcher(
-            &mut store,
-            inst.id,
-            addr.port(),
-            "work",
-            &conn,
-            &mut |_p, tid, _ctx| injected.push(tid.to_string()),
-            &mut |e| epochs.push(e),
-        ),
-    )
-    .await
-    .expect("watcher returns on hangup");
+    let mut session = WatchSession::new(inst.id, addr.port(), "work");
+    let infos = session.start(&conn).await.expect("baseline");
+    let mut rec = Recorder::default();
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+
+    // the daemon event loop: ends when next_event returns None
+    while let Some(_ev) =
+        tokio::time::timeout(Duration::from_secs(5), conn.next_event()).await.unwrap()
+    {
+        // no scripted events; only the hangup matters
+    }
+    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e));
 
     let (_, inst_row) = store.instance_for_context("work").unwrap();
     assert_eq!(inst_row.running, 0, "disconnect marks the instance down");
     assert!(store.pages_of_instance(inst.id, false).iter().all(|(_, p)| p.closed_at != 0));
-    assert_eq!(injected, vec!["T1"]);
-    assert_eq!(epochs.len(), 2, "{epochs:?}"); // baseline + teardown
-    assert_eq!(store.epoch(), *epochs.last().unwrap());
+    assert_eq!(rec.injected, vec!["T1"]);
+    assert_eq!(rec.epochs.len(), 2, "{:?}", rec.epochs); // baseline + teardown
+    assert_eq!(store.epoch(), *rec.epochs.last().unwrap());
 }
 
 #[tokio::test]
-async fn command_failure_before_baseline_marks_down_immediately() {
-    // Contract (the never-ready variant after connect): the endpoint
-    // dies between handshake and baseline command. A ws that completes
-    // the handshake then drops: getTargets fails -> the watcher tears down
-    // and returns without ever touching the pages table.
+async fn command_failure_before_baseline_means_teardown_and_stop() {
+    // Contract (the never-ready variant after connect): the endpoint dies
+    // between handshake and baseline. A ws that completes the handshake
+    // then drops: start() fails -> the daemon tears down and never
+    // touches the pages table.
     let (_d, mut store) = mk_store();
     let inst = store.launch_started(None, "work", 9213, 4242, None, None);
 
@@ -302,26 +308,25 @@ async fn command_failure_before_baseline_marks_down_immediately() {
     });
     let conn = mudrad::cdp::CdpConn::connect(&format!("ws://{addr}/")).await.unwrap();
 
-    let mut injected = Vec::new();
-    let mut epochs = Vec::new();
-    tokio::time::timeout(
-        Duration::from_secs(6),
-        run_watcher(
-            &mut store,
-            inst.id,
-            addr.port(),
-            "work",
-            &conn,
-            &mut |_p, tid, _ctx| injected.push(tid.to_string()),
-            &mut |e| epochs.push(e),
-        ),
-    )
-    .await
-    .expect("watcher returns fast on a dead baseline");
+    let mut session = WatchSession::new(inst.id, addr.port(), "work");
+    let start = tokio::time::timeout(Duration::from_secs(15), session.start(&conn))
+        .await
+        .expect("call fails fast (reader drops waiters), not a hung timeout");
+    assert!(start.is_err(), "dead baseline must not yield a snapshot");
+    assert!(!session.ready());
+    let mut rec = Recorder::default();
+    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e));
 
     let (_, inst_row) = store.instance_for_context("work").unwrap();
     assert_eq!(inst_row.running, 0);
-    assert!(injected.is_empty());
-    assert_eq!(epochs.len(), 1); // teardown epoch only
+    assert!(rec.injected.is_empty());
+    assert_eq!(rec.epochs.len(), 1); // teardown epoch only
     assert!(store.pages_of_instance(inst.id, true).is_empty());
+}
+
+#[test]
+fn now_ms_is_wall_clock_millis() {
+    // Contract: the daemon's clock feed — millis since epoch, sane bound.
+    let ms = now_ms();
+    assert!(ms > 1_700_000_000_000, "after 2023: {ms}");
 }
