@@ -125,8 +125,10 @@ impl CdpConn {
         // The ONE reader: route by envelope shape — `id` -> its waiter,
         // otherwise -> the event stream. A response whose waiter timed
         // out is dropped silently, never mistaken for an event. When the
-        // socket ends, `notify_one` stores the teardown permit so even a
-        // later `wait_closed` returns at once.
+        // socket ends: `notify_one` stores the teardown permit so even a
+        // later `wait_closed` returns at once, and every still-pending
+        // waiter is dropped — an in-flight command fails fast with
+        // "reader gone" instead of waiting out its timeout.
         let p2 = Arc::clone(&pending);
         let closed2 = Arc::clone(&closed);
         let reader = tokio::spawn(async move {
@@ -145,6 +147,7 @@ impl CdpConn {
                     }
                 }
             }
+            p2.lock().await.clear();
             closed2.notify_one();
         });
 

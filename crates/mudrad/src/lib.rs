@@ -15,6 +15,7 @@
 
 pub mod cdp;
 pub mod spawn;
+pub mod watch;
 
 pub fn _r1_skeleton() {
     // The crate family starts here; SCHEMA.md is implemented in mudra-store.
