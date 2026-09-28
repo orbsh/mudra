@@ -14,14 +14,24 @@
 //!
 //! Engine note: `FjallStore` clones share the underlying keyspace
 //! (Arc-inner), so one `Database` fans out to every `Collection` handle.
+//!
+//! Feature note: the `engine` feature (default) adds the fjall assembly
+//! points and lifecycle. Without it (`default-features = false`, how the
+//! wasm panel consumes this crate) the crate is the schema layer only —
+//! keys, documents, junction type, index markers, ns constants — every
+//! byte-level fact shared single-source with mudrad, no engine types
+//! (fjall does not compile for wasm32).
 
-use okm_core::{
-    Bytes, Collection, DocumentEncode, FjallStore, Junction, JunctionEncode, KeyEncode, Quant,
-    Ref,
-};
+use okm_core::{Bytes, DocumentEncode, JunctionEncode, KeyEncode, Quant, Ref};
+#[cfg(feature = "engine")]
+use okm_core::{Collection, FjallStore, Junction};
+
+#[cfg(feature = "engine")]
 use std::path::Path;
 
+#[cfg(feature = "engine")]
 pub mod lifecycle;
+#[cfg(feature = "engine")]
 pub use lifecycle::{TargetInfo, UpsertMode};
 
 // ================= keys =================
@@ -211,19 +221,44 @@ pub struct State {
 // `DocumentEncode` names each access-method marker
 // `__OkmIndex_<Row>_<index>`. Aliases give scan call sites readable
 // types; `Collection::scan::<I>` takes the marker as a type parameter.
-use __OkmIndex_Instance_by_profile as ByProfile;
-use __OkmIndex_Page_by_instance as ByInstance;
-use __OkmIndex_Page_by_parent as ByPageParent;
-use __OkmIndex_Page_by_target as ByTarget;
-use __OkmIndex_Page_by_url as ByUrl;
-use __OkmIndex_SiteWidth_by_site as BySite;
-use __OkmIndex_Tag_by_name as ByTagName;
-use __OkmIndex_Tag_by_parent as ByTagParent;
+// `pub` so the wasm panel (frame-level scans) addresses the same markers.
+pub use __OkmIndex_Instance_by_profile as ByProfile;
+pub use __OkmIndex_Page_by_instance as ByInstance;
+pub use __OkmIndex_Page_by_parent as ByPageParent;
+pub use __OkmIndex_Page_by_target as ByTarget;
+pub use __OkmIndex_Page_by_url as ByUrl;
+pub use __OkmIndex_SiteWidth_by_site as BySite;
+pub use __OkmIndex_Tag_by_name as ByTagName;
+pub use __OkmIndex_Tag_by_parent as ByTagParent;
+
+// ================= engine-free byte layout =================
+
+/// The table's key header, byte-identical to `Collection::header`
+/// (engine-free mirror for the wasm panel's frame-level scans):
+/// `[0xFF][part 1B] (if declared)[ns 2B]`. A layout-only reader that
+/// never opens a `Collection` still addresses the same keyspace —
+/// `PARTITION_PREFIX`/`NS_PREFIX` are the derive's single source.
+pub fn primary_header<R: okm_core::Document>() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4);
+    buf.extend_from_slice(R::PARTITION_PREFIX);
+    buf.extend_from_slice(R::NS_PREFIX);
+    buf
+}
+
+/// Primary key entry (slot 0): `[header][slot 0][key payload]` — the
+/// same assembly as `Collection::primary_key` (document.rs), no engine.
+pub fn primary_key<R: okm_core::Document>(key: &R::Key) -> Vec<u8> {
+    let mut buf = primary_header::<R>();
+    buf.extend_from_slice(&okm_core::PRIMARY_SLOT.to_be_bytes());
+    buf.extend_from_slice(&key.encode());
+    buf
+}
 
 // ================= store assembly =================
 
 /// One fjall `Database`, every collection handle cloned from it. `put`
 /// takes `&mut Collection`; mudrad is the single writer.
+#[cfg(feature = "engine")]
 pub struct MudraStore {
     pub tags: Collection<FjallStore, TagKey, Tag>,
     pub pages: Collection<FjallStore, PageKey, Page>,
@@ -234,6 +269,7 @@ pub struct MudraStore {
     db: FjallStore,
 }
 
+#[cfg(feature = "engine")]
 impl MudraStore {
     pub fn open(path: &Path) -> fjall::Result<Self> {
         let store = FjallStore::open(path, "mudra")?;
@@ -264,6 +300,7 @@ impl MudraStore {
 
 // ================= counters & epoch =================
 
+#[cfg(feature = "engine")]
 impl MudraStore {
     fn state_u64(&self, slot: u8) -> u64 {
         self.state
@@ -329,6 +366,7 @@ impl MudraStore {
 // scan, like `okm-core/tests/index_test.rs` drives `ByLower`). Recall is
 // the index's job; precision filters (deleted/hidden flags) run on the
 // fetched rows — cheap over hundreds of tags / thousands of pages.
+#[cfg(feature = "engine")]
 impl MudraStore {
     /// Children of a tag node, rank-ordered (root: `parent_id == -1`).
     /// Soft-deleted nodes drop out here — the tree column never shows them.

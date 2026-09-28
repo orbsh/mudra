@@ -1,0 +1,13 @@
+# mudra console panel (leptos CSR, built by trunk from crates/mudra-panel).
+# dev: `trunk serve` from this directory; the built tree lands in dist/
+# (slice 2 switches mudrad's static root to it, replacing frontend/ui).
+[build]
+# wasm-bindgen-cli comes from PATH (NixOS wasm-bindgen-cli = pinned crate
+# version); no runtime download is ever attempted.
+target = "index.html"
+filehash = false # deterministic names: the static server has no manifest lookup
+
+[serve]
+# the panel derives its WS url from location.port + 1 (mudrad layout).
+# `trunk serve` on 9299 keeps that math true while developing standalone.
+port = 9299

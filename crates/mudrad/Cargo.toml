@@ -7,7 +7,7 @@ description = "mudra daemon: chromium spawn/CDP/lifecycle + control HTTP/WS + Ne
 [dependencies]
 mudra-store = { path = "../mudra-store" }
 tag-forest = { path = "../tag-forest" }
-okm-core.workspace = true
+okm-core = { workspace = true, features = ["fjall"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

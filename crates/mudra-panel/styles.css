@@ -1,0 +1,22 @@
+/* mudra console panel (wasm edition). Slice 1 carries only the smoke
+   layout; slice 2 ports the rest of frontend/ui/src/styles.css as the
+   corresponding views land. */
+.panel {
+  font-family: system-ui, sans-serif;
+  color: #d8d8d8;
+  background: #141414;
+  min-height: 100vh;
+  margin: 0;
+}
+.hdr {
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.tree {
+  padding: 12px;
+}
+.probe {
+  white-space: pre-line;
+  font-size: 13px;
+  color: #9a9a9a;
+}
