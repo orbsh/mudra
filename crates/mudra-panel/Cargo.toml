@@ -8,12 +8,13 @@ description = "mudra console panel: leptos CSR wasm over the bare NestStorage WS
 # schema layer only — no fjall on the wasm target (engine = default feature
 # of mudra-store pulls it; the panel speaks bytes, mudrad owns semantics).
 mudra-store = { path = "../mudra-store", default-features = false }
-tag-forest = { path = "../tag-forest" }
+tag-forest = { path = "../tag-forest", features = ["leptos"] }
 # frame codec: OpFrame/OpResponse over one-Vec<u8>-per-frame WS transport
 okm-wire = { workspace = true }
 okm-core = { workspace = true }
 leptos.workspace = true
 gloo-net.workspace = true
+serde.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true

@@ -38,9 +38,13 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
   "WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Storage",
+  "Window", "Element", "DomRect", "HtmlElement", "HtmlSelectElement",
 ] }
-# wasm-safe WS client (prewarmed in the rust-stack crate cache)
-gloo-net = { version = "0.7", default-features = false, features = ["websocket"] }
+# wasm-safe WS client (prewarmed in the rust-stack crate cache); http+json
+# for the panel's 8899 verb bridge (read-only KV frames stay on gloo-free
+# web_sys sockets in remote.rs)
+gloo-net = { version = "0.7", default-features = false, features = ["websocket", "http", "json"] }
+serde = { version = "1", features = ["derive"] }
 leptos = { version = "0.8", default-features = false, features = ["csr"] }
 # wasm32 clock (native builds use std::time)
 web-time = "1"

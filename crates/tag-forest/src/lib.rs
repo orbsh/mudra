@@ -16,6 +16,9 @@
 //! present only when the host supplies their callbacks — same protocol
 //! as the JS version.
 
+#[cfg(feature = "leptos")]
+pub mod leptos;
+
 /// Root tag name → rank-axis glyph (port of ui.py `ROOT_AXIS`). The
 /// axis lives here, not in any host: the SSR bar, the mudrad `/forest`
 /// payload, and the leptos panel all read the same table — adding a
