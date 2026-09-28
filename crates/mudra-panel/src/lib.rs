@@ -181,15 +181,20 @@ pub fn App() -> impl IntoView {
                         set_leaves.update(|l| *l = Arc::new(plain));
                         set_axes.update(|a| *a = Arc::new(axs));
                         set_contexts.update(|c| *c = Arc::new(f.contexts.clone()));
-                        // JS load(): only pick a context when none is
-                        // shown yet — never clobber the user's selection
+                        // JS load() rule, ported exactly:
+                        // `if (!ctx() && r.current) setCtx(r.current);
+                        //  else if (!ctx() && r.contexts.length) setCtx(r.contexts[0]);`
+                        // current wins unconditionally — an empty
+                        // contexts list (fresh store: situation tree not
+                        // built yet, no seed rows on either side) must
+                        // still adopt the daemon's current context, or
+                        // pages never load.
                         if ctx.get_untracked().is_empty() {
-                            let next = if f.contexts.contains(&f.current) {
-                                f.current
-                            } else {
-                                f.contexts.first().cloned().unwrap_or_default()
-                            };
-                            set_ctx.set(next);
+                            if !f.current.is_empty() {
+                                set_ctx.set(f.current.clone());
+                            } else if let Some(first) = f.contexts.first() {
+                                set_ctx.set(first.clone());
+                            }
                         }
                     }
                     Err(e) => web_sys::console::warn_1(&format!("forest: {e}").into()),

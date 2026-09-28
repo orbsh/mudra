@@ -4,7 +4,7 @@
 //! through these same handlers where the logic is testable.
 //! Run: `cargo test -p mudrad --test daemon_test`.
 
-use mudrad::daemon::{acquire_lock, startup_env_gaps, WS_PORT, PANEL_PORT, CONTROL_PORT};
+use mudrad::daemon::{acquire_lock, resolve_static_path, startup_env_gaps, WS_PORT, PANEL_PORT, CONTROL_PORT};
 
 // ================= flock singleton =================
 
@@ -24,6 +24,36 @@ fn second_daemon_is_refused_while_the_lock_holder_lives() {
     // kernel drops flocks with the fd)
     let c = acquire_lock(dir.path()).expect("re-acquire after drop");
     drop(c);
+}
+
+// ================= static routing (wasm dist root) =================
+
+#[test]
+fn dist_root_serves_the_bundle_flat() {
+    // Contract (slice 2 switch): the served panel is the trunk build.
+    // Root maps to index.html; assets resolve directly under the dist
+    // root — the old /shared/* frontend remap is gone (the wasm bundle
+    // is self-contained).
+    let root = std::path::Path::new("/dist");
+    assert_eq!(resolve_static_path(root, "/"), Some(root.join("index.html")));
+    assert_eq!(resolve_static_path(root, ""), Some(root.join("index.html")));
+    assert_eq!(resolve_static_path(root, "/styles.css"), Some(root.join("styles.css")));
+    assert_eq!(
+        resolve_static_path(root, "/mudra-panel_bg.wasm"),
+        Some(root.join("mudra-panel_bg.wasm"))
+    );
+    // /shared/* is now just another dist path, never the frontend tree
+    assert_eq!(resolve_static_path(root, "/shared/lib.js"), Some(root.join("shared/lib.js")));
+}
+
+#[test]
+fn traversal_is_denied() {
+    // Regression: `..` must be rejected outright — canonicalize would
+    // chase symlinks out of the served tree (the store lives under the
+    // same home).
+    let root = std::path::Path::new("/dist");
+    assert_eq!(resolve_static_path(root, "/../Cargo.toml"), None);
+    assert_eq!(resolve_static_path(root, "/a/../../b"), None);
 }
 
 // ================= static routing constants =================

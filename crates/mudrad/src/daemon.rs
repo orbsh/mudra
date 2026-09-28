@@ -77,6 +77,11 @@ pub struct Daemon {
     /// over one instance; a finished handle frees the slot for a retry.
     pub watched: Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>,
     pub frontend_dir: std::path::PathBuf,
+    /// Static root: the trunk build output (crates/mudra-panel/dist).
+    /// R2 slice 2 switch: the served panel is the wasm bundle — the
+    /// hyperscript tree it replaces is deleted in the same slice.
+    pub panel_root: std::path::PathBuf,
+
     /// repo-shipped default `config.kdl` (Python DEFAULT_PATH == repo
     /// root == the home dir the NixOS install symlinks into the tree)
     pub config_default: std::path::PathBuf,
@@ -178,6 +183,22 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
         let (status, payload) = config_response(&d.config_default, &user);
         return http_response(&mut sock, status, payload.as_bytes(), "application/json").await;
     }
+    if method == "options" {
+        // CORS preflight for the wasm panel: :9299 pages POST JSON to
+        // :8899, and `Content-Type: application/json` is not a simple
+        // request — the browser probes with OPTIONS first. The Python
+        // panel never hit this (its writes rode the same-origin WS op
+        // channel; the extension's fetch is exempt from CORS), so this
+        // is the wasm panel's own new surface. 204 + the headers the
+        // real POST already answers with (ACAO:*), plus the method and
+        // header grants the probe checks.
+        let head = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n\
+                    Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
+                    Access-Control-Allow-Headers: Content-Type\r\n\
+                    Access-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
+        sock.write_all(head.as_bytes()).await?;
+        return sock.flush().await;
+    }
     if method != "post" {
         return http_response(&mut sock, 404, br#"{"ok":false,"err":"not found"}"#, "application/json").await;
     }
@@ -255,19 +276,38 @@ pub fn config_response(default_path: &std::path::Path, user_path: &std::path::Pa
 
 // ================= panel static server =================
 
+/// Route a request path under the wasm dist root. R2 slice 2 switch:
+/// the panel is the trunk build (`crates/mudra-panel/dist`), served
+/// flat — the old `/shared/*` → frontend remap died with the
+/// hyperscript tree (the wasm bundle is self-contained; the extension
+/// loads its shared libs over chrome-extension://, never HTTP).
+///
+/// Traversal denial: any `..` component is rejected outright
+/// (canonicalize would chase symlinks out of the served tree).
+/// Pure function so the routing contract has regression coverage
+/// without binding port 9299 (the flock singleton would collide with
+/// a live daemon).
+pub fn resolve_static_path(panel_root: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    if path.contains("..") {
+        return None;
+    }
+    let rel = if path == "/" || path.is_empty() { "index.html" } else { path.trim_start_matches('/') };
+    Some(panel_root.join(rel))
+}
+
 pub async fn serve_panel_static(d: Arc<Daemon>) -> std::io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", PANEL_PORT)).await?;
     eprintln!("[mudrad] panel static http://127.0.0.1:{PANEL_PORT}");
     loop {
         let (mut sock, _) = listener.accept().await?;
-        let root = d.frontend_dir.clone();
+        let panel = d.panel_root.clone();
         tokio::spawn(async move {
-            let _ = handle_static_conn(&mut sock, &root).await;
+            let _ = handle_static_conn(&mut sock, &panel).await;
         });
     }
 }
 
-async fn handle_static_conn(sock: &mut TcpStream, frontend: &std::path::Path) -> std::io::Result<()> {
+async fn handle_static_conn(sock: &mut TcpStream, panel_root: &std::path::Path) -> std::io::Result<()> {
     let mut buf = [0u8; 4096];
     let n = sock.read(&mut buf).await.unwrap_or(0);
     let head = String::from_utf8_lossy(&buf[..n]).to_string();
@@ -276,18 +316,9 @@ async fn handle_static_conn(sock: &mut TcpStream, frontend: &std::path::Path) ->
         .nth(1)
         .map(|p| p.split('?').next().unwrap_or(p).to_string())
         .unwrap_or_else(|| "/".into());
-    let path = if path == "/" || path.is_empty() { "/index.html".to_string() } else { path };
 
-    // traversal denial: reject any `..` component outright (canonicalize
-    // would chase symlinks out of the served tree). `/shared/*` maps to
-    // frontend/shared (the extension-shared lib), everything else to
-    // frontend/ui — same remap rule as Python's translate_path.
-    if path.contains("..") {
+    let Some(rel) = resolve_static_path(panel_root, &path) else {
         return http_response(sock, 404, b"not found", "text/plain").await;
-    }
-    let rel = match path.strip_prefix("/shared/") {
-        Some(rest) => frontend.join("shared").join(rest),
-        None => frontend.join("ui").join(path.trim_start_matches('/')),
     };
     match tokio::fs::read(&rel).await {
         Ok(bytes) => {
@@ -296,6 +327,7 @@ async fn handle_static_conn(sock: &mut TcpStream, frontend: &std::path::Path) ->
                 Some("js") => "text/javascript; charset=utf-8",
                 Some("css") => "text/css",
                 Some("json") => "application/json",
+                Some("wasm") => "application/wasm", // browsers refuse any other mime for instantiation
                 Some("png") => "image/png",
                 Some("svg") => "image/svg+xml",
                 _ => "application/octet-stream",
@@ -521,13 +553,22 @@ pub async fn run() -> Result<(), String> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             // dev default: the repo checkout (source is the artifact, the
-            // NixOS install copies the tree the same way)
+            // NixOS install symlinks into the tree, so repo-relative
+            // paths resolve through the home symlink)
             home.join("frontend")
         });
+    // R2 slice 2: the served panel = trunk build output. Same
+    // dev/NixOS reasoning as `frontend`; MUDRA_PANEL_DIST overrides.
+    let panel_root = std::env::var_os("MUDRA_PANEL_DIST")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join("crates/mudra-panel/dist"));
     let real = crate::runtime::Real {
         profiles_dir: home.join("profiles"),
         default_extensions: vec![frontend.display().to_string()],
         niri_socket: niri_socket(),
+        // projection of the State DEV_MODE slot; the /dev verb keeps it
+        // in sync after every switch (the store stays the fact source)
+        dev_mode: store.state_text(mudra_store::state::DEV_MODE) == "1",
     };
     // bare receiver: panel frames execute byte-identical on the engine
     // (no prefix), SCHEMA's ns numbers are the shared contract
@@ -543,6 +584,7 @@ pub async fn run() -> Result<(), String> {
         epoch_tx,
         watched: Arc::new(Mutex::new(HashMap::new())),
         frontend_dir: frontend,
+        panel_root,
         config_default: home.join("config.kdl"),
         nest,
     });
