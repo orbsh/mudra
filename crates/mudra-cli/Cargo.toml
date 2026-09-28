@@ -1,0 +1,17 @@
+[package]
+name = "mudra-cli"
+edition.workspace = true
+version.workspace = true
+description = "mudra CLI: a thin argument parser + POST forwarder to mudrad :8899 — zero DB, zero process ops"
+
+[[bin]]
+name = "mudra"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
