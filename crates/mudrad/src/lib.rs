@@ -5,13 +5,19 @@
 //! spec until R2):
 //!
 //! - `store`    — MudraStore open + state transitions (writes bump epoch)
+//!   (the mudra-store crate; SCHEMA.md is the layout contract)
 //! - `spawn`    — chromium launch: PDEATHSIG, SingletonLock recovery,
 //!   WAYLAND env injection, 5 extension cache points, dev_mode
-//! - `cdp`      — CDP over WS: target lifecycle -> page upsert/close,
-//!   zombie /proc liveness probe (never os.kill(pid,0))
+//! - `cdp`      — CDP over WS: single-reader routing, /json* framed GETs
+//!   (Content-Length, never EOF-wait — the chromium keep-alive lesson)
+//! - `watch`    — per-instance WatchSession: stepped API so the store
+//!   lock never spans an await (baseline/event/teardown)
 //! - `control`  — HTTP verbs /open /add /close_page /close_ctx /ctx
-//! - `panel`    — static file server + WS frame endpoint
-//!   (NestStorage::apply + epoch invalidation hint frames)
+//!   (/tag /tags /pages /focus_page /ctx_status) over the Runtime seam
+//! - `config`   — KDL loader: two-layer merge, per-key keybindings,
+//!   typed int reads (port of mudralib/config.py)
+//! - `daemon`   — assembly: flock singleton, env gate, control/static/WS
+//!   servers, watcher scheduler, capsule SSR passthrough
 
 pub mod cdp;
 pub mod config;
