@@ -173,16 +173,9 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
     body.truncate(content_length);
 
     if path == "/config" && method == "get" {
-        // both layers re-read per request (Python parity: a config.kdl
-        // edit needs only a panel/extension reload, not a daemon
-        // restart). A broken file is a 500 with the error surfaced —
-        // never a silently empty config (Python's `config: {e}` shape).
         let user = crate::config::user_config_path()
             .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"));
-        let (status, payload) = match crate::config::load(&d.config_default, &user) {
-            Ok(cfg) => (200, json!({"ok": true, "config": cfg}).to_string()),
-            Err(e) => (500, json!({"ok": false, "err": format!("config: {e}")}).to_string()),
-        };
+        let (status, payload) = config_response(&d.config_default, &user);
         return http_response(&mut sock, status, payload.as_bytes(), "application/json").await;
     }
     if method != "post" {
@@ -245,6 +238,19 @@ async fn http_response(sock: &mut TcpStream, status: u16, body: &[u8], ctype: &s
     sock.write_all(head.as_bytes()).await?;
     sock.write_all(body).await?;
     sock.flush().await
+}
+
+/// The GET /config response: (status, json body). Two layers re-read
+/// per request (Python parity: a config.kdl edit needs only a
+/// panel/extension reload, not a daemon restart). A broken file is a
+/// 500 with the error surfaced — never a silently empty config
+/// (Python's `config: {e}` shape; the extension's syncConfig keeps its
+/// chrome.storage values on any failure).
+pub fn config_response(default_path: &std::path::Path, user_path: &std::path::Path) -> (u16, String) {
+    match crate::config::load(default_path, user_path) {
+        Ok(cfg) => (200, json!({"ok": true, "config": cfg}).to_string()),
+        Err(e) => (500, json!({"ok": false, "err": format!("config: {e}")}).to_string()),
+    }
 }
 
 // ================= panel static server =================

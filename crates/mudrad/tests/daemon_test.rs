@@ -51,6 +51,40 @@ fn inject_script_carries_the_wired_placeholders_and_convergence_rules() {
     assert!(js.contains("window.__mudraInjected"), "double-injection guard");
 }
 
+// ================= GET /config wiring =================
+
+#[test]
+fn config_endpoint_returns_loaded_layers_on_200() {
+    // Contract: the extension's syncConfig parses {ok, config}; the
+    // wiring must expose the merged layers, not the old empty placeholder
+    // (an empty config silently degrades to built-in defaults — a broken
+    // wiring would be invisible).
+    let dir = tempfile::TempDir::new().unwrap();
+    let default = dir.path().join("default.kdl");
+    std::fs::write(&default, "bar {\n    height 16\n}\n").unwrap();
+    let user = dir.path().join("user.kdl"); // does not exist: optional layer
+    let (status, body): (u16, String) = mudrad::daemon::config_response(&default, &user);
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["config"]["statusHeight"], serde_json::json!(16));
+}
+
+#[test]
+fn config_endpoint_surfaces_broken_file_as_500() {
+    // A parse error must be loud (Python's `config: {e}` shape) — never
+    // a 200 with an empty config the extension would silently ignore.
+    let dir = tempfile::TempDir::new().unwrap();
+    let default = dir.path().join("default.kdl");
+    std::fs::write(&default, "bar { font \"unterminated }\n").unwrap(); // string never closes
+    let (status, body) = mudrad::daemon::config_response(&default, &dir.path().join("no-user.kdl"));
+    assert_eq!(status, 500);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], serde_json::json!(false));
+    let err = v["err"].as_str().unwrap();
+    assert!(err.starts_with("config: "), "{err}");
+}
+
 // ================= session env gate =================
 
 #[test]
