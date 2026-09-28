@@ -16,6 +16,19 @@
 //! present only when the host supplies their callbacks — same protocol
 //! as the JS version.
 
+/// Root tag name → rank-axis glyph (port of ui.py `ROOT_AXIS`). The
+/// axis lives here, not in any host: the SSR bar, the mudrad `/forest`
+/// payload, and the leptos panel all read the same table — adding a
+/// rank root means adding one line in this crate, single source.
+pub fn root_axis(name: &str) -> Option<&'static str> {
+    match name {
+        "importance" => Some("★"),
+        "quality" => Some("♥"),
+        "urgency" => Some("🔥"),
+        _ => None,
+    }
+}
+
 /// One path-segment string of a tag: `state::unread` splits into segs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagPath<'a>(pub &'a str);

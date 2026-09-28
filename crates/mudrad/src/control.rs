@@ -38,6 +38,19 @@ impl<'a, R: Runtime> Controller<'a, R> {
             "/pages" => self.pages(body),
             "/focus_page" => self.focus_page(body),
             "/ctx_status" => self.ctx_status(body),
+            // R2 slice 2: the panel's control-plane verbs. Reads that
+            // need server-side shaping (forest, ctx_pages, shot) and
+            // every write ride 8899 — the KV frame channel is the
+            // read-only data plane; a frame PUT would bypass the
+            // Collection's index/epoch maintenance (方案 A).
+            "/forest" => self.forest(),
+            "/ctx_pages" => self.ctx_pages(body),
+            "/set_tags" => self.set_tags(body),
+            "/create_tag" => self.create_tag(body),
+            "/close" => self.close_by_id(body),
+            "/reopen" => self.reopen(body),
+            "/delete" => self.delete(body),
+            "/shot" => self.shot(body),
             other => Err(format!("unknown endpoint {other}")),
         }
     }
@@ -324,6 +337,271 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let owned: Vec<&str> = tags.iter().map(String::as_str).collect();
         let capsules = tag_forest::capsules_html(&owned);
         Ok(json!({"ctx": ctx, "tags": tags, "capsules": capsules, "role": role}))
+    }
+
+    // ============ R2 slice 2: panel control-plane verbs ============
+
+    /// POST /forest — the whole tag forest, recursive, plus the context
+    /// switcher data (port of ui.py `_forest` + `_contexts`). Shapes are
+    /// the panel's existing contract: roots carry `root: true` and
+    /// `rank_axis` (the glyph table lives in the tag-forest crate, one
+    /// source for SSR bar, panel and mudrad); non-roots carry `path`
+    /// (`::`-joined) and `rank` — `0` (unranked) marshals as JSON null,
+    /// because the panel discriminates plain tags by `rank === null` and
+    /// selects rank nodes by `rank === k`; the okm row has no null.
+    pub fn forest(&self) -> Result<Value, String> {
+        /// One live non-root tag row, flattened for tree assembly:
+        /// (id, name, alias, rank, isolated, required).
+        type Kid = (u32, String, String, i32, u8, u8);
+        type KidMap = std::collections::HashMap<i64, Vec<Kid>>;
+
+        // all live rows, id-ordered (Python's ORDER BY id: children keep
+        // insertion order, not rank order — the rank sort is the panel's)
+        let mut rows: Vec<(mudra_store::TagKey, mudra_store::Tag)> = self
+            .store
+            .tags
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.store.tags.get(&k).filter(|t| t.deleted == 0).map(|t| (k, t)))
+            .collect();
+        rows.sort_by_key(|(k, _)| k.id);
+
+        let mut by_parent: KidMap = std::collections::HashMap::new();
+        let mut roots: Vec<Value> = Vec::new();
+        for (k, t) in &rows {
+            if t.parent_id == -1 {
+                roots.push(json!({
+                    "id": k.id, "name": t.name, "alias": t.alias,
+                    "root": true, "rank_axis": tag_forest::root_axis(&t.name),
+                    "children": [],
+                }));
+            } else {
+                by_parent.entry(t.parent_id as i64).or_default().push((
+                    k.id, t.name.clone(), t.alias.clone(), t.rank, t.isolated, t.required,
+                ));
+            }
+        }
+        fn build(kid: Kid, prefix: &str, by_parent: &KidMap) -> Value {
+            let (id, name, alias, rank, isolated, required) = kid;
+            let path = format!("{prefix}::{name}");
+            let children: Vec<Value> = by_parent
+                .get(&(id as i64))
+                .map(|kids| kids.iter().cloned().map(|k| build(k, &path, by_parent)).collect())
+                .unwrap_or_default();
+            json!({
+                "id": id, "name": name, "alias": alias, "path": path,
+                "rank": if rank == 0 { Value::Null } else { json!(rank) },
+                "isolated": isolated == 1, "required": required == 1,
+                "children": children,
+            })
+        }
+        for root in &mut roots {
+            let rid = root["id"].as_u64().unwrap_or(0) as i64;
+            let rname = root["name"].as_str().unwrap_or_default().to_string();
+            if let Some(kids) = by_parent.get(&rid) {
+                let built: Vec<Value> =
+                    kids.iter().cloned().map(|k| build(k, &rname, &by_parent)).collect();
+                root["children"] = json!(built);
+            }
+        }
+        // situation leaves in id order (Python `_contexts` ORDER BY t.id);
+        // the current context resolves exactly like the panel's `load()`
+        // default so one round trip carries the full header state.
+        let contexts: Vec<String> = {
+            let sit_root = rows
+                .iter()
+                .find(|(_, t)| t.parent_id == -1 && t.name == "situation")
+                .map(|(k, _)| k.id as i64);
+            match sit_root {
+                Some(rid) => by_parent
+                    .get(&rid)
+                    .map(|kids| {
+                        let mut names: Vec<(u32, String)> =
+                            kids.iter().map(|(id, n, ..)| (*id, n.clone())).collect();
+                        names.sort_by_key(|(id, _)| *id);
+                        names.into_iter().map(|(_, n)| n).collect()
+                    })
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+        Ok(json!({
+            "forest": roots,
+            "contexts": contexts,
+            "current": self.current_ctx(),
+        }))
+    }
+
+    /// POST /ctx_pages {ctx?} — every undeleted page of a context,
+    /// closed ones included (the panel strikes them through and offers
+    /// ↻/🗑). Port of ui.py `_pages`: position-ordered, title falls back
+    /// to url, tag_ids ride along so rank/capsule state needs no extra
+    /// round trip.
+    pub fn ctx_pages(&self, body: &Value) -> Result<Value, String> {
+        let ctx = body
+            .get("ctx")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| self.current_ctx());
+        let mut out = Vec::new();
+        for (ik, inst) in self.store.instance_by_profile(&ctx) {
+            let mut pages: Vec<(mudra_store::PageKey, mudra_store::Page)> =
+                self.store.pages_of_instance(ik.id, false);
+            pages.sort_by_key(|(_, p)| p.position);
+            for (pk, p) in pages {
+                let tag_ids: Vec<u32> = self
+                    .store
+                    .tags_of_page(&pk)
+                    .into_iter()
+                    .map(|tk| tk.id)
+                    .collect();
+                out.push(json!({
+                    "id": pk.id,
+                    "url": p.url,
+                    "title": if p.title.is_empty() { p.url.clone() } else { p.title.clone() },
+                    "position": p.position,
+                    "tag_ids": tag_ids,
+                    "target_id": p.target_id,
+                    "parent_id": p.parent_id,
+                    "opened_at": p.opened_at,
+                    "closed": p.closed_at != 0,
+                    "port": inst.port,
+                }));
+            }
+        }
+        Ok(json!({"pages": out}))
+    }
+
+    /// POST /set_tags {page_id, tag_ids} — replace the page's whole tag
+    /// set (rank picks, capsule switches, add/remove all land here; the
+    /// Python `deleted=0` filter lives in the store method).
+    pub fn set_tags(&mut self, body: &Value) -> Result<Value, String> {
+        let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
+        let pk = mudra_store::PageKey { id: page_id };
+        self.store
+            .pages
+            .get(&pk)
+            .filter(|p| p.deleted_at == 0)
+            .ok_or(format!("page {page_id} not found"))?;
+        let ids: Vec<u32> = body
+            .get("tag_ids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+            .unwrap_or_default();
+        let epoch = self.store.page_tag_replace(&pk, &ids);
+        self.rt.notify(epoch);
+        Ok(json!({"page_id": page_id, "tag_ids": ids}))
+    }
+
+    /// POST /create_tag {parent_id, name} — idempotent under (parent,
+    /// name); returns the node id, created or found (Python parity).
+    pub fn create_tag(&mut self, body: &Value) -> Result<Value, String> {
+        let name = body
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if name.is_empty() {
+            return Err("tag name required".into());
+        }
+        let parent_id = body.get("parent_id").and_then(Value::as_i64).unwrap_or(-1) as i32;
+        let (k, created) = self.store.create_tag(parent_id, name);
+        // idempotent-found is a no-op: silent, like every other verb
+        // (the store only bumps when it writes)
+        if created {
+            self.rt.notify(self.store.epoch());
+        }
+        Ok(json!({"id": k.id}))
+    }
+
+    /// POST /close {page_id} — set closed_at AND close the target
+    /// (ops.close_page port). The row survives; the watcher's destroyed
+    /// event re-marks idempotently (the closed_at==0 guard).
+    pub fn close_by_id(&mut self, body: &Value) -> Result<Value, String> {
+        let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
+        let pk = mudra_store::PageKey { id: page_id };
+        // ops.close_page raised on a missing row — keep that; a row that
+        // is already closed is a legitimate no-op (double ⨯ click).
+        if self.store.pages.get(&pk).is_none() {
+            return Err(format!("page {page_id} not found"));
+        }
+        // port order: closed_at first (Python UPDATEs, then closes the
+        // target) — a live port/target is best effort like Python's guard
+        if let Some((target_id, _epoch)) = self.store.close_page(&pk, crate::watch::now_ms()) {
+            let live = self
+                .store
+                .pages
+                .get(&pk)
+                .and_then(|p| self.store.instances.get(&mudra_store::InstanceKey { id: p.instance_id }))
+                .filter(|i| i.running == 1 && spawn::pid_alive(i.pid));
+            if let Some(inst) = live {
+                let _ = self.rt.close_target(inst.port as u16, &target_id);
+            }
+            self.rt.notify(self.store.epoch());
+        }
+        Ok(json!({"closed": page_id}))
+    }
+
+    /// POST /reopen {page_id} — re-open a closed row's URL through the
+    /// normal open path (ops.open_page port: `ctl_open(url, ctx)`); the
+    /// watcher's upsert revives the row when the new target lands.
+    pub fn reopen(&mut self, body: &Value) -> Result<Value, String> {
+        let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
+        let pk = mudra_store::PageKey { id: page_id };
+        let page = self
+            .store
+            .pages
+            .get(&pk)
+            .ok_or(format!("page {page_id} not found"))?;
+        if page.deleted_at != 0 {
+            return Err("page is deleted".into());
+        }
+        let ctx = self
+            .store
+            .instances
+            .get(&mudra_store::InstanceKey { id: page.instance_id })
+            .map(|i| i.profile)
+            .filter(|c| !c.is_empty())
+            .ok_or(format!("page {page_id} has no context instance"))?;
+        let url = page.url.clone();
+        self.open(&json!({"url": url, "ctx": ctx}))?;
+        Ok(json!({"opened": page_id}))
+    }
+
+    /// POST /delete {page_id} — soft delete, closed rows only (the
+    /// invariant lives in `lifecycle::delete_page`; the verb just shells
+    /// it and pushes the epoch).
+    pub fn delete(&mut self, body: &Value) -> Result<Value, String> {
+        let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
+        let pk = mudra_store::PageKey { id: page_id };
+        let epoch = self.store.delete_page(&pk, crate::watch::now_ms())?;
+        self.rt.notify(epoch);
+        Ok(json!({"deleted": page_id}))
+    }
+
+    /// POST /shot {page_id} — hover screenshot (port of ui.py `_shot`):
+    /// live page only, None answer when the page/instance/target is not
+    /// there right now (Python returned data: null, not an error).
+    pub fn shot(&mut self, body: &Value) -> Result<Value, String> {
+        let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
+        let pk = mudra_store::PageKey { id: page_id };
+        let data = match self
+            .store
+            .pages
+            .get(&pk)
+            .filter(|p| p.closed_at == 0 && p.deleted_at == 0 && !p.target_id.is_empty())
+            .and_then(|p| {
+                self.store
+                    .instances
+                    .get(&mudra_store::InstanceKey { id: p.instance_id })
+                    .filter(|i| i.port > 0 && i.running == 1)
+                    .map(|i| (i.port as u16, p.target_id.clone()))
+            })
+        {
+            Some((port, target)) => self.rt.screenshot(port, &target)?,
+            None => None,
+        };
+        Ok(json!({"data": data}))
     }
 }
 

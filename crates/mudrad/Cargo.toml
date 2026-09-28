@@ -10,6 +10,10 @@ tag-forest = { path = "../tag-forest" }
 okm-core = { workspace = true, features = ["fjall"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+# blocking sync CDP round trips (the `screenshot` seam — hover-shot must
+# not need the async daemon); same 0.26 tokio-tungstenite already pulls,
+# so no extra compilation
+tungstenite.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true
 kdl.workspace = true

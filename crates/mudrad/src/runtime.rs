@@ -81,6 +81,12 @@ pub trait Runtime {
     /// Push an epoch invalidation hint (the daemon wires the panel's
     /// live ws; a no-op when no panel is connected).
     fn notify(&mut self, epoch: u64);
+    /// Screenshot a live target via page-level CDP (port of
+    /// ctl.screenshot): returns the base64 PNG data URL, or Ok(None)
+    /// when the capture is unavailable (page gone, no url). The Python
+    /// path swallowed errors to None; the Rust seam keeps Err for
+    /// transport failures so the verb can surface them in the panel log.
+    fn screenshot(&mut self, port: u16, target_id: &str) -> Result<Option<String>, String>;
 }
 
 /// The machine-facing runtime: chromium spawn (PDEATHSIG-detached),
@@ -200,5 +206,66 @@ impl Runtime for Real {
     fn notify(&mut self, _epoch: u64) {
         // The daemon wiring step replaces this with the panel ws push;
         // standing alone, mudrad's control plane has no panel attached.
+    }
+
+    fn screenshot(&mut self, port: u16, target_id: &str) -> Result<Option<String>, String> {
+        // Port of ctl.screenshot: resolve the page-level ws url from
+        // /json, one CDP round trip, base64 PNG -> data URL. The
+        // blocking tungstenite client keeps the Runtime seam sync (the
+        // hover-shot verb runs on the control thread under the store
+        // lock discipline: verbs are fully synchronous by design).
+        //
+        // Lock discipline makes the read timeout load-bearing: `run_verb`
+        // holds the store mutex for the whole verb, so a hung recv would
+        // starve every other write. tungstenite's own `connect` hides the
+        // TcpStream behind MaybeTlsStream (no way to set the timeout), so
+        // for a plain ws:// devtools url we open the socket ourselves and
+        // hand it to `tungstenite::client`.
+        use tungstenite::{Message, client};
+        let url = match devtools_json(port, "/json").ok().and_then(|v| {
+            v.as_array().and_then(|rows| {
+                rows.iter().find(|t| {
+                    t["id"].as_str() == Some(target_id) && t["type"].as_str() == Some("page")
+                })
+                .and_then(|t| t["webSocketDebuggerUrl"].as_str())
+                .map(str::to_string)
+            })
+        }) {
+            Some(u) => u,
+            // the target is not a live page right now: Python answered
+            // None, not an error
+            None => return Ok(None),
+        };
+        let host_port = url
+            .strip_prefix("ws://")
+            .and_then(|r| r.split('/').next())
+            .ok_or_else(|| format!("unexpected devtools ws url: {url}"))?;
+        let (host, p) = host_port
+            .rsplit_once(':')
+            .ok_or_else(|| format!("ws url lacks port: {host_port}"))?;
+        let sock = std::net::TcpStream::connect((host, p.parse::<u16>().map_err(|e| e.to_string())?))
+            .map_err(|e| format!("screenshot connect: {e}"))?;
+        sock.set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|e| format!("screenshot timeout set: {e}"))?;
+        sock.set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| format!("screenshot timeout set: {e}"))?;
+        let (mut ws, _resp) =
+            client(url.as_str(), sock).map_err(|e| format!("screenshot handshake: {e}"))?;
+        let frame = serde_json::json!({"id": 1, "method": "Page.captureScreenshot", "params": {"format": "png"}});
+        ws.send(Message::Text(frame.to_string().into()))
+            .map_err(|e| format!("screenshot send: {e}"))?;
+        // single-reader by construction here: one socket, one command —
+        // route by envelope id, page-level events just get skipped.
+        loop {
+            let msg = ws.read().map_err(|e| format!("screenshot recv: {e}"))?;
+            let Message::Text(t) = msg else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else { continue };
+            if v["id"].as_u64() != Some(1) {
+                continue;
+            }
+            let data = v["result"]["data"].as_str().map(str::to_string);
+            let _ = ws.close(None);
+            return Ok(data.map(|d| format!("data:image/png;base64,{d}")));
+        }
     }
 }

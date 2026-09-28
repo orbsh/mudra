@@ -270,6 +270,69 @@ impl MudraStore {
         !linked
     }
 
+    /// Replace a page's whole tag set (the panel's batch assignment —
+    /// port of ui.py `_set_tags`): delete all junction links, re-link the
+    /// given ids after dropping ids that do not resolve to a live tag
+    /// (deleted tags filter out exactly like the Python `deleted=0`
+    /// guard). Always bumps: a replace is a write even when the set ends
+    /// up equal, keeping the invalidation contract one-write-one-bump.
+    pub fn page_tag_replace(&mut self, page: &PageKey, tag_ids: &[u32]) -> u64 {
+        let keep: Vec<TagKey> = tag_ids
+            .iter()
+            .map(|id| TagKey { id: *id })
+            .filter(|tk| self.tags.get(tk).is_some_and(|t| t.deleted == 0))
+            .collect();
+        for old in self.tags_of_page(page) {
+            self.unlink_page_tag(page, &old);
+        }
+        for tk in keep {
+            self.link_page_tag(page, &tk);
+        }
+        self.bump_epoch()
+    }
+
+    /// Create a tag node under `parent_id` (-1 = root), idempotent on
+    /// (parent, name) among live rows — port of ui.py `_create_tag`:
+    /// a duplicate returns the existing id without writing. Success bumps
+    /// the epoch (the forest column re-renders); `name` is assumed
+    /// already trimmed and non-empty (the verb layer enforces it).
+    pub fn create_tag(&mut self, parent_id: i32, name: &str) -> (TagKey, bool) {
+        if let Some((k, _)) = self
+            .tag_children(parent_id)
+            .into_iter()
+            .find(|(_, t)| t.name == name)
+        {
+            return (k, false);
+        }
+        let k = TagKey { id: self.next_id(state::TAG_ID) as u32 };
+        self.tags.put(
+            &k,
+            &Tag {
+                parent_id,
+                name: name.to_string(),
+                ..Default::default()
+            },
+        );
+        self.bump_epoch();
+        (k, true)
+    }
+
+    /// Close a page by row id (the panel's `close` op, port of
+    /// ops.close_page): set closed_at AND ask the machine to close the
+    /// target. The watcher's destroyed event may also arrive and re-mark
+    /// — close_target's `closed_at == 0` guard keeps that idempotent.
+    /// Returns the new epoch, or None when the row is not open (no write).
+    pub fn close_page(&mut self, page: &PageKey, ts: u64) -> Option<(String, u64)> {
+        let p = self.pages.get(page)?;
+        if p.closed_at != 0 {
+            return None;
+        }
+        let mut p = p;
+        p.closed_at = ts;
+        self.pages.put(page, &p);
+        Some((p.target_id, self.bump_epoch()))
+    }
+
     /// Switch the current context: valid only for a leaf of the
     /// `situation` tree (the port of db.set_context's subquery check).
     /// Returns the bumped epoch, or None when rejected (no write).
