@@ -76,6 +76,12 @@ const MudraBar = {
       return h("span.capsule",
         segs.map((seg, i) => h("span", { class: "seg" + (i === segs.length - 1 ? " leaf" : "") }, seg)));
     };
+    // SSR capsule row: mudrad renders the capsule HTML string (tag-forest
+    // crate — one component source; content scripts can't compile wasm
+    // under the page's CSP). innerHTML is Solid's supported raw markup and
+    // stays reactive (the Bar children are functions; setData() re-runs
+    // them and Solid patches the html in place).
+    const CapsuleHtml = (html) => h("span", { innerHTML: html });
 
     const Bar = () => {
       // A Solid component body runs only once: reading data() at top level is untracked, so the DOM would freeze at first render.
@@ -84,7 +90,13 @@ const MudraBar = {
       const left = () => {
         const d = data();
         const mode = d.mode || "normal";
-        return [d.ctx, d.count, mode, ...(d.tags || []).map(Capsule)].filter(Boolean);
+        // server-rendered capsule row wins (single component source); the
+        // local Capsule renderer is the fallback for a mudrad that predates
+        // the `capsules` field.
+        const capsules = d.capsules != null
+          ? [d.capsules && CapsuleHtml(d.capsules)]
+          : (d.tags || []).map(Capsule);
+        return [d.ctx, d.count, mode, ...capsules].filter(Boolean);
       };
       const right = () => {
         const d = data();

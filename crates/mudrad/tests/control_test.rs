@@ -357,6 +357,7 @@ fn ctx_status_answers_console_role_without_lookup() {
     assert_eq!(r["role"], "console");
     assert!(r["ctx"].is_null());
     assert_eq!(r["tags"].as_array().unwrap().len(), 0);
+    assert_eq!(r["capsules"], "");
     assert!(h.calls().is_empty(), "console short-circuits the probes");
 }
 
@@ -378,6 +379,12 @@ fn ctx_status_resolves_page_role_with_tag_paths() {
     assert_eq!(r["role"], "page");
     assert_eq!(r["ctx"], "work");
     assert_eq!(r["tags"], json!(["state::unread"]));
+    // SSR capsule row from the tag-forest crate (read-only shape: the
+    // last segment carries .leaf; the bar drops this string in verbatim)
+    assert_eq!(
+        r["capsules"],
+        "<span class=\"capsule\"><span class=\"seg\">state</span><span class=\"seg leaf\">unread</span></span>"
+    );
 }
 
 #[test]

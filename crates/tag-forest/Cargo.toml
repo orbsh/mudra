@@ -1,0 +1,8 @@
+[package]
+name = "tag-forest"
+edition.workspace = true
+version.workspace = true
+description = "tag-forest UI primitives as render-to-string (no DOM) — one crate, two render entries: mudrad SSR (capsule HTML for the extension bar) and the R2 leptos panel"
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mudra-store", "crates/mudrad"]
+members = ["crates/mudra-store", "crates/mudrad", "crates/tag-forest"]
 
 [workspace.package]
 edition = "2024"

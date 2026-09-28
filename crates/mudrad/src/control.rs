@@ -297,7 +297,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             "page"
         };
         if role == "console" {
-            return Ok(json!({"ctx": Value::Null, "tags": [], "role": role}));
+            return Ok(json!({"ctx": Value::Null, "tags": [], "capsules": "", "role": role}));
         }
         let ctx = self
             .ctx_for_tab(&tab_id, if url.is_empty() { None } else { Some(&url) })
@@ -317,7 +317,13 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 tags.push(self.store.tag_path_string(&tk));
             }
         }
-        Ok(json!({"ctx": ctx, "tags": tags, "role": role}))
+        // SSR capsules: the bar drops this string in verbatim (the tag
+        // type component lives once, in the tag-forest crate — content
+        // scripts cannot compile wasm under page CSP). `tags` stays for
+        // the cmd-palette drill-down, which consumes paths, not HTML.
+        let owned: Vec<&str> = tags.iter().map(String::as_str).collect();
+        let capsules = tag_forest::capsules_html(&owned);
+        Ok(json!({"ctx": ctx, "tags": tags, "capsules": capsules, "role": role}))
     }
 }
 

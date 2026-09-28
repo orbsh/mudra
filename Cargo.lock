@@ -453,6 +453,7 @@ dependencies = [
  "mudra-store",
  "okm-core",
  "serde_json",
+ "tag-forest",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -788,6 +789,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "tag-forest"
+version = "0.1.0"
 
 [[package]]
 name = "tempfile"
