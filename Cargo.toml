@@ -19,6 +19,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 serde_json = "1"
+# KDL parser for config.kdl. v1-fallback is load-bearing, not belt: the
+# KDL v2 spec reserves bare `true`/`false` (v2 spelling is `#true`), while
+# kdl-py — which the shared repo config.kdl is written against until the
+# Python tree retires — only understands the bare spelling. v2-first /
+# v1-retry accepts both spellings in one file.
+kdl = { version = "6", features = ["v1-fallback"] }
 
 [workspace.lints.rust]
 # deny (not forbid): pre_exec/prctl-style syscall sites need a narrow,

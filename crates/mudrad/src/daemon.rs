@@ -77,6 +77,9 @@ pub struct Daemon {
     /// over one instance; a finished handle frees the slot for a retry.
     pub watched: Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>,
     pub frontend_dir: std::path::PathBuf,
+    /// repo-shipped default `config.kdl` (Python DEFAULT_PATH == repo
+    /// root == the home dir the NixOS install symlinks into the tree)
+    pub config_default: std::path::PathBuf,
     /// Serve()-returned NestStorage: Send + Sync by construction
     /// (okm WS-CHANNEL); the WS adapter calls `apply` on shared handles.
     pub nest: Arc<okm_core::NestStorage<okm_core::FjallStore>>,
@@ -170,10 +173,17 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
     body.truncate(content_length);
 
     if path == "/config" && method == "get" {
-        // KDL config loading lands with the next step; the extension
-        // tolerates an empty config (built-in defaults win).
-        let payload = json!({"ok": true, "config": {}}).to_string();
-        return http_response(&mut sock, 200, payload.as_bytes(), "application/json").await;
+        // both layers re-read per request (Python parity: a config.kdl
+        // edit needs only a panel/extension reload, not a daemon
+        // restart). A broken file is a 500 with the error surfaced —
+        // never a silently empty config (Python's `config: {e}` shape).
+        let user = crate::config::user_config_path()
+            .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"));
+        let (status, payload) = match crate::config::load(&d.config_default, &user) {
+            Ok(cfg) => (200, json!({"ok": true, "config": cfg}).to_string()),
+            Err(e) => (500, json!({"ok": false, "err": format!("config: {e}")}).to_string()),
+        };
+        return http_response(&mut sock, status, payload.as_bytes(), "application/json").await;
     }
     if method != "post" {
         return http_response(&mut sock, 404, br#"{"ok":false,"err":"not found"}"#, "application/json").await;
@@ -527,6 +537,7 @@ pub async fn run() -> Result<(), String> {
         epoch_tx,
         watched: Arc::new(Mutex::new(HashMap::new())),
         frontend_dir: frontend,
+        config_default: home.join("config.kdl"),
         nest,
     });
 
