@@ -46,6 +46,111 @@ impl MudraStore {
         self.instance_by_profile(ctx).into_iter().max_by_key(|(k, _)| k.id)
     }
 
+    /// Idempotent seed of the initial tag forest (port of mudra.py
+    /// `_seed_tags`): situation leaves, three rating trees, the state
+    /// pipeline, the topic root. Returns the number of NEW nodes (0 on
+    /// a re-run). No epoch bump: a fresh store has no listeners yet,
+    /// and re-seeding never mutates existing rows.
+    pub fn seed_tags(&mut self) -> usize {
+        // closures report "newly created" instead of capturing a counter:
+        // two closures mutably capturing one local don't coexist
+        let root = |s: &mut Self, name: &str| -> (u32, bool) {
+            if let Some((k, _)) = s
+                .tag_children(-1)
+                .into_iter()
+                .find(|(_, t)| t.name == name)
+            {
+                return (k.id, false);
+            }
+            let k = TagKey { id: s.next_id(state::TAG_ID) as u32 };
+            s.tags.put(&k, &Tag { name: name.to_string(), parent_id: -1, ..Default::default() });
+            (k.id, true)
+        };
+        let child = |s: &mut Self, parent: u32, name: &str, alias: &str, isolated: u8,
+                        required: u8, rank: i32| -> bool {
+            if s
+                .tag_children(parent as i32)
+                .iter()
+                .any(|(_, t)| t.name == name)
+            {
+                return false;
+            }
+            let k = TagKey { id: s.next_id(state::TAG_ID) as u32 };
+            s.tags.put(
+                &k,
+                &Tag {
+                    name: name.to_string(),
+                    parent_id: parent as i32,
+                    alias: alias.to_string(),
+                    isolated,
+                    required,
+                    rank,
+                    ..Default::default()
+                },
+            );
+            true
+        };
+        let (sit, c1) = root(self, "situation");
+        let (importance, c2) = root(self, "importance");
+        let (urgency, c3) = root(self, "urgency");
+        let (quality, c4) = root(self, "quality");
+        let (state_root, c5) = root(self, "state");
+        let (_topic, c6) = root(self, "topic");
+        let c7 = child(self, sit, "inbox", "pending", 1, 1, 0);
+        let c8 = child(self, sit, "work", "work context", 1, 0, 0);
+        let c9 = child(self, sit, "personal", "life", 1, 0, 0);
+        let c10 = child(self, sit, "privacy", "isolated", 1, 0, 0);
+        let mut rating = [false; 15];
+        for i in 1i32..=5 {
+            let star = "\u{2606}".repeat(i as usize); // ☆ x i (Python's rank glyphs)
+            rating[(i - 1) as usize] = child(self, importance, &star, "", 0, 0, i);
+            rating[5 + (i - 1) as usize] = child(self, urgency, &star, "", 0, 0, i);
+            rating[10 + (i - 1) as usize] = child(self, quality, &star, "", 0, 0, i);
+        }
+        let mut pipeline = [false; 4];
+        for (j, (name, alias)) in [("to-read", "unread"), ("reading", "reading"),
+            ("distilled", "distilled"), ("archived", "archived")].iter().enumerate() {
+            pipeline[j] = child(self, state_root, name, alias, 0, 0, 0);
+        }
+        [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10]
+            .into_iter()
+            .chain(rating)
+            .chain(pipeline)
+            .filter(|c| *c)
+            .count()
+    }
+
+    /// Pre-create or fetch the context's instance row with running=0
+    /// (`mudra conf` semantics: proxy/extensions live on the row before
+    /// any window exists, so `open` reuses it). Port of cmd_conf's
+    /// INSERT ... running=0. Returns the key; does not bump the epoch
+    /// (no panel-visible data changed).
+    pub fn config_row(&mut self, ctx: &str) -> InstanceKey {
+        if let Some((k, _)) = self.instance_for_context(ctx) {
+            return k;
+        }
+        let k = InstanceKey { id: self.next_id(state::INSTANCE_ID) as u32 };
+        self.instances.put(
+            &k,
+            &Instance { profile: ctx.to_string(), ..Default::default() },
+        );
+        k
+    }
+
+    /// Persist per-context proxy/extensions on the instance row.
+    /// `None` = leave untouched, `Some("")` = clear (Python's 'none'/
+    /// 'default' spellings resolve to empty strings upstream).
+    pub fn instance_set_config(&mut self, k: &InstanceKey, proxy: Option<&str>, extensions: Option<&str>) {
+        let Some(mut row) = self.instances.get(k) else { return };
+        if let Some(v) = proxy {
+            row.proxy = v.to_string();
+        }
+        if let Some(v) = extensions {
+            row.extensions = v.to_string();
+        }
+        self.instances.put(k, &row);
+    }
+
     /// Record a launch: alive-reuse updates port/pid/running on the old
     /// row (proxy/extensions carry over untouched); no old row creates
     /// one. Port of `instance_launch_started`.

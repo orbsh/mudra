@@ -24,6 +24,9 @@ enum Call {
     ApplyWidth { pid: u32, prop: f64 },
     Notify(u64),
     Shot { port: u16, target: String },
+    Page { port: u16, target: String, method: String },
+    Niri(Vec<String>),
+    Panel,
 }
 
 struct Fake {
@@ -35,6 +38,15 @@ struct Fake {
     /// what the fake screenshot answers (None = "no live page" per the
     /// seam contract; Some(data url) = a capture).
     shot_answer: Option<String>,
+    /// page_command answers: (method -> result JSON); missing = Ok(None)
+    /// (target not live), matching the seam's "no page" contract.
+    page_answers: std::collections::HashMap<String, serde_json::Value>,
+    /// the niri snapshot the fake serves (default: empty windows).
+    snapshot: mudrad::runtime::NiriSnapshot,
+    /// /json rows list_targets answers.
+    targets: Vec<serde_json::Value>,
+    dev: bool,
+    panel_pids: u32,
 }
 
 impl Fake {
@@ -44,6 +56,11 @@ impl Fake {
             live_targets: HashSet::new(),
             next_pid: std::process::id(),
             shot_answer: None,
+            page_answers: std::collections::HashMap::new(),
+            snapshot: mudrad::runtime::NiriSnapshot::default(),
+            targets: Vec::new(),
+            dev: false,
+            panel_pids: 0,
         }
     }
     fn take_calls(&mut self) -> Vec<Call> {
@@ -91,6 +108,30 @@ impl Runtime for Fake {
     fn screenshot(&mut self, port: u16, target_id: &str) -> Result<Option<String>, String> {
         self.calls.push(Call::Shot { port, target: target_id.into() });
         Ok(self.shot_answer.clone())
+    }
+    fn page_command(&mut self, port: u16, target_id: &str, method: &str,
+                    _params: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+        self.calls.push(Call::Page { port, target: target_id.into(), method: method.into() });
+        Ok(self.page_answers.get(method).cloned())
+    }
+    fn list_targets(&mut self, port: u16) -> Result<Vec<serde_json::Value>, String> {
+        let _ = port;
+        Ok(self.targets.clone())
+    }
+    fn niri_snapshot(&mut self) -> Result<mudrad::runtime::NiriSnapshot, String> {
+        Ok(self.snapshot.clone())
+    }
+    fn niri_action(&mut self, args: &[&str]) -> Result<(), String> {
+        self.calls.push(Call::Niri(args.iter().map(ToString::to_string).collect()));
+        Ok(())
+    }
+    fn set_dev_mode(&mut self, on: bool) {
+        self.dev = on;
+    }
+    fn launch_panel(&mut self) -> Result<u32, String> {
+        self.calls.push(Call::Panel);
+        self.panel_pids += 1;
+        Ok(900_000 + self.panel_pids)
     }
 }
 
@@ -590,4 +631,229 @@ fn shot_answers_live_pages_only() {
     let r = h.verb("/shot", json!({"page_id": pk.id})).unwrap();
     assert_eq!(r["data"], Value::Null);
     assert!(h.calls().is_empty(), "no round trip for a closed page");
+}
+
+// ================= A2: CLI fact-source verbs =================
+
+#[test]
+fn contexts_lists_leaves_with_open_counts_and_current_mark() {
+    let mut h = Harness::new();
+    seeded(&mut h); // situation -> work leaf with one open page
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    let r = h.verb("/contexts", json!({})).unwrap();
+    let list = r["contexts"].as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["leaf"], "work");
+    assert_eq!(list[0]["pages"], 1);
+    assert_eq!(list[0]["current"], true);
+}
+
+#[test]
+fn targets_passthroughs_cdp_rows_and_refuses_dead_ctx() {
+    let mut h = Harness::new();
+    seeded(&mut h);
+    h.rt.targets = vec![json!({"id": "T1", "type": "page", "title": "Alpha", "url": "https://a.test/page"})];
+    let r = h.verb("/targets", json!({"ctx": "work"})).unwrap();
+    assert_eq!(r["targets"][0]["targetId"], "T1");
+    let e = h.verb("/targets", json!({"ctx": "ghost"})).unwrap_err();
+    assert!(e.contains("not running"), "{e}");
+}
+
+#[test]
+fn focus_finds_by_query_and_acts_on_both_planes() {
+    // ops.focus_ctx_query port contract: fuzzy CDP match -> stored row ->
+    // the exact /focus_page path (activate + niri window).
+    let mut h = Harness::new();
+    seeded(&mut h);
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.rt.targets = vec![json!({"id": "T1", "title": "Alpha", "url": "https://a.test/page"})];
+    let r = h.verb("/focus", json!({"query": "alp"})).unwrap();
+    assert_eq!(r["focused"], 1);
+    let calls = h.calls();
+    assert!(matches!(&calls[0], Call::Activate { port: 9301, target } if target == "T1"), "{calls:?}");
+    assert!(matches!(&calls[1], Call::FocusWindow { .. }));
+
+    h.rt.take_calls();
+    let e = h.verb("/focus", json!({"query": "zzz"})).unwrap_err();
+    assert!(e.contains("no page matching"), "{e}");
+    assert!(h.calls().is_empty(), "a miss must not act");
+}
+
+#[test]
+fn nav_goto_reloads_the_rightmost_open_page() {
+    let mut h = Harness::new();
+    let k = seeded(&mut h);
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.rt.page_answers.insert("Page.navigate".into(), json!({"result": {}}));
+    let r = h.verb("/nav", json!({"cmd": "goto", "url": "b.test/next"})).unwrap();
+    assert_eq!(r["ok"], true);
+    let calls = h.calls();
+    assert!(matches!(&calls[0], Call::Page { port, target, method }
+        if *port == 9301 && target == "T1" && method == "Page.navigate"), "{calls:?}");
+    let _ = k;
+    let e = h.verb("/nav", json!({"cmd": "goto"})).unwrap_err();
+    assert_eq!(e, "goto needs url");
+}
+
+#[test]
+fn nav_history_step_jumps_to_the_adjacent_entry() {
+    // the ctl._history_step two-step port: read the history, then jump to
+    // currentIndex + delta; out-of-range answers an error (no guessing).
+    let mut h = Harness::new();
+    seeded(&mut h);
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.rt.page_answers.insert(
+        "Page.getNavigationHistory".into(),
+        // the seam hands back the envelope's `result` — the fake answers
+        // at that level too (unwrapped), same as Real does
+        json!({"currentIndex": 1, "entries": [{"id": 10}, {"id": 11}, {"id": 12}]}),
+    );
+    h.rt.page_answers.insert("Page.navigateToHistoryEntry".into(), json!({"result": {}}));
+    let r = h.verb("/nav", json!({"cmd": "back"})).unwrap();
+    assert_eq!(r["ok"], true);
+    let calls = h.calls();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(matches!(&calls[1], Call::Page { method, .. } if method == "Page.navigateToHistoryEntry"));
+
+    // index 0 -> back lands on -1: out of range
+    h.rt.page_answers.insert(
+        "Page.getNavigationHistory".into(),
+        json!({"currentIndex": 0, "entries": [{"id": 10}]}),
+    );
+    let e = h.verb("/nav", json!({"cmd": "back"})).unwrap_err();
+    assert_eq!(e, "history step out of range");
+}
+
+#[test]
+fn col_remember_snaps_and_show_lists_bands() {
+    // cmd_col port: focused window -> instance row (pid) -> CDP page
+    // (title) -> tile/output ratio -> band -> SiteWidth row.
+    let mut h = Harness::new();
+    let _k = seeded(&mut h);
+    let pid = std::process::id();
+    h.rt.snapshot = mudrad::runtime::NiriSnapshot {
+        windows: vec![json!({"id": 7, "pid": pid, "title": "Alpha", "is_focused": true,
+            "workspace_id": 1, "layout": {"tile_size": [500, 800]}})],
+        workspaces: vec![json!({"idx": 1, "id": 1, "is_focused": true})],
+        output_width: 1000.0,
+    };
+    h.rt.targets = vec![json!({"id": "T1", "title": "Alpha", "url": "https://a.test/page"})];
+    let r = h.verb("/col", json!({"action": "remember"})).unwrap();
+    assert_eq!(r["site"], "a.test");
+    assert_eq!(r["proportion"], 0.5);
+    assert_eq!(r["band"], "1/2");
+    let (_, row) = h.store.site_width("a.test").expect("row written");
+    assert_eq!(row.proportion.0, 0.5);
+
+    let show = h.verb("/col", json!({"action": "show"})).unwrap();
+    assert_eq!(show["widths"][0]["site"], "a.test");
+    let filtered = h.verb("/col", json!({"action": "show", "site": "nomatch"})).unwrap();
+    assert_eq!(filtered["widths"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn conf_checks_leaf_and_persists_omitted_fields_untouched() {
+    let mut h = Harness::new();
+    seeded(&mut h); // work leaf, instance proxy=http://p:1 extensions=/e1
+    let e = h.verb("/conf", json!({"ctx": "nope", "proxy": "x"})).unwrap_err();
+    assert!(e.contains("not a situation leaf"), "{e}");
+
+    let r = h.verb("/conf", json!({"ctx": "work", "proxy": "http://q:2"})).unwrap();
+    assert_eq!(r["proxy"], "http://q:2");
+    assert_eq!(r["extensions"], "/e1", "omitted field stays");
+
+    // an unseen-but-legal leaf pre-creates a stopped row (running=0)
+    let sit = h
+        .store
+        .tag_by_name("situation")
+        .into_iter()
+        .find(|(_, t)| t.parent_id == -1)
+        .unwrap()
+        .0;
+    let personal = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
+    h.store.tags.put(&personal, &Tag { name: "personal".into(), parent_id: sit.id as i32, ..Default::default() });
+    // 'none'/'default' -> "" is the thin CLI's spelling job (Python
+    // cmd_conf resolved it before the write); the backend stays literal.
+    let r = h.verb("/conf", json!({"ctx": "personal", "proxy": ""})).unwrap();
+    assert_eq!(r["proxy"], Value::Null, "empty string clears the proxy");
+    let (_, inst) = h.store.instance_for_context("personal").expect("stopped row");
+    assert_eq!(inst.running, 0);
+}
+
+#[test]
+fn dev_switch_writes_the_slot_and_the_live_seam_flag() {
+    let mut h = Harness::new();
+    let r = h.verb("/dev", json!({})).unwrap();
+    assert_eq!(r["dev"], false);
+    let r = h.verb("/dev", json!({"on": "1"})).unwrap();
+    assert_eq!(r["dev"], true);
+    assert_eq!(h.store.state_text(state::DEV_MODE), "1");
+    assert!(h.rt.dev, "the live Real projection follows without a restart");
+    let r = h.verb("/dev", json!({})).unwrap();
+    assert_eq!(r["dev"], true);
+}
+
+#[test]
+fn tag_seed_is_idempotent_and_bumps_only_on_change() {
+    let mut h = Harness::new();
+    seeded(&mut h); // situation+work already exist: seed fills the rest
+    // 5 remaining roots + 3 sit leaves + 15 stars + 4 state kids = 27
+    let r = h.verb("/tag_seed", json!({})).unwrap();
+    assert_eq!(r["seeded"], 27);
+    assert!(h.store.epoch() > 0);
+    let e_before = h.store.epoch();
+    h.rt.take_calls();
+    let r = h.verb("/tag_seed", json!({})).unwrap();
+    assert_eq!(r["seeded"], 0, "a re-run creates nothing");
+    assert_eq!(h.store.epoch(), e_before, "no-op stays silent");
+    assert!(h.calls().iter().all(|c| !matches!(c, Call::Notify(_))), "no notify for no writes");
+}
+
+#[test]
+fn tag_set_assigns_removes_and_stays_silent_on_noops() {
+    let mut h = Harness::new();
+    let _k = seeded(&mut h);
+    let pk = PageKey { id: 1 };
+    let work = h.store.tag_by_name("work").into_iter().next().unwrap().0;
+    let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": true})).unwrap();
+    assert_eq!(r["changed"], true);
+    assert!(h.store.tags_of_page(&pk).contains(&work));
+
+    h.rt.take_calls();
+    let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": true})).unwrap();
+    assert_eq!(r["changed"], false);
+    assert!(h.calls().iter().all(|c| !matches!(c, Call::Notify(_))), "idempotent add stays silent");
+
+    let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": false})).unwrap();
+    assert_eq!(r["changed"], true);
+    assert!(h.store.tags_of_page(&pk).is_empty());
+
+    let e = h.verb("/tag_set", json!({"page_id": 999, "tag_id": work.id})).unwrap_err();
+    assert!(e.contains("page 999 not found"), "{e}");
+}
+
+#[test]
+fn sort_writes_the_closed_choice() {
+    let mut h = Harness::new();
+    let r = h.verb("/sort", json!({"kind": "mru"})).unwrap();
+    assert_eq!(r["sort"], "mru");
+    assert_eq!(h.store.state_text(state::SORT), "mru");
+    let e = h.verb("/sort", json!({"kind": "bogus"})).unwrap_err();
+    assert!(e.contains("unknown sort kind"), "{e}");
+}
+
+#[test]
+fn panel_focus_without_a_window_spawns_one() {
+    // ui.launch parity: focus-or-spawn is one verb; the status probe and
+    // the spawn side share the fake snapshot (no real panel-profile
+    // process exists in tests, so cmdline probes answer false).
+    let mut h = Harness::new();
+    let r = h.verb("/panel", json!({"action": "status"})).unwrap();
+    assert_eq!(r["running"], false);
+
+    h.rt.take_calls();
+    let r = h.verb("/panel", json!({"action": "focus"})).unwrap();
+    assert_eq!(r["spawned"], 900001, "no window up -> spawn fallback");
+    assert_eq!(h.store.state_text(state::PANEL_PID), "900001");
+    assert!(matches!(h.calls()[0], Call::Panel));
 }

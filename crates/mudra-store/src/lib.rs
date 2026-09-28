@@ -205,6 +205,7 @@ pub mod state {
     pub const TAG_ID: u8 = 8;
     pub const INSTANCE_ID: u8 = 9;
     pub const SITE_WIDTH_ID: u8 = 10;
+    pub const PANEL_PID: u8 = 11;
 }
 
 /// One opaque raw value per State slot (text settings, u64 counters, the
@@ -451,6 +452,37 @@ impl MudraStore {
             .into_iter()
             .filter_map(|(pk, row)| row.map(|r| (pk.decoded, r)))
             .collect()
+    }
+
+    /// Every remembered width, site-ordered (port of `col show`'s SQL
+    /// ORDER BY site; the scan yields id order, so re-sort on the name).
+    pub fn site_widths_all(&self) -> Vec<SiteWidth> {
+        let mut rows: Vec<SiteWidth> = self
+            .site_widths
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.site_widths.get(&k))
+            .collect();
+        rows.sort_by(|a, b| a.site.cmp(&b.site));
+        rows
+    }
+
+    /// Remember (or replace) a site's proportion; returns the bumped
+    /// epoch when the stored value actually changed (epoch discipline:
+    /// writing the same proportion again is a silent no-op).
+    pub fn site_width_put(&mut self, site: &str, proportion: f64) -> Option<u64> {
+        let q = okm_core::Quant::<4>::new(proportion);
+        if let Some((k, mut row)) = self.site_width(site) {
+            if row.proportion == q {
+                return None;
+            }
+            row.proportion = q;
+            self.site_widths.put(&k, &row);
+        } else {
+            let k = SiteWidthKey { id: self.next_id(state::SITE_WIDTH_ID) as u32 };
+            self.site_widths.put(&k, &SiteWidth { site: site.to_string(), proportion: q });
+        }
+        Some(self.bump_epoch())
     }
 
     /// The SiteWidth row for a host, if remembered.

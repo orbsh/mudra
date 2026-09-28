@@ -182,6 +182,32 @@ pub fn spawn_detached(cmd: &mut std::process::Command) -> io::Result<u32> {
     Ok(child.id())
 }
 
+/// True when the process's /proc cmdline contains `needle` (panel window
+/// identification by process identity, never title — the Python rule).
+pub fn cmdline_has(pid: u64, needle: &str) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|raw| raw.split(|b| *b == 0).any(|arg| arg == needle.as_bytes()))
+        .unwrap_or(false)
+}
+
+/// Detach WITHOUT PDEATHSIG: the panel window must outlive daemon
+/// restarts (Python ui.launch used start_new_session only).
+/// `#[allow(unsafe_code)]`: same fork-window prctl/setsid contract as
+/// spawn_detached, minus the death signal.
+#[allow(unsafe_code)]
+pub fn spawn_detached_session(cmd: &mut std::process::Command) -> io::Result<u32> {
+    let child = unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })
+        .spawn()?
+    };
+    Ok(child.id())
+}
+
 /// Data directory layout: `MUDRA_HOME` overrides (tests), else
 /// `~/.local/share/mudra` — same root the fjall store and profiles live under.
 pub fn mudra_home() -> PathBuf {
