@@ -15,7 +15,11 @@ use std::process::Command;
 use std::time::Duration;
 
 /// Minimal blocking GET returning the parsed JSON body of a local devtools
-/// endpoint (chromium always closes the response → EOF frames the body).
+/// endpoint. Blood lesson shared with cdp.rs: chromium's DevTools server
+/// answers with Content-Length and KEEPS THE CONNECTION OPEN — reading to
+/// EOF used to hang the full 5s timeout and fail even though the response
+/// body was already in the buffer. Frame by Content-Length; EOF only when
+/// no length header exists.
 pub fn devtools_json(port: u16, path: &str) -> Result<serde_json::Value, String> {
     let mut sock = std::net::TcpStream::connect(("127.0.0.1", port))
         .map_err(|e| format!("connect {port}: {e}"))?;
@@ -24,15 +28,31 @@ pub fn devtools_json(port: u16, path: &str) -> Result<serde_json::Value, String>
     let req = format!(
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
     );
-    sock.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    sock.write_all(req.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
     let mut buf = Vec::new();
-    sock.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&buf);
-    if !text.starts_with("HTTP/1.1 2") {
-        return Err(format!("{path} -> {}", text.lines().next().unwrap_or("no response")));
-    }
-    serde_json::from_str(text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(""))
-        .map_err(|e| format!("{path}: bad json: {e}"))
+    let mut tmp = [0u8; 4096];
+    let body: Vec<u8> = loop {
+        match crate::cdp::body_complete(&buf) {
+            crate::cdp::BodyState::Done(b) => break b.to_vec(),
+            crate::cdp::BodyState::More => {
+                let n = sock.read(&mut tmp).map_err(|e| format!("{path}: {e}"))?;
+                if n == 0 {
+                    return Err(format!("{path}: closed before body complete"));
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            crate::cdp::BodyState::ToEof => {
+                sock.read_to_end(&mut buf).map_err(|e| format!("{path}: {e}"))?;
+                let text = String::from_utf8_lossy(&buf);
+                let b = text.split_once("\r\n\r\n").map(|(_, x)| x).unwrap_or(text.as_ref());
+                break b.as_bytes().to_vec();
+            }
+        }
+    };
+    let text = String::from_utf8_lossy(&body);
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{path}: bad json: {e}"))?;
+    Ok(json)
 }
 
 /// Everything control can do. `Real` talks to the machine; tests use

@@ -4,6 +4,7 @@
 //! Run: `cargo test -p mudrad --test cdp_test`.
 
 use mudrad::cdp::*;
+use mudrad::watch::connect_ready;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -179,6 +180,103 @@ async fn start_ws_mock_with_late_answer() -> (SocketAddr, tokio::task::JoinHandl
 }
 
 // ================= HTTP helper contracts =================
+
+/// Serve any GET -> the JSON body, framed by Content-Length, then KEEP
+/// THE CONNECTION OPEN forever (never shutdown, never close). This is the
+/// real chromium DevTools behavior the EOF-read port hung on: the answer
+/// says `Connection: close` but the socket stays alive — a reader waiting
+/// for EOF waits forever.
+async fn start_keepalive_http_mock(http_body: Value) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else { return };
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let body = http_body.to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            // and hold the socket open — the bug this mock exists to catch
+            std::mem::forget(sock);
+        }
+    });
+    (addr, task)
+}
+
+#[tokio::test]
+async fn http_helpers_finish_on_content_length_without_eof() {
+    // THE chromium blood lesson: /json/version and /json must complete
+    // even though the server never closes the connection. The EOF-read
+    // version hung the first connect_ready attempt forever — silently
+    // defeating the whole never-ready retry budget (no logs, no pages,
+    // no mark-down; the symptom was a watcher that simply never acted).
+    let version = json!({"webSocketDebuggerUrl": "ws://127.0.0.1:9201/devtools/browser/abc"});
+    let (addr, _t) = start_keepalive_http_mock(version).await;
+    let url = tokio::time::timeout(std::time::Duration::from_secs(3), browser_ws(addr.port()))
+        .await
+        .expect("must not hang: framing ends at Content-Length")
+        .expect("version parses");
+    assert_eq!(url, "ws://127.0.0.1:9201/devtools/browser/abc");
+
+    let list = json!([{"id": "T1", "type": "page", "url": "u", "title": "t"}]);
+    let (addr2, _t2) = start_keepalive_http_mock(list).await;
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(3), list_targets(addr2.port()))
+        .await
+        .expect("must not hang")
+        .expect("list parses");
+    assert_eq!(rows[0]["id"], "T1");
+}
+
+#[test]
+fn blocking_devtools_json_survives_a_keepalive_server() {
+    // runtime.rs's synchronous GET carries the same lesson; the Fake
+    // Runtime never exercised it against a real socket — bind one here.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = json!([{"id": "T9", "type": "page"}]).to_string();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        // accept forever; after answering, consume-and-never-drop keeps
+        // the connection open, like chromium's DevTools server does
+        for sock in listener.incoming().flatten() {
+            let mut sock = sock;
+            let mut buf = [0u8; 512];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(resp.as_bytes());
+            std::mem::forget(sock);
+        }
+    });
+    let v = mudrad::runtime::devtools_json(addr.port(), "/json").expect("framed read completes");
+    assert_eq!(v[0]["id"], "T9");
+}
+
+#[tokio::test]
+async fn connect_ready_gives_up_when_an_attempt_hangs() {
+    // The budget must be enforceable even against a server whose first
+    // byte never arrives in the shape the client waits for: here the
+    // endpoint accepts TCP and answers nothing at all. The per-attempt
+    // timeout turns the hang into a counted failure, so give-up still
+    // happens (the EOF-hang bug made `attempts` unreachable).
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _h = tokio::spawn(async move {
+        while let Ok((_sock, _)) = listener.accept().await {
+            // hold every connection open, say nothing
+        }
+    });
+    let start = std::time::Instant::now();
+    let got = connect_ready(addr.port(), 2, std::time::Duration::from_millis(50)).await;
+    assert!(got.is_none(), "hung attempts must exhaust the budget, not park");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "bounded by the retry budget");
+}
 
 #[tokio::test]
 async fn browser_ws_reads_the_debugger_url_from_json_version() {

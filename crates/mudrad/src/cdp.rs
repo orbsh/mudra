@@ -10,8 +10,13 @@
 //!   to the event stream. Callers never touch the socket directly.
 //! - `/json` and `/json/version` are plain HTTP on the debug port; the
 //!   raw minimal GET avoids an HTTP client dependency (the Python tree
-//!   used stdlib urllib for exactly this), and the response is read to
-//!   EOF with `Connection: close`.
+//!   used stdlib urllib for exactly this). Blood lesson of the port:
+//!   chromium's DevTools server answers with `Content-Length` and KEEPS
+//!   THE CONNECTION OPEN (`Connection: close` is ignored) — reading to
+//!   EOF hangs forever, and a hung first attempt silently defeats the
+//!   whole never-ready retry budget (no logs, no pages, no mark-down).
+//!   Read the body by Content-Length framing instead; EOF remains the
+//!   fallback only when no length header is present.
 //!
 //! Timestamps/ids are u64; the CDP envelope JSON stays `serde_json::Value`
 //! — the daemon only reads `id`/`method`/`params`/`result`/`error`.
@@ -26,6 +31,45 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message;
+
+/// Header/body split for the minimal GET: read until headers are
+/// complete, then exactly Content-Length bytes of body. A server that
+/// keeps the socket open after the response (chromium DevTools) must
+/// never be able to hold this reader hostage.
+pub(crate) fn body_complete(buf: &[u8]) -> BodyState<'_> {
+    match buf.windows(4).position(|w| w == b"\r\n\r\n") {
+        None => BodyState::More,
+        Some(head_end) => {
+            let headers = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+            let cl = headers.lines().find_map(|l| {
+                l.trim_start().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))
+            });
+            match cl {
+                Some(n) if buf.len() >= head_end + 4 + n => {
+                    BodyState::Done(&buf[head_end + 4..head_end + 4 + n])
+                }
+                Some(_) => BodyState::More,
+                // no framing length (chunked/unknown): EOF is the answer
+                None => BodyState::ToEof,
+            }
+        }
+    }
+}
+
+pub(crate) enum BodyState<'a> {
+    More,
+    /// Body complete, bytes in hand.
+    Done(&'a [u8]),
+    /// No Content-Length: keep reading until the server closes.
+    ToEof,
+}
+
+fn parse_json_body(raw: &[u8]) -> CdpResult<Value> {
+    let text = String::from_utf8_lossy(raw);
+    // headers present -> body after the blank line; bare body (odd peer) -> as-is
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(text.as_ref());
+    serde_json::from_str(body).map_err(|e| CdpError::Io(format!("bad json: {e}")))
+}
 
 pub type CdpResult<T> = Result<T, CdpError>;
 
@@ -71,23 +115,40 @@ pub async fn list_targets(port: u16) -> CdpResult<Vec<Value>> {
         .ok_or_else(|| CdpError::Io("/json is not an array".into()))
 }
 
-/// Minimal HTTP GET on the debug port: no keep-alive, read to EOF, return
-/// the parsed JSON body. (Chromium's local devtools endpoints always
-/// close the response, so EOF is the body terminator.)
+/// Minimal HTTP GET on the debug port: read the body by Content-Length
+/// framing (chromium keeps the connection open after the response —
+/// reading to EOF would hang; see the module blood-lesson note). EOF
+/// only answers when the response carries no length header.
 async fn http_get_json(port: u16, path: &str) -> CdpResult<Value> {
     let mut sock = TcpStream::connect(("127.0.0.1", port)).await?;
     let req = format!(
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
     );
     sock.write_all(req.as_bytes()).await?;
-    let mut raw = Vec::new();
-    sock.read_to_end(&mut raw).await?;
-    let text = String::from_utf8_lossy(&raw);
-    let body = text
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b)
-        .unwrap_or(text.as_ref());
-    serde_json::from_str(body).map_err(|e| CdpError::Io(format!("bad json from {path}: {e}")))
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let body: Vec<u8> = loop {
+        match body_complete(&buf) {
+            BodyState::Done(b) => break b.to_vec(),
+            BodyState::More => {
+                let n = sock.read(&mut tmp).await?;
+                if n == 0 {
+                    return Err(CdpError::Io(format!("{path}: closed before body complete")));
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            BodyState::ToEof => {
+                sock.read_to_end(&mut buf).await?;
+                let text = String::from_utf8_lossy(&buf);
+                let b = text.split_once("\r\n\r\n").map(|(_, x)| x).unwrap_or(text.as_ref());
+                break b.as_bytes().to_vec();
+            }
+        }
+    };
+    parse_json_body(&body).map_err(|e| match e {
+        CdpError::Io(m) => CdpError::Io(format!("{path}: {m}")),
+        other => other,
+    })
 }
 
 type WsStream = tokio_tungstenite::WebSocketStream<

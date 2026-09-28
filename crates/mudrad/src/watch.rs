@@ -47,15 +47,22 @@ pub fn now_ms() -> u64 {
 /// Connect with retries — the race guard for a freshly spawned instance
 /// (port not yet bound). `None` after `attempts` failures: the caller
 /// must `_mark_down` and stop (never spin forever on a corpse).
+///
+/// Each attempt is capped at `delay` by an explicit timeout: the budget
+/// is only real if a HUNG attempt (connect completes, response framing
+/// stalls) counts as a failure instead of parking the loop forever. The
+/// chromium-keeps-connection-open lesson is the reason this cap exists.
 pub async fn connect_ready(
     port: u16,
     attempts: u32,
     delay: Duration,
 ) -> Option<CdpConn> {
     for _ in 0..attempts {
-        if let Ok(ws_url) = cdp::browser_ws(port).await
-            && let Ok(conn) = CdpConn::connect(&ws_url).await
-        {
+        let attempt = async {
+            let ws_url = cdp::browser_ws(port).await.ok()?;
+            CdpConn::connect(&ws_url).await.ok()
+        };
+        if let Ok(Some(conn)) = tokio::time::timeout(delay, attempt).await {
             return Some(conn);
         }
         tokio::time::sleep(delay).await;
