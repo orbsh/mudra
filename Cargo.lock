@@ -1469,7 +1469,6 @@ dependencies = [
  "leptos",
  "mudra-store",
  "okm-core",
- "okm-wire",
  "serde",
  "serde_json",
  "tag-forest",
@@ -1477,7 +1476,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "web-time",
 ]
 
 [[package]]

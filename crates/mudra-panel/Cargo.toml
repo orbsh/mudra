@@ -9,10 +9,10 @@ description = "mudra console panel: leptos CSR wasm over the bare NestStorage WS
 # of mudra-store pulls it; the panel speaks bytes, mudrad owns semantics).
 mudra-store = { path = "../mudra-store", default-features = false }
 tag-forest = { path = "../tag-forest", features = ["leptos"] }
-# frame codec: OpFrame/OpResponse over one-Vec<u8>-per-frame WS transport
-okm-wire = { workspace = true }
 # `localstorage` = ADR-0028's consumer half: panel-local UI state rides the
 # SYNC LocalStorageStore (business data stays on the wire/verb path).
+# The WS KV query plane that once needed okm-wire retired with slice 2b —
+# the epoch bus parses JSON text only.
 okm-core = { workspace = true, features = ["localstorage"] }
 leptos.workspace = true
 gloo-net.workspace = true
@@ -21,7 +21,6 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
 web-sys.workspace = true
-web-time.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
