@@ -1,1 +1,0 @@
-"""mudra — browser session manager package."""
