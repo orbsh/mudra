@@ -1,0 +1,41 @@
+# Release-branch binaries: mudrad (daemon) + mudra (CLI), linux x86_64.
+# The panel (crates/mudra-panel/dist) is deliberately NOT built here —
+# trunk/wasm-bindgen belongs to the dev shell, not a CI artifact.
+name: build release binaries
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # edition 2024 floor is 1.85; keep the runner's preinstalled rustup
+      # current without pinning a third-party toolchain action
+      - name: Refresh stable toolchain
+        run: rustup update stable && rustup default stable
+
+      # okm is a public git dependency pinned by Cargo.lock — --locked
+      # makes the build byte-reproducible against the lockfile
+      - name: Build
+        run: cargo build --release --locked -p mudra-cli -p mudrad
+
+      - name: Package
+        run: |
+          tar -C target/release -czf mudra-linux-x86_64.tar.gz mudra mudrad
+          sha256sum mudra-linux-x86_64.tar.gz > mudra-linux-x86_64.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mudra-linux-x86_64-${{ github.ref_name }}-${{ github.run_number }}
+          path: |
+            mudra-linux-x86_64.tar.gz
+            mudra-linux-x86_64.tar.gz.sha256
+          retention-days: 30
