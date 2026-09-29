@@ -401,7 +401,9 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 - **aura+probe 对接**：mudrad 控制动词暴露为 actor invoke；扩展侧胶水平面
   可由投递脚本（probe carrier）承接——替代"用 Python 因为扩展"的原始动机。
   注意 probe 铁律：probe 不持存储、不依赖 aura crate，KV 持久化落 aura 节点
-  侧（okm ADR-0010 §7）。此方向改变控制面拓扑，动手前单独成 ADR。
+  侧（okm ADR-0010 §7）。此方向改变控制面拓扑，动手前单独成 ADR（v3 草案
+  已在 `docs/ADR-aura-probe-federation.md` 双语落盘，proposal 待审——事件
+  外流为正体走 prism 连接面，动词降为效应器）。
   **场景分析（2026-09-29 讨论定调，未排期）**：
   - **页面钩子（首要场景，Tampermonkey 式）**：carrier 分发的是 **JS 脚本
     数据**（match/事件/开关，进 store 新 collection、由 8899 动词治理），
