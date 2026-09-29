@@ -376,9 +376,11 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   失效提示帧。验证=spawn→CDP 同步→面板渲染 E2E 与旧面板同构。
   完成后**一个提交删除 Python 树**。**[done 2026-09-28/29：切片 0-2b +
   dist 静态根 + 14 控制动词 + mudra-cli + 扩展去 Solid；B 删除提交入库]**
-- **R3 okm 侧配套**：`localstorage` backend feature + `VirtualStorageAsync`
-  补齐同步面全集（scan_suffix_kv / batch / commit_batch / scan_range_iter，
-  前置=ADR-0026 落地）+ 面板 WS 异步发送者（落 okm 仓，随其测试纪律）。
+- **R3 okm 侧配套**：`localstorage` backend feature + 面板 WS 异步发送者
+  上收为 okm `WireClient`（落 okm 仓，随其测试纪律）——设计已定案
+  （okm ADR-0028，2026-09-29）；`VirtualStorageAsync` 补齐同步面全集
+  一项已由 okm ADR-0027 落地（scan_range_iter / commit_batch /
+  scan_suffix_kv 自由函数），不再是待办。
 
 ### 部署（NixOS，2026-09-29 定案）
 - 二进制供给 = **cargo 产物**（developMode 哲学延伸：`~/.config/mudra` 是仓
@@ -400,6 +402,19 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   可由投递脚本（probe carrier）承接——替代"用 Python 因为扩展"的原始动机。
   注意 probe 铁律：probe 不持存储、不依赖 aura crate，KV 持久化落 aura 节点
   侧（okm ADR-0010 §7）。此方向改变控制面拓扑，动手前单独成 ADR。
+  **场景分析（2026-09-29 讨论定调，未排期）**：
+  - **页面钩子（首要场景，Tampermonkey 式）**：carrier 分发的是 **JS 脚本
+    数据**（match/事件/开关，进 store 新 collection、由 8899 动词治理），
+    执行落点=既有 CDP 注入桥（INJECT_JS 同一根管子）。wasm guest 进不了
+    页面 world（胶囊同款 CSP 排除，结构性）；钩子回写走动词通道=probe
+    不持存储自洽。
+  - **krystallizer 接入=联邦，非内置/连接二选一**：二选一争进程边界，
+    联邦问数据归属（aura ADR-0013 同型）——页事件**推送**给记忆节点
+    （对方挂了捕获照常），记忆侧**invoke** mudra 动词（`page_id`=跨节点
+    引用，显式寻址=特性）。前置=页事件外流通道（钩子回流同需此管）。
+  - **8899 不设身份准入（2026-09-29 用户裁决）**：服务的存在目的=任意
+    进程可调用，本机=天然信任边界。跨节点（联邦）的认证走 well-known
+    协议那一层，不适用于本机面。
 
 ### 排除的方案（详见 ADR Why Not）
 保 Python 只换存储 / 保 hyperscript 零构建面板 / IndexedDB 后端 /
