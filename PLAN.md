@@ -71,7 +71,7 @@ state(key TEXT PRIMARY KEY, value TEXT)                -- current_context, walke
 
 ### 交互分层（设计主线）
 交互分三层，职责分离、各自可脚本化/接入：
-1. **接口 / CLI（核心操作）**：`mudra.py` 命令 —— 数据与页面操作的事实源（open / ls / focus / tag / star / col），无 UI 假设。
+1. **接口 / CLI（核心操作）**：`mudra`（Rust 二进制，原 `mudra.py`）—— 操作面事实源（open / ls / focus / tag / conf / col），纯 8899 转发，无 UI 假设。
 2. **Launcher（实际的页面管理操作）**：walker 菜单 —— 把页面操作做成列选动作（`s` / `t` / `a` / `o`：situation 分流 / 页面 / 动作 / 排序），选中回调 `mudra CLI`。
 3. **WM（展示相关）**：niri —— workspace 布局、列宽、窗口映射；**页面树 → workspace 移动**（整棵子树搬到某工作区，用于分拣）。
 
@@ -374,10 +374,26 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   验证=旧 Python 树的行为对照（Python 树保留至 R2 完成，作为行为规格）。
 - **R2 面板**：leptos 工程 + tag-forest crate 抽取 + RemoteStore over WS +
   失效提示帧。验证=spawn→CDP 同步→面板渲染 E2E 与旧面板同构。
-  完成后**一个提交删除 Python 树**。
+  完成后**一个提交删除 Python 树**。**[done 2026-09-28/29：切片 0-2b +
+  dist 静态根 + 14 控制动词 + mudra-cli + 扩展去 Solid；B 删除提交入库]**
 - **R3 okm 侧配套**：`localstorage` backend feature + `VirtualStorageAsync`
   补齐同步面全集（scan_suffix_kv / batch / commit_batch / scan_range_iter，
   前置=ADR-0026 落地）+ 面板 WS 异步发送者（落 okm 仓，随其测试纪律）。
+
+### 部署（NixOS，2026-09-29 定案）
+- 二进制供给 = **cargo 产物**（developMode 哲学延伸：`~/.config/mudra` 是仓
+  symlink，wrapper 解析 `target/{release,debug}/mudra|mudrad`，release 优先；
+  非开发模式的 store 快照无 target/，wrapper 明确报错不静默）。不把
+  cargo build 挪进 nix：okm git 源 + 代理拉 GitHub 是构建期雷区，且面板
+  dist 本就靠仓内 trunk 手跑（同先例）。
+- **mudrad 生命周期 = systemd user 服务**（graphical-session.target，
+  Restart=on-failure）：启动脚本补 wayland socket 探测（本仓 walker.nix
+  模式；daemon 的 env 闸门缺一即硬拒，systemd user 环境不保证齐全），并
+  显式设 `MUDRA_FRONTEND_DIR`/`MUDRA_PANEL_DIST` 指 `~/.config/mudra/` 侧
+  路径（daemon 默认拼 MUDRA_HOME 子路径，部署形态下资源在配置目录侧）。
+  CLI 无会话环境要求（纯 8899 转发），panel 窗口由 daemon spawn、继承其
+  环境——niri `Mod+Q` 绑 `mudra ui` 经 systemd 常驻的 daemon 打开，不依赖
+  按键 shell 的环境。
 
 ### 开放项（未定，方向记录）
 - **aura+probe 对接**：mudrad 控制动词暴露为 actor invoke；扩展侧胶水平面

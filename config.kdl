@@ -43,7 +43,7 @@ command {
     maxCandidates 10           // max entries in the command-mode popup menu
 }
 
-// Placeholder: parsed but not consumed; the port is still decided by mudrad.py startup args
+// Placeholder: parsed but not consumed; the port is still decided by mudrad startup args
 server {
     port 8899
 }

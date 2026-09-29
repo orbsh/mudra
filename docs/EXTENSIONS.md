@@ -7,7 +7,8 @@ small interface, so the same core works on any WM / launcher that can satisfy it
 niri & hyprland qualify; cosmic-de does not yet).
 
 This document specifies the *integration approach* (P7). **P7a is live**: the `WmExt` interface
-+ `NiriExt` backend (`mudralib/wm.py`) are implemented and `mudra move` / `add` run on it. P7b
++ `NiriExt` backend (Python `mudralib/wm.py`; since the Rust rewrite, the niri seams in
+`crates/mudrad/src/runtime.rs`) are implemented and `mudra move` / `add` run on it. P7b
 (`LauncherExt` walker menus) 走 elephant `menus` provider（见下）；walker provider 不能外部插件。
 交互模型已定稿：面板（`mudra ui`）承担 tag 富交互，launcher 只留 `p`（见下）。P0–P6 implement core +
 the niri bits; the interface below is the target shape.
@@ -119,7 +120,8 @@ launcher 中过滤，本来就是统一切换的优势，无需在浏览器内�
 ## Verification status
 
 **Done**: PID window↔instance mapping; `move` via `focus-window --id` + `move-window-to-workspace`;
-**P7a**: `WmExt` interface + `NiriExt` backend live (`mudralib/wm.py`), move/add migrated to it;
+**P7a**: `WmExt` interface + `NiriExt` backend live (originally `mudralib/wm.py`, now the
+`Runtime` seams in `crates/mudrad/src/runtime.rs`), move/add migrated to it;
 column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `mudra col
 remember/show` + `open`/`add` auto-apply (P5).
 **Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定 + `p`

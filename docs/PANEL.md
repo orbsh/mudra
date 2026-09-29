@@ -16,33 +16,32 @@ launcher（walker/elephant menus）适合**热路径单动作**：呼出 → 选
 实际落地时，tag 多选（`t`）、排序（`s`）、动作（`a`）从 launcher **移交给了面板**。
 launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest 主力交互面。
 
-## 二、面板现状（2026-08 落地，2026-09-05 零构建化）
+## 二、面板现状（2026-09 Rust 重写后；solidjs/hyperscript 形态见 git 历史）
 
-- **技术栈**：solidjs（hyperscript `h()`，无 JSX）+ python `mudrad` 内置 HTTP(静态) + WebSocket
-  双服务（`mudralib/ui.py`）。**零构建**：无 vite/npm，源码目录即产物（ESM + 内联
-  importmap，`/shared/vendor/solid*.js`）。前端位于 `frontend/ui/`，共享库
-  （solid vendor、后续公共组件）在 `frontend/shared/`——panel 与 mudra-keys 扩展同根引用。
-- **入口**：`mudra ui` 确保 mudrad 在跑（它持有面板服务），spawn 一个 chromium `--app`
-  固定窗载入 `http://127.0.0.1:9299/`。**固定窗，非浮动**——用户直接切过去，不需要
-  WM 浮动居中。
-- **端口**：HTTP `:9299`（静态，`/shared/*` 由 `translate_path` 映射到 `frontend/shared/`）、
-  WS `:9300`（数据通道）。前端按 `location.port + 1` 连 WS 并**自动重连**。
+- **技术栈**：leptos 0.8（csr）+ trunk 构建，源码在 `crates/mudra-panel/`，产物
+  `crates/mudra-panel/dist/`（`filehash=false`，确定性文件名）。mudrad 内置 HTTP(静态)
+  + WebSocket 服务直接 serve dist。tag-forest UI（胶囊/chip/评分轴）在 `crates/tag-forest/`
+  crate（`leptos` feature 提供面板绑定，SSR 面供扩展胶囊）——单一来源两个渲染入口。
+- **入口**：`mudra ui` 经 8899 `/panel` 动词 focus 已有 panel 窗口或 spawn 一个 chromium
+  `--app` 固定窗载入 `http://127.0.0.1:9299/`。**固定窗，非浮动**——用户直接切过去，
+  不需要 WM 浮动居中。
+- **端口**：HTTP `:9299`（静态根=panel dist，flat 路由）、WS `:9300`、控制动词 `:8899`。
+  前端按 `location.port + 1` 连 WS 并**自动重连**（800ms backoff）。
 
-### WS 协议（JSON 请求/响应，`id` 匹配）
+### 数据面（两通道分工）
 
-| op | 请求 | 响应 |
-|---|---|---|
-| `forest` | — | tag 深树（任意深度递归，root 带 `rank_axis`）+ sessions |
-| `pages` | `{session}` | 该会话开页（含 `tag_ids`/`parent_id`/`opened_at`/`target_id`） |
-| `set_tags` | `{page_id, tag_ids}` | 整组替换该页 tag |
-| `focus` | `{page_id}` | CDP 激活目标 + 定位其 niri 窗口聚焦 |
-| `close` | `{page_id}` | 删页 + 关目标 |
-| `create_tag` | `{parent_id, name}` | 胶囊添加子级，返回新 id |
-| `shot` | `{page_id}` | CDP `Page.captureScreenshot` → base64 data URL |
+- **WS `:9300`** = okm 线协议裸帧（`okm-wire`，一帧=一条消息）：只读 KV 查询
+  （get/scan，RemoteStore over WS，查询帧 FIFO 配对）+ epoch 失效提示文本帧
+  （唯一 push；收到即重拉）。写操作**不走 WS**——直写引擎会绕过 okm 的索引/epoch
+  维护。
+- **HTTP `:8899`** = 一切写 + shaped reads（面板契约动词）：`/forest`、`/ctx_pages`、
+  `/set_tags {page_id, tag_ids[]}`、`/create_tag {name, parent_id?}`、`/close {page_id}`、
+  `/reopen {page_id}`、`/delete {page_id}`、`/shot {page_id}`、`/ctx`、`/focus {page_id}`、
+  `/config`（`ui.thumbnails` 开关）。响应均带 `Access-Control-Allow-Origin: *`。
 
 ### UI 布局（按用户规格）
 
-- **头部**：会话选择器、时间排序（新→旧/旧→新）、tag 过滤 chip 区。
+- **头部**：上下文（situation 叶）选择器、时间排序（新→旧/旧→新）、tag 过滤 chip 区。
 - **主体**：page **树**（`parent_id` 打开关系，可折叠），每页两行：
   - 行1：标题链接（点击 → 拦截切到对应窗口；悬停 → 显示窗口截图）。
   - 行2：时间 + 三评分轴 + 普通 tag 胶囊 + 添加按钮。
@@ -86,7 +85,7 @@ class ForestBackend:
     def items(self, filter) -> Iterable[Item] # 被贴 tag 的对象（item_id + 任意自定义字段）
 ```
 
-mudra 提供 `SqliteForestBackend`（包住现有 `db.py`）。库负责复用：树递归构建、rank 轴
+mudra 提供 okm 后端适配器（包住 `crates/mudra-store` 的 Collection 层）。库负责复用：树递归构建、rank 轴
 识别、段路径切换、create 等公共逻辑。
 
 **L2 前端显示/操作接口**——面板只渲染"通用 tag 树"，item 的自定义字段与交互由适配
@@ -114,7 +113,9 @@ configure({
 
 ### 3.3 待办清单
 
-- [ ] `mudralib/forestlib.py`：定义 `ForestBackend` 协议 + `SqliteForestBackend` 适配器
+- [ ] 后端接口 Rust 化：`crates/tag-forest` 已是组件单一来源（SSR + leptos 两渲染
+      入口，2026-09 R2 落地）；`ForestBackend` 的 Rust trait 化（对 `mudra-store`
+      Collection 层的抽象）仍待做——即接口先行的 Rust 形态
 - [ ] 前端 `configure()` 接口落地，替换硬编码 item 视图
 - [ ] 自定义显示区示例：mudra 页显示所在工作区（`niri` workspace_id）
 - [ ] `mudra ui` 与 `set_tags` 迁移到新接口，回归验证

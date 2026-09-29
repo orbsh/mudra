@@ -8,19 +8,19 @@
 > (Chinese; this README is the English/usability surface). Generic tag-forest model:
 > `~/.hermes/wiki/tag-forest.md`.
 
-Drives **`chromium --app`** windows externally over **CDP**, backed by **sqlite**,
-under a tiling WM (`niri`), fully keyboard-driven. Pages are organized by a **tag
-forest** (multi-dimensional, replace-of-session) and can be scored by importance /
-urgency, so the browser becomes a tool that *pre-sorts your information* instead of
-just showing webpages.
+Drives **`chromium --app`** windows externally over **CDP**, backed by an embedded
+**KV store** (okm/fjall), under a tiling WM (`niri`), fully keyboard-driven. Pages
+are organized by a **tag forest** (multi-dimensional, replace-of-session) and can be
+scored by importance / urgency, so the browser becomes a tool that *pre-sorts your
+information* instead of just showing webpages.
 
 **Status**: core (spawn / realtime CDP sync / navigation / niri window mapping+move /
-proxy+extensions / column-width memory) works as CLI+daemon `mudra` / `mudrad`.
+proxy+extensions / column-width memory) works as CLI+daemon `mudra` / `mudrad` (Rust).
 **Context model** (tag forest, *replaces session* — pages hang directly off an
 instance; the instance is chosen by the current `situation` leaf) is implemented: a
-**solidjs web console** (`mudra ui`) is the management surface, all lifecycle ops go
-through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
-See `PLAN.md` §9, `docs/PANEL.md`, and below.
+**wasm web console** (`mudra ui`, leptos) is the management surface, all lifecycle ops
+go through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
+See `PLAN.md` §11, `docs/PANEL.md`, and below.
 
 ---
 
@@ -34,7 +34,7 @@ Two pain points drove it:
 - **Extension-layer control is incomplete**: Vimium/SurfingKeys can't inject into error
   pages (`chrome-error`) or built-in pages.
 
-**Selection**: `chromium --app` + CDP + self-authored mudra-keys extension + sqlite/mudra.
+**Selection**: `chromium --app` + CDP + self-authored mudra-keys extension + KV store/mudra.
 A real Chromium origin with an external controller (keeps error-page control), rather
 than re-embedding an engine. (SurfingKeys was initially preloaded; superseded by the
 in-repo extension — see `docs/ADR-self-maintained-extension.md`.)
@@ -87,7 +87,7 @@ slot.
 `page`), and *tag* (not label) for the tree nodes.
 
 **Interaction surface**: the tag-forest rich operations (scoring axes, capsule tag
-switching, batch assign) live in a solidjs management panel — `mudra ui`. The launcher
+switching, batch assign) live in a wasm (leptos) management panel — `mudra ui`. The launcher
 keeps only the `p` (Page) hot-path. Panel architecture & tag-forest abstraction roadmap:
 `docs/PANEL.md`.
 
@@ -116,13 +116,13 @@ state(key, value)               -- current_context(situation), sort, ...
   tabs) lives in mudra's tag forest, not in Chromium. CDP can't touch Chromium's UI
   chrome, so minimal UI comes only from `--app`.
 - **CDP backbone** — controls every target (incl. error/built-in pages);
-  `Target.targetCreated/Destroyed` events live-sync to sqlite; recovery.
+  `Target.targetCreated/Destroyed` events live-sync to the store; recovery.
 - **mudra-keys extension** (self-authored, `frontend/`) — four-mode keyboard driving
   (normal/hint/insert/command) with qutebrowser-style status bar, link hints, scroll
   commands, `:set` live config. All open/tag/page ops route through mudrad. See
   `docs/KEYS.md` (keymap & config) and `docs/ADR-self-maintained-extension.md` (why
   not SurfingKeys/Vimium).
-- **sqlite + launcher** — tag-forest org & refine, isolated instances, window↔process
+- **KV store + launcher** — tag-forest org & refine, isolated instances, window↔process
   mapping, url record/filter, per-site column width; walker lists pages filtered by tag
   and does address input.
 
@@ -145,49 +145,54 @@ a `BrowserEngine` interface (chromium=CDP backend) so another engine can slot in
 ## Quick start
 
 ```bash
-# 1. daemon (live-sync sqlite with real windows; owns ALL lifecycle ops)
-python3 mudrad.py run
+# 1. daemon (live-syncs the store with real windows; owns ALL lifecycle ops)
+mudrad run
 
 # 2. open a page in the current context (spawns a chromium --app instance for it)
-python3 mudra.py open <url>
+mudra open <url>
 
 # 3. add / close pages; switch context
-python3 mudra.py add <url>
-python3 mudra.py close [query]
-python3 mudra.py ctx [leaf]        # show or switch current situation leaf
+mudra add <url>
+mudra close [query]
+mudra ctx [leaf]           # show or switch current situation leaf
 
 # 4. list pages per context
-python3 mudra.py ls
+mudra ls
 ```
 
 All lifecycle verbs are thin HTTP clients of the daemon's control API
 (`http://127.0.0.1:8899`) — the daemon is the single point that spawns/kills windows
-and writes sqlite; the panel talks to the same API over WebSocket.
+and writes the store; the panel talks to the same API over WebSocket.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `mudra.py open <url> [--ctx LEAF]` | open a page in a context (spawns its instance if not running) |
-| `mudra.py add <url> [--bg] [--ctx LEAF]` | add a page to the context's running instance (`--bg` keeps focus) |
-| `mudra.py close [query] [--ctx LEAF]` | close the whole context instance, or one open page (url filter) |
-| `mudra.py ctx [LEAF]` | show / switch the current context (situation leaf) |
-| `mudra.py ls [-f FILTER]` | list open pages per context (URL/title filter) |
-| `mudra.py targets [--ctx LEAF]` | list live page targets (CDP) |
-| `mudra.py focus <query> [--ctx LEAF]` | find a page by url/title and bring it forward |
-| `mudra.py goto/back/forward/reload <url>` | navigation |
-| `mudra.py move <workspace>` | move the context's windows to a workspace (niri) |
-| `mudra.py conf <leaf> [--proxy <p>] [--ext <csv>]` | per-context proxy/extensions (applied on next open/add) |
-| `mudra.py col remember\|show` | remember/per-site apply column width (niri) |
-| `mudra.py ui` | open the solidjs web console — the tag-forest management surface |
-| `mudrad.py run` | daemon: control API + WebSocket push + Target→sqlite live-sync |
+| `mudra open <url> [--ctx LEAF]` | open a page in a context (spawns its instance if not running) |
+| `mudra add <url> [--ctx LEAF]` | add a page to the context's running instance |
+| `mudra close [query] [--ctx LEAF]` | close the whole context instance, or one open page (url filter) |
+| `mudra ctx [LEAF]` | show / switch the current context (situation leaf) |
+| `mudra ls [LEAF] [-f FILTER]` | list contexts / pages of one ctx (URL/title filter) |
+| `mudra targets` | list live page targets (CDP) |
+| `mudra focus <query> [--ctx LEAF]` | find a page by url/title and bring it forward |
+| `mudra goto/back/forward/reload` | navigation |
+| `mudra page move-here\|swap\|close <url>` | page-mode actions on the selected page |
+| `mudra move <workspace>` | move the context's windows to a workspace (niri) |
+| `mudra conf <leaf> [--proxy <p>] [--ext <csv>]` | per-context proxy/extensions (applied on next open/add) |
+| `mudra col remember\|show` | remember/per-site apply column width (niri) |
+| `mudra tag init\|add\|remove` | tag-forest seed / page assignment |
+| `mudra sort mru\|mtime\|rating` | set the panel sort preference |
+| `mudra dev [on\|off]` | extension dev mode (clear chromium extension caches on spawn) |
+| `mudra ui` | open the web console — the tag-forest management surface |
+| `mudrad run` | daemon: control API + WebSocket push + Target→store live-sync |
 
 ## Environment
 
 - To launch Chromium **windows** the shell needs the Wayland env:
   `export WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000`.
 - niri socket auto-discovered (`NIRI_SOCKET` or `/run/user/<uid>/niri.wayland-*.sock`).
-- `python3` (stdlib only), `chromium`, `niri`.
+- `mudra` / `mudrad`: Rust binaries (`cargo build --release` in this repo), plus
+  `chromium` and `niri`. Panel = the trunk-built wasm in `crates/mudra-panel/dist`.
 
 ## Window management (walker)
 
