@@ -10,9 +10,10 @@
 //! be revived (PLAN §11).
 //!
 //! Behavior spec: `frontend/ui/src/app.js` (the zero-build Solid panel)
-//! until the slice-2 finishing commit deletes the Python tree. Local
-//! view state (filters/collapsed/sortNew) lives in signals only — never
-//! in storage, same as the JS original.
+//! at the retired Python tree's last commit (history). Local view
+//! state (filters/collapsed/sortNew) rides okm's `LocalStorageStore`
+//! (ADR-0028 consumer half, `uistate.rs`) — reload keeps it, the node
+//! stays the only business-data owner.
 //!
 //! Reactivity contract (the Solid lesson, in leptos terms): a re-pull
 //! replaces the whole signal payload with fresh allocations, so `For`
@@ -23,6 +24,7 @@
 pub mod http;
 pub mod remote;
 pub mod schema;
+pub mod uistate;
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -92,6 +94,7 @@ struct Menu {
 #[derive(Clone)]
 struct RowCtx {
     collapsed: WriteSignal<Arc<Vec<u64>>>,
+    ui: crate::uistate::UiState,
     axes: ReadSignal<Axes>,
     by_id: ReadSignal<IdMap>,
     shot: WriteSignal<Option<(f64, f64, String)>>,
@@ -107,6 +110,11 @@ struct RowCtx {
 #[component]
 pub fn App() -> impl IntoView {
     let link = WsLink::from_location();
+    // panel-local UI state on localStorage (ADR-0028 consumer half):
+    // loads seed the signals, every write site persists its new value.
+    // Stateless when the store is unavailable — same parity as the
+    // thumbnails read (cache never breaks the view).
+    let ui = uistate::UiState::open();
 
     let (contexts, set_contexts) = signal(Arc::new(Vec::<String>::new()));
     let (ctx, set_ctx) = signal(String::new());
@@ -115,9 +123,9 @@ pub fn App() -> impl IntoView {
     let (leaves, set_leaves) = signal(Leaves::default());
     let (axes, set_axes) = signal(Axes::default());
     let (pages, set_pages) = signal(Pages::default());
-    let (sort_new, set_sort_new) = signal(true);
-    let (filters, set_filters) = signal(Arc::new(Vec::<u32>::new()));
-    let (collapsed, set_collapsed) = signal(Arc::new(Vec::<u64>::new()));
+    let (sort_new, set_sort_new) = signal(ui.sort_new());
+    let (filters, set_filters) = signal(Arc::new(ui.filters()));
+    let (collapsed, set_collapsed) = signal(Arc::new(ui.collapsed()));
     let (menu, set_menu) = signal(None::<Menu>);
     let (shot, set_shot) = signal(None::<(f64, f64, String)>);
     let (thumbnails, set_thumbnails) = signal(false);
@@ -467,6 +475,7 @@ pub fn App() -> impl IntoView {
 
     let cx = RowCtx {
         collapsed: set_collapsed,
+        ui: ui.clone(),
         axes,
         by_id,
         shot: set_shot,
@@ -504,7 +513,17 @@ pub fn App() -> impl IntoView {
                         }
                     />
                 </select>
-                <button class="b" on:click={move |_| set_sort_new.update(|s| *s = !*s)}>
+                <button class="b" on:click={
+                    let ui2 = ui.clone();
+                    move |_| {
+                        let mut s = false;
+                        set_sort_new.update(|x| {
+                            *x = !*x;
+                            s = *x;
+                        });
+                        ui2.save_sort(s);
+                    }
+                }>
                     {move || if sort_new.get() { "new->old" } else { "old->new" }}
                 </button>
                 <span class="count">{move || format!("{} pages", pages.get().len())}</span>
@@ -515,18 +534,24 @@ pub fn App() -> impl IntoView {
                     key=|(id, _)| *id
                     children=move |(id, path): (u32, String)| {
                         let on = move || filters.get().contains(&id);
-                        let onclick: tf::VoidCb = Arc::new(move || {
-                            set_filters.update(|f| {
-                                let mut n: Vec<u32> = (**f).clone();
-                                match n.iter().position(|t| *t == id) {
-                                    Some(i) => {
-                                        n.remove(i);
+                        let onclick: tf::VoidCb = {
+                            let ui = ui.clone();
+                            Arc::new(move || {
+                                let mut next: Vec<u32> = Vec::new();
+                                set_filters.update(|f| {
+                                    let mut n: Vec<u32> = (**f).clone();
+                                    match n.iter().position(|t| *t == id) {
+                                        Some(i) => {
+                                            n.remove(i);
+                                        }
+                                        None => n.push(id),
                                     }
-                                    None => n.push(id),
-                                }
-                                *f = Arc::new(n);
-                            });
-                        });
+                                    next = n.clone();
+                                    *f = Arc::new(n);
+                                });
+                                ui.save_filters(&next);
+                            })
+                        };
                         tf::chip(path, on, onclick)
                     }
                 />
@@ -670,11 +695,16 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
             }}
         >"🗑"</button>
     };
-    // ▾/▸ collapse twisty (local signal only — never stored)
+    // ▾/▸ collapse twisty (local UI state: persisted to localStorage,
+    // never to the store — the node owns business data, the panel owns
+    // its own cache, ADR-0028's boundary)
     let tw = if nd.kids.is_empty() { "" } else if nd.open { "▾" } else { "▸" };
-    let twbtn = view! {
-        <button class="tw" on:click={move |_| {
-            cx.collapsed.update(|c| {
+    let on_tw = {
+        let collapsed = cx.collapsed; // Copy: no cx partial move
+        let ui = cx.ui.clone();
+        move |_| {
+            let mut next: Vec<u64> = Vec::new();
+            collapsed.update(|c| {
                 let mut n: Vec<u64> = (**c).clone();
                 match n.iter().position(|x| *x == page_id) {
                     Some(i) => {
@@ -682,10 +712,13 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
                     }
                     None => n.push(page_id),
                 }
+                next = n.clone();
                 *c = Arc::new(n);
             });
-        }}>{tw}</button>
+            ui.save_collapsed(&next);
+        }
     };
+    let twbtn = view! { <button class="tw" on:click=on_tw>{tw}</button> };
     // title link: focus verb + hover-shot wiring (JS onMouseMove/Leave)
     let title = p.title.clone();
     let hover_cb = Arc::clone(&cx.hover);

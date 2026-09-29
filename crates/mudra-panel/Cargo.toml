@@ -11,7 +11,9 @@ mudra-store = { path = "../mudra-store", default-features = false }
 tag-forest = { path = "../tag-forest", features = ["leptos"] }
 # frame codec: OpFrame/OpResponse over one-Vec<u8>-per-frame WS transport
 okm-wire = { workspace = true }
-okm-core = { workspace = true }
+# `localstorage` = ADR-0028's consumer half: panel-local UI state rides the
+# SYNC LocalStorageStore (business data stays on the wire/verb path).
+okm-core = { workspace = true, features = ["localstorage"] }
 leptos.workspace = true
 gloo-net.workspace = true
 serde.workspace = true
