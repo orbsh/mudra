@@ -22,7 +22,6 @@
         "<all_urls>"
       ],
       "js": [
-        "/shared/vendor/solid-bundle.js",
         "/shared/lib.js",
         "/extension/content.js"
       ],

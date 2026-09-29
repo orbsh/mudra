@@ -1,0 +1,26 @@
+[package]
+name = "mudra-store"
+edition.workspace = true
+version.workspace = true
+description = "mudra storage schema: okm collections over fjall (docs/SCHEMA.md contract)"
+
+[features]
+# default = the daemon build (schema + fjall assembly points + lifecycle).
+# `default-features = false` gives the wasm panel the schema layer only:
+# keys, documents, junction type, ns constants, pure query encodings —
+# everything byte-level, no engine types (fjall does not compile for wasm32).
+default = ["engine"]
+engine = ["dep:fjall", "okm-core/fjall"]
+
+[dependencies]
+okm-core = { workspace = true }
+okm-ngram.workspace = true
+# the public `open` signature returns `fjall::Result` (okm re-exports the
+# store type but not its error), so fjall is a real import, not a spare
+fjall = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

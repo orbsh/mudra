@@ -1,7 +1,8 @@
 // mudra-keys shared settings + status-bar widget library.
-// Used by content.js here and reusable by other mudra frontends (panel, CLI).
-// Rendering is SolidJS (window.MudraSolid from solid-bundle.js); tag capsules
-// come from window.MudraTags (tags.js) — same components as the panel.
+// Used by content.js here; plain DOM only — the extension never loads the
+// panel's Solid bundle (the wasm panel owns its own rendering; the bar's
+// tag capsules come from mudrad's SSR HTML string — tag-forest crate is
+// the single component source).
 
 const MudraConfig = {
   defaults: {
@@ -46,77 +47,20 @@ const MudraConfig = {
 };
 
 // ---- status bar (qutebrowser style: a single strip at the bottom, one character tall) ----
-// Solid implementation: the bar is a Solid root; render() only flips signals and the DOM updates incrementally.
-// Left: ctx - numeric prefix - mode - tag capsule string; right: title + url + scroll position.
+// Plain DOM, imperative repaint: render(data) stores state and rewrites the
+// two slots. Left: ctx - numeric prefix - mode - tag capsule string; right: title + url + scroll position.
 const MudraBar = {
   el: null,
-  _setState: null, // {data, cfg} signals
-  _dispose: null,
+  bar: null,
+  left: null,
+  right: null,
+  _cfg: null,
+  _state: {},
 
   async mount() {
     if (this.el && this.el.isConnected) return this;
-    const { h, render, createSignal } = window.MudraSolid;
     const cfg = await MudraConfig.all();
-
-    const [data, setData] = createSignal({});
-    const [command, setCommand] = createSignal(false); // command input line has taken over
-    const [cfgSig] = createSignal(cfg);
-    this._setState = { data, setData, command, setCommand, cfg: cfgSig };
-
-    const colors = (mode) => ({
-      normal: { fg: cfg.statusFg, bg: cfg.statusBg },
-      insert: { fg: cfg.insertFg, bg: cfg.insertBg },
-      hint:   { fg: cfg.statusFg, bg: "#204080" },
-    }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg });
-
-    // Capsule string: tags is an array of paths (state::unread); reuses the panel Capsule rendering logic.
-    // The browser-side capsule is read-only display (click actions get menus later); render the segment structure first.
-    const Capsule = (path) => {
-      const segs = path.split("::");
-      return h("span.capsule",
-        segs.map((seg, i) => h("span", { class: "seg" + (i === segs.length - 1 ? " leaf" : "") }, seg)));
-    };
-
-    const Bar = () => {
-      // A Solid component body runs only once: reading data() at top level is untracked, so the DOM would freeze at first render.
-      // Dynamic content must be passed to h() as function children so Solid establishes reactive insertion.
-      const c = cfgSig();
-      const left = () => {
-        const d = data();
-        const mode = d.mode || "normal";
-        return [d.ctx, d.count, mode, ...(d.tags || []).map(Capsule)].filter(Boolean);
-      };
-      const right = () => {
-        const d = data();
-        return d.message != null
-          ? d.message
-          : `${d.title || ""} ${d.url || ""}${d.scroll != null ? " " + d.scroll : ""}`;
-      };
-      const barStyle = () => {
-        const d = data();
-        const col = colors(d.mode || "normal");
-        return {
-          position: "fixed", left: "0", right: "0", bottom: "0", "z-index": "2147483647",
-          height: c.statusHeight + "px", font: c.statusFont,
-          color: col.fg, background: col.bg,
-          display: "flex", "align-items": "center", "justify-content": "space-between",
-          padding: "0 6px", "box-sizing": "border-box", "user-select": "none",
-          "pointer-events": command() ? "auto" : "none",
-          "white-space": "nowrap", overflow: "hidden",
-        };
-      };
-      return h("div#mudra-bar", { style: barStyle }, [
-        h("span#mudra-bar-left", {
-          style: { display: "flex", gap: "6px", "align-items": "center", "min-width": "0" },
-        }, left),
-        h("span#mudra-bar-right", {
-          style: {
-            display: () => (command() ? "none" : "flex"),
-            gap: "10px", "align-items": "center", overflow: "hidden", "flex-direction": "row",
-          },
-        }, right),
-      ]);
-    };
+    this._cfg = cfg;
 
     const root = document.createElement("div");
     root.id = "mudra-bar-root";
@@ -127,8 +71,6 @@ const MudraBar = {
     st.id = "mudra-scrollbar-style";
     st.textContent = "html { scrollbar-width: none !important; } html::-webkit-scrollbar { display: none !important; }";
     document.documentElement.appendChild(st);
-    this.el = root;
-    this._dispose = render(Bar, root);
     // Capsule/mode segment styles are shared with the panel (styles.css loads only in the panel), so inject them inline here
     const css = document.createElement("style");
     css.id = "mudra-tags-style";
@@ -139,7 +81,88 @@ const MudraBar = {
       "#mudra-bar-root .seg.leaf{background:rgba(122,162,247,.25)}",
     ].join("");
     document.documentElement.appendChild(css);
+
+    const bar = document.createElement("div");
+    bar.id = "mudra-bar";
+    const left = document.createElement("span");
+    left.id = "mudra-bar-left";
+    left.style.cssText = "display:flex;gap:6px;align-items:center;min-width:0";
+    const right = document.createElement("span");
+    right.id = "mudra-bar-right";
+    right.style.cssText = "display:flex;gap:10px;align-items:center;overflow:hidden;flex-direction:row";
+    bar.appendChild(left);
+    bar.appendChild(right);
+    root.appendChild(bar);
+    this.el = root;
+    this.bar = bar;
+    this.left = left;
+    this.right = right;
+    this._paint();
     return this;
+  },
+
+  _colors(mode) {
+    const cfg = this._cfg;
+    return {
+      normal: { fg: cfg.statusFg, bg: cfg.statusBg },
+      insert: { fg: cfg.insertFg, bg: cfg.insertBg },
+      hint:   { fg: cfg.statusFg, bg: "#204080" },
+    }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg };
+  },
+
+  // Rewrite the two slots from the stored state. Every dynamic value lives
+  // here (the imperative sibling of the old Solid function children).
+  _paint() {
+    if (!this.bar) return;
+    const d = this._state;
+    const cfg = this._cfg;
+    const mode = d.mode || "normal";
+    const col = this._colors(mode);
+    this.bar.style.cssText = [
+      "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
+      `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
+      `color:${col.fg}`, `background:${col.bg}`,
+      "display:flex", "align-items:center", "justify-content:space-between",
+      "padding:0 6px", "box-sizing:border-box", "user-select:none",
+      "pointer-events:none", "white-space:nowrap", "overflow:hidden",
+    ].join(";");
+
+    // Capsule row: mudrad renders the capsule HTML (tag-forest crate — one
+    // component source; content scripts can't compile wasm under the page's
+    // CSP). The local path-segment renderer is the fallback for a mudrad
+    // that predates the `capsules` field. The sentinel must stay
+    // null-vs-value: "" is a legal server answer ("no tags"), only
+    // null/undefined means "old backend".
+    const seg = (text, cls) => {
+      const s = document.createElement("span");
+      if (cls) s.className = cls;
+      s.textContent = text;
+      return s;
+    };
+    this.left.textContent = "";
+    for (const part of [d.ctx, d.count, mode].filter(Boolean)) {
+      this.left.appendChild(seg(part));
+    }
+    if (d.capsules != null) {
+      if (d.capsules) {
+        const holder = document.createElement("span");
+        holder.innerHTML = d.capsules;
+        this.left.appendChild(holder);
+      }
+    } else {
+      for (const path of d.tags || []) {
+        const segs = path.split("::");
+        const cap = seg("", "capsule");
+        segs.forEach((name, i) => {
+          cap.appendChild(seg(name, "seg" + (i === segs.length - 1 ? " leaf" : "")));
+        });
+        this.left.appendChild(cap);
+      }
+    }
+
+    this.right.textContent = d.message != null
+      ? d.message
+      : `${d.title || ""} ${d.url || ""}${d.scroll != null ? " " + d.scroll : ""}`;
   },
 
   // data: {ctx, mode, title, url, scroll, tags(path array), message, count}
@@ -147,7 +170,8 @@ const MudraBar = {
     if (!this.el) return;
     // In command mode the bar is an input line; render must not overwrite it (openCommand maintains the input itself)
     if (document.getElementById("mudra-cmdinput")) return;
-    this._setState.setData({ ...data });
+    this._state = { ...data };
+    this._paint();
   },
 
   // ---- command mode: the whole bar becomes an input line (: prompt + input filling it),
@@ -160,7 +184,6 @@ const MudraBar = {
   async openCommand(onInput, onPick, onTab, onBackspace) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
-    const { setCommand } = this._setState;
 
     // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
     const rowH = cfg.statusHeight + 2;
@@ -176,12 +199,12 @@ const MudraBar = {
     box.appendChild(list);
     document.documentElement.appendChild(box);
 
-    // The input line REPLACES the bar (not appended into it): Solid owns every child of
-    // #mudra-bar and re-renders on any signal update, so manually added nodes inside it
-    // get shuffled/interleaved with status segments. A standalone fixed line at the same
-    // position avoids all ownership conflicts; the Solid bar is hidden while open.
-    setCommand(true);
-    document.getElementById("mudra-bar").style.visibility = "hidden";
+    // The input line REPLACES the bar (not appended into it): any host
+    // node inserted into a frame-owned tree gets shuffled by re-renders —
+    // the bar (and later Solid) taught this the hard way. A standalone
+    // fixed line at the same position avoids all ownership conflicts; the
+    // bar is hidden while open.
+    this.bar.style.visibility = "hidden";
     const line = document.createElement("div");
     line.id = "mudra-cmdline";
     line.style.cssText = [
@@ -223,10 +246,8 @@ const MudraBar = {
     const close = () => {
       document.getElementById("mudra-cmdline")?.remove();
       document.getElementById("mudra-cmdbox")?.remove();
-      const bar = document.getElementById("mudra-bar");
-      if (bar) bar.style.visibility = "";
-      setCommand(false);
-      this._setState.setData((d) => ({ ...d })); // restore normal rendering (colors come from the mode signal)
+      if (this.bar) this.bar.style.visibility = "";
+      this._paint(); // colors come from the stored state's mode again
     };
 
     const api = {
@@ -258,9 +279,11 @@ const MudraBar = {
   },
 
   unmount() {
-    if (this._dispose) this._dispose();
-    this._dispose = null;
     if (this.el) this.el.remove();
     this.el = null;
+    this.bar = null;
+    this.left = null;
+    this.right = null;
+    this._state = {};
   },
 };

@@ -17,6 +17,7 @@
   let ctx = "";
   let role = "page";   // page | console (decided by mudrad, the frontend does not guess)
   let pageTags = [];   // tags on the current page (mudrad is authoritative; local is display cache only)
+  let pageCapsules;  // server-rendered capsule HTML (tag-forest crate); undefined = old mudrad, JS fallback stays
   let hintSession = null;   // {overlay, nodes} link hints
   let inputHintSession = null; // {overlay, nodes} input picker in insert mode
   let cmdApi = null;
@@ -38,7 +39,7 @@
 
   const refreshBar = async () => {
     await MudraBar.render({
-      ctx, mode, tags: pageTags,
+      ctx, mode, tags: pageTags, capsules: pageCapsules,
       title: document.title.slice(0, 60),
       url: location.host + location.pathname,
       scroll: scrollPct(),
@@ -53,6 +54,7 @@
       ctx = r.ctx || "";
       role = r.role || "page";
       pageTags = r.tags || [];
+      if (r.capsules != null) pageCapsules = r.capsules; // old mudrad: keep JS fallback active
       await refreshBar(); // render only once status arrives (boot first renders a ctx-less version)
     } else {
       flashBar("status: " + ((r && r.err) || "no response"));
@@ -470,7 +472,7 @@
     await tagRender();
   }
   async function flashBar(text) {
-    await MudraBar.render({ ctx, mode, tags: pageTags, message: text });
+    await MudraBar.render({ ctx, mode, tags: pageTags, capsules: pageCapsules, message: text });
     setTimeout(refreshBar, 1500);
   }
 

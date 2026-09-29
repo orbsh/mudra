@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = ["crates/mudra-store", "crates/mudrad", "crates/tag-forest", "crates/mudra-panel", "crates/mudra-cli"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+# okm: schema derives + fjall engine (docs/SCHEMA.md is the layout contract).
+# git source matches sibling repos (aura, krystallizer, prism); branch main is
+# pinned by Cargo.lock. No `fjall` feature at the workspace level: the panel
+# wasm build shares okm-core WITHOUT the engine feature (fjall does not
+# compile for wasm32); engine-craving crates add it at their own dependency.
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main" }
+okm-wire = { git = "https://github.com/orbsh/okm", branch = "main" }
+okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
+okm-ngram = { git = "https://github.com/orbsh/okm", branch = "main" }
+fjall = "3"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
+tokio-tungstenite = "0.26"
+tungstenite = "0.26"
+futures-util = "0.3"
+serde_json = "1"
+# mudra CLI (thin 8899 forwarder): clap = the argparse parity UX; reqwest
+# blocking + rustls = no native-tls/openssl system dependency (NixOS)
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# KDL parser for config.kdl. v1-fallback is load-bearing, not belt: the
+# KDL v2 spec reserves bare `true`/`false` (v2 spelling is `#true`), while
+# kdl-py — which the shared repo config.kdl is written against until the
+# Python tree retires — only understands the bare spelling. v2-first /
+# v1-retry accepts both spellings in one file.
+kdl = { version = "6", features = ["v1-fallback"] }
+
+# ---- panel wasm (R2) ----
+# Exact pin: trunk invokes the NixOS-packaged wasm-bindgen-cli (0.2.127);
+# a crate/binary version mismatch makes trunk's glue step fail.
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "Storage",
+  "Window", "Element", "DomRect", "HtmlElement", "HtmlSelectElement",
+] }
+# wasm-safe WS client (prewarmed in the rust-stack crate cache); http+json
+# for the panel's 8899 verb bridge (read-only KV frames stay on gloo-free
+# web_sys sockets in remote.rs)
+gloo-net = { version = "0.7", default-features = false, features = ["websocket", "http", "json"] }
+serde = { version = "1", features = ["derive"] }
+leptos = { version = "0.8", default-features = false, features = ["csr"] }
+# wasm32 clock (native builds use std::time)
+web-time = "1"
+
+[workspace.lints.rust]
+# deny (not forbid): pre_exec/prctl-style syscall sites need a narrow,
+# commented #[allow(unsafe_code)]; an unconditional allow must not hide there
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

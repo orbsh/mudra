@@ -71,7 +71,7 @@ state(key TEXT PRIMARY KEY, value TEXT)                -- current_context, walke
 
 ### 交互分层（设计主线）
 交互分三层，职责分离、各自可脚本化/接入：
-1. **接口 / CLI（核心操作）**：`mudra.py` 命令 —— 数据与页面操作的事实源（open / ls / focus / tag / star / col），无 UI 假设。
+1. **接口 / CLI（核心操作）**：`mudra`（Rust 二进制，原 `mudra.py`）—— 操作面事实源（open / ls / focus / tag / conf / col），纯 8899 转发，无 UI 假设。
 2. **Launcher（实际的页面管理操作）**：walker 菜单 —— 把页面操作做成列选动作（`s` / `t` / `a` / `o`：situation 分流 / 页面 / 动作 / 排序），选中回调 `mudra CLI`。
 3. **WM（展示相关）**：niri —— workspace 布局、列宽、窗口映射；**页面树 → workspace 移动**（整棵子树搬到某工作区，用于分拣）。
 
@@ -317,3 +317,90 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 
 **优先级建议**：① 转 MD + 全文检索（轻量、无 LLM、是后续基础）→ ② NB 评分 + 标题党（属性化）→ ③ RSS → ④ LLM 总结/态势感知。
 工程顺序独立于方向；`importance/urgency` 评分即 `tag-forest` 的树，先规则底座可无 ML 即时盈利。
+
+## 11. Rust 全栈重写（2026-09-26 定案，决策记录 `docs/ADR-rust-fullstack.md`）
+
+> 动机 = 消除 Python 胶水层（类型系统结构性消灭反复出现的坑类：zombie pid
+> 探活、模块级 global 泄漏、缺依赖静默降级、手写 WS 帧），顺带让 tag-forest
+> UI 抽成 **Rust 组件库**（潜在消费方不止 mudra），并以 okm 为第二真实消费者
+> 压测 `VirtualStorage`/`NestStorage`/`okm-wire`。早期"选 Python 因为扩展问题"
+> 的动机由 aura+probe 对接承接（见下开放项）。
+
+### 形态（锁定）
+- **mudrad → Rust 单二进制**：tokio；CDP over WS；chromium spawn 带
+  `PDEATHSIG`；CLI/daemon/控制面 HTTP+WS 收进同一 crate family。
+- **存储 sqlite → okm**（`VirtualStorage`，fjall 引擎）。schema 变更沿用
+  "删库重建"政策（原型期不变），迁移成本为零。访问模式=KV 遍历
+  （tag 路径上溯、前缀页扫、URL 子串），无 JOIN 需求。
+- **面板 → leptos(wasm)**；tag-forest UI = 独立 crate（树钻取/胶囊/命令弹层），
+  面板与未来非浏览器宿主共用。零构建 hyperscript 方案随抽取决定作废
+  （维持 hyperscript = 树 UI 双实现，违反单一来源）。
+- **面板数据面 = okm 线协议**：面板端发送者（wasm 下必须异步形态——浏览器
+  不能同步阻塞等帧应答）发 `okm-wire` 帧，经现有 WS；mudrad 端
+  `NestStorage::apply(bytes)` 接收（probe `EmitStore` 同型）。bespoke WS op
+  协议（`pages_changed`/`forest`/`set_tags`）整体作废。注：`VirtualStorageAsync`
+  目前唯一 impl 是 slatedb 评测路径（`slatedb_eval`），从未进生产消费——
+  面板 WS 发送者是它的第一个真实消费者。**对齐已定案（2026-09-26 用户拍板）**：
+  异步面补齐同步面全集，缺 4 项——`scan_suffix_kv`（同步面是派生默认，
+  镜像平凡）、`batch`/`commit_batch`（帧侧零缺口：RemoteStore 的
+  commit_batch = `OpFrame::write_batch` 单帧，照搬）、`scan_range_iter`
+  （wire 已有 ADR-0021 OP_SCAN_STREAM 分页帧，补 async stream 形态）。
+  前置依赖 = okm ADR-0026（put/del 改 `&self`，2026-09-26 accepted 未实施）
+  先落地，否则 trait 改两遍。边界诚实：类型层（Collection/Graph/
+  DynamicCollection）全绑同步 `VirtualStorage`，对齐只到 engine trait——
+  面板发裸帧，编解码用 KeyEncode/DocumentEncode（纯字节计算，wasm 可用），
+  类型语义留 mudrad 侧。
+- **服务端推送 = 同一条 WS 上的失效提示帧**：CDP 同步写库后 mudrad 推 epoch
+  bump，面板重扫。数据面保持纯 KV 读，不开第二语义通道。
+- **localStorage = okm 的 wasm 后端**（落在 okm 仓 `localstorage` feature，
+  非 mudra 胶水）：浏览器中唯一同步 API 的存储，直接满足同步
+  `VirtualStorage`；`scan_range` 无原生有序遍历，全量枚举+排序 O(n) 兜底
+  （千级页、5-10MB 上限内可接受）。用途=面板本地 UI 态；业务数据仍走
+  mudrad fjall。IndexedDB 被排除：天生异步，与同步 trait 结构不合。
+- **扩展胶囊不重复实现——走 SSR 面，不走 wasm 直载**。content script 里
+  编译 wasm 受**页面 CSP** 管辖（严格站点无 `wasm-unsafe-eval`，
+  `WebAssembly.instantiate` 被拒；扩展自身页面 CSP 反而允许）——"扩展
+  import 面板同一 wasm 模块"在部分站点结构性不成立。单一来源的正确形态：
+  tag-forest crate 暴露 **render-to-string** 面（无 DOM 依赖），mudrad 原生
+  调用产出胶囊 HTML 串随状态下发，content.js 塞进 bar、点击走事件委托回
+  既有 SW 桥。同一份 crate、两个渲染入口（wasm 组件 / SSR 串）。命令
+  弹层/tag 钻取的键盘交互留扩展 JS，不强收编。
+
+### 阶段
+- **R1 后端**：okm schema 设计（tag 森林/页/实例→collection 布局）→
+  mudrad Rust（spawn/CDP/生命周期/NestStorage 接收器）。**带血教训移植是
+  显式交付物**（zombie `/proc` 探活、SingletonLock、5 个扩展缓存点、WAYLAND
+  env 注入、pkill 自匹配、never-ready 诊断序），逐条挂测试，不重学。
+  验证=旧 Python 树的行为对照（Python 树保留至 R2 完成，作为行为规格）。
+- **R2 面板**：leptos 工程 + tag-forest crate 抽取 + RemoteStore over WS +
+  失效提示帧。验证=spawn→CDP 同步→面板渲染 E2E 与旧面板同构。
+  完成后**一个提交删除 Python 树**。**[done 2026-09-28/29：切片 0-2b +
+  dist 静态根 + 14 控制动词 + mudra-cli + 扩展去 Solid；B 删除提交入库]**
+- **R3 okm 侧配套**：`localstorage` backend feature + `VirtualStorageAsync`
+  补齐同步面全集（scan_suffix_kv / batch / commit_batch / scan_range_iter，
+  前置=ADR-0026 落地）+ 面板 WS 异步发送者（落 okm 仓，随其测试纪律）。
+
+### 部署（NixOS，2026-09-29 定案）
+- 二进制供给 = **cargo 产物**（developMode 哲学延伸：`~/.config/mudra` 是仓
+  symlink，wrapper 解析 `target/{release,debug}/mudra|mudrad`，release 优先；
+  非开发模式的 store 快照无 target/，wrapper 明确报错不静默）。不把
+  cargo build 挪进 nix：okm git 源 + 代理拉 GitHub 是构建期雷区，且面板
+  dist 本就靠仓内 trunk 手跑（同先例）。
+- **mudrad 生命周期 = systemd user 服务**（graphical-session.target，
+  Restart=on-failure）：启动脚本补 wayland socket 探测（本仓 walker.nix
+  模式；daemon 的 env 闸门缺一即硬拒，systemd user 环境不保证齐全），并
+  显式设 `MUDRA_FRONTEND_DIR`/`MUDRA_PANEL_DIST` 指 `~/.config/mudra/` 侧
+  路径（daemon 默认拼 MUDRA_HOME 子路径，部署形态下资源在配置目录侧）。
+  CLI 无会话环境要求（纯 8899 转发），panel 窗口由 daemon spawn、继承其
+  环境——niri `Mod+Q` 绑 `mudra ui` 经 systemd 常驻的 daemon 打开，不依赖
+  按键 shell 的环境。
+
+### 开放项（未定，方向记录）
+- **aura+probe 对接**：mudrad 控制动词暴露为 actor invoke；扩展侧胶水平面
+  可由投递脚本（probe carrier）承接——替代"用 Python 因为扩展"的原始动机。
+  注意 probe 铁律：probe 不持存储、不依赖 aura crate，KV 持久化落 aura 节点
+  侧（okm ADR-0010 §7）。此方向改变控制面拓扑，动手前单独成 ADR。
+
+### 排除的方案（详见 ADR Why Not）
+保 Python 只换存储 / 保 hyperscript 零构建面板 / IndexedDB 后端 /
+wasm 进 content script / CRDT 面板-守护同步。
