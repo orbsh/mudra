@@ -25,6 +25,7 @@ pub mod remote;
 pub mod schema;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use leptos::prelude::*;
@@ -248,6 +249,14 @@ pub fn App() -> impl IntoView {
             }
         }
     });
+    // keep the link's Rc alive for the page's lifetime. Every WS closure
+    // holds only a Weak<WsLink> (and the epoch listener lives *inside*
+    // the link), so without a strong owner App()'s local drops last and
+    // the upgrade returns None forever: epoch frames arrive but never
+    // fan out, and the reconnect chain dies too. The same leaked-for-
+    // page-lifetime policy the socket closure sets already follow;
+    // forgetting one strong count buys the whole bus back.
+    std::mem::forget(Rc::clone(&link));
 
     // hover-screenshot toggle: one-shot read of config.kdl; any failure
     // reads as disabled (Python parity: no config, no shots)

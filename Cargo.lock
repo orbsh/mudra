@@ -1545,7 +1545,7 @@ dependencies = [
 [[package]]
 name = "okm-core"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#220fd402ac58781aef6892820de7bc986b5f90cd"
+source = "git+https://github.com/orbsh/okm?branch=main#8a12f811466d375018ff63cef88ce91d98b17eb2"
 dependencies = [
  "fjall",
  "okm-derive",
@@ -1559,7 +1559,7 @@ dependencies = [
 [[package]]
 name = "okm-derive"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#220fd402ac58781aef6892820de7bc986b5f90cd"
+source = "git+https://github.com/orbsh/okm?branch=main#8a12f811466d375018ff63cef88ce91d98b17eb2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -1570,7 +1570,7 @@ dependencies = [
 [[package]]
 name = "okm-ngram"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#220fd402ac58781aef6892820de7bc986b5f90cd"
+source = "git+https://github.com/orbsh/okm?branch=main#8a12f811466d375018ff63cef88ce91d98b17eb2"
 dependencies = [
  "okm-core",
 ]
@@ -1578,7 +1578,7 @@ dependencies = [
 [[package]]
 name = "okm-wire"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#220fd402ac58781aef6892820de7bc986b5f90cd"
+source = "git+https://github.com/orbsh/okm?branch=main#8a12f811466d375018ff63cef88ce91d98b17eb2"
 
 [[package]]
 name = "once_cell"
