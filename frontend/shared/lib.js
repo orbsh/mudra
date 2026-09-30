@@ -267,7 +267,7 @@ const MudraBar = {
         if (!items[sel]) return;
         // Drill-down hosts take over Tab entirely; default is fill the selected value and refilter
         if (onTab) onTab(items[sel], api);
-        else { input.value = ":" + items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
+        else { input.value = items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
       }
       else if (e.key === "Backspace" && input.value === "" && onBackspace) {
         // Layer-up hook: only fires on an empty input, so normal text editing is unaffected
