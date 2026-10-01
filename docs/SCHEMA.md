@@ -90,10 +90,28 @@ hole per the no-reuse rule (ADR-0002).
     same keys as the sqlite `state` table.
   - `epoch: u64` — invalidation counter (see below). Not part of any
     page/tag payload; it is transport-layer state.
-  - `page_id` / `tag_id` / `instance_id` / `site_width_id` — per-table
-    auto-increment counters (u64). okm ships no built-in sequence; under
-    the single-writer model a State counter row has no contention, so
-    counters win over a `HighWater` reduce.
+  - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id`
+    — per-table auto-increment counters (u64). okm ships no built-in
+    sequence; under the single-writer model a State counter row has no
+    contention, so counters win over a `HighWater` reduce.
+
+### History (ns 7)
+
+- key: `id: u64` (auto-increment via the `history_id` counter).
+- payload: `url`, `title`, `visits` (u64), `last_at`.
+- access method: `by_url` func index over the full url (variable length,
+  never key materialized — the fixed-width discipline; the write path
+  finds the row to bump by exact url without a full scan).
+- semantics: one row per opened address. `/open` and `/add` bump visits +
+  last_at; the title label is refreshed at open time from the watcher-
+  synced page rows. Nothing outside the open verbs ever writes History —
+  visits are theirs alone. Writing history does NOT bump the epoch:
+  History is panel-invisible; the open verb's own notification already
+  rides along.
+- consumption: `POST /history {query, limit}` — address-bar completion.
+  Ranking is a pure function in mudra-store: subsequence similarity
+  (`sim_score`) x visits, fused via RRF (k=60); the count ranks directly
+  (no log — rank position is already a monotone statistic).
 
 ## Epoch invalidation signal
 

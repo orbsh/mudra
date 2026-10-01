@@ -81,9 +81,24 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
     同 sqlite `state` 表的键。
   - `epoch: u64`——失效计数器（见下节）。不属于任何页/tag payload，
     它是传输层状态。
-  - `page_id` / `tag_id` / `instance_id` / `site_width_id`——每表自增
-    计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行无竞争，
-    故计数器胜出，不用 `HighWater` reduce。
+  - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id`
+    ——每表自增计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行
+    无竞争，故计数器胜出，不用 `HighWater` reduce。
+
+### History（ns 7）
+
+- key：`id: u64`（自增，走 `history_id` 计数器）。
+- payload：`url`、`title`、`visits`（u64）、`last_at`。
+- 访问方法：对完整 `url` 的 `by_url` func 索引（变长，绝不落 key 段——
+  定宽纪律；写路径按精确 url 命中待累加行，无需全扫）。
+- 语义：每个打开过的地址一行。`/open` 与 `/add` 累加 visits 与 last_at，
+  标题标签在打开时从 watcher 同步的页行刷新；open 动词之外没有任何路径
+  写 History——访问计数只属于它们。写 history 不 bump epoch：History 对
+  面板不可见，open 动词自身的通知已经覆盖这次写。
+- 消费面：`POST /history {query, limit}`——地址栏补全。排名是
+  mudra-store 内的纯函数：子序列相似度（`sim_score`）×访问次数，RRF
+  融合（k=60）；计数直接参与排名（不做对数——排名位置本身已是单调
+  统计量）。
 
 ## epoch 失效信号
 
