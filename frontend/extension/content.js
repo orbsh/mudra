@@ -71,22 +71,22 @@
       flashBar(r.ok === false ? r.err || "open failed" : "open ok"));
   }
   async function openWithHistory(initial) {
-    const r = await send({ type: "pages" });
-    if (r.ok === false) return flashBar(r.err || "pages failed");
-    const pages = role === "console" ? r.pages || [] : [];
+    // The cmdline opens FIRST (setMode + input focus before any await):
+    // loading `pages` up front used to swallow the user's first keystrokes
+    // in normal mode while the round trip was in flight.
+    let pages = [];
+    let lastQ = "";
     const filter = async (q, api) => {
-      const s = (q || "").toLowerCase();
+      lastQ = q || "";
+      const s = lastQ.toLowerCase();
       const pageC = pages
         .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
         .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }));
-      const hr = await send({ type: "history", query: q || "", limit: 10 });
+      const hr = await send({ type: "history", query: lastQ, limit: 10 });
       if (hr.ok === false) { api.setItems(pageC); return; }
       const histC = (hr.candidates || [])
         .filter((h) => !pages.some((p) => p.url === h.url))
-        .map((h) => ({
-          label: `\u2197 ${(h.title || h.url).slice(0, 42)}  ${h.url.slice(0, 60)}`,
-          value: h.url, kind: "history",
-        }));
+        .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "history" }));
       api.setItems([...pageC, ...histC]);
     };
     const pick = async (cand, raw, api) => {
@@ -102,12 +102,19 @@
       if (q) return openOnPage(q);
     };
     setMode("command");
-    cmdApi = await MudraBar.openCommand(filter, pick);
+    cmdApi = await MudraBar.openCommand(filter, pick, null, null, { prompt: ":open " });
     filter(initial || "", cmdApi);
     if (initial) {
       const input = document.getElementById("mudra-cmdinput");
       if (input) input.value = initial;
     }
+    // pages ride in the background; refresh the list when they land
+    send({ type: "pages" }).then((r) => {
+      if (r.ok !== false && cmdApi) {
+        pages = role === "console" ? r.pages || [] : [];
+        filter(lastQ, cmdApi);
+      }
+    }).catch(() => {});
   }
 
   // ---- commands ----
@@ -211,11 +218,11 @@
     const [name, ...rest] = q.split(/\s+/);
     let items;
     if (!q) {
-      items = Object.entries(COMMANDS).map(([n, c]) => ({ label: `:${n}  ${c.desc}`, value: n }));
+      items = Object.entries(COMMANDS).map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
     } else {
       items = Object.entries(COMMANDS)
         .filter(([n]) => n.startsWith(name))
-        .map(([n, c]) => ({ label: `:${n}  ${c.desc}`, value: n }));
+        .map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
     }
     cmdApi.setItems(items);
   }

@@ -177,11 +177,14 @@ const MudraBar = {
   // ---- command mode: the whole bar becomes an input line (: prompt + input filling it),
   // candidate popup above the input, full width, at most maxCandidates entries, scrollable beyond that. ----
   // onInput(query, api) filters candidates on the host side; onPick(candidate, query, api) handles selection;
-  // candidate = {label, value}；Esc → onPick(null, ...)。
+  // candidate = {label, value, desc?}；Esc → onPick(null, ...)。A candidate with `desc` renders
+  // as two columns (name padded to a shared width, description in dim gray) so name and
+  // description never blur into one run of text.
   // Optional host hooks for non-command pickers: onTab(candidate, api) replaces the default
   // fill-and-refilter (drill-down semantics), onBackspace(api) fires when Backspace is pressed
-  // on an empty input (layer-up semantics).
-  async openCommand(onInput, onPick, onTab, onBackspace) {
+  // on an empty input (layer-up semantics). opts.prompt replaces the leading ":" marker
+  // (a host entered by a key binding shows what that key would have typed, e.g. ":open ").
+  async openCommand(onInput, onPick, onTab, onBackspace, opts) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
 
@@ -214,7 +217,8 @@ const MudraBar = {
       "display:flex", "align-items:center", "padding:0 6px", "box-sizing:border-box",
     ].join(";");
     const promptEl = document.createElement("span");
-    promptEl.textContent = ":";
+    promptEl.textContent = (opts && opts.prompt) || ":";
+    promptEl.style.whiteSpace = "pre"; // keep the trailing space of ":open "
     const input = document.createElement("input");
     input.id = "mudra-cmdinput";
     input.style.cssText = [
@@ -230,12 +234,26 @@ const MudraBar = {
     let sel = 0;
     const renderList = () => {
       list.textContent = "";
+      // two-column rows when any candidate carries a desc: the name column
+      // pads to the widest name (monospace), the desc rides in dim gray.
+      const descW = items.some((it) => it.desc)
+        ? Math.max(...items.map((it) => (it.label || "").length))
+        : 0;
       items.forEach((it, i) => {
         const row = document.createElement("div");
-        row.textContent = (i === sel ? "» " : "  ") + it.label;
+        const name = document.createElement("span");
+        const pad = descW ? " ".repeat(2 + Math.max(0, descW - (it.label || "").length)) : " ";
+        name.textContent = (i === sel ? "» " : "  ") + (it.label || "") + pad;
+        row.appendChild(name);
+        if (descW) {
+          const desc = document.createElement("span");
+          desc.textContent = it.desc || "";
+          desc.style.color = "#9a9a9a";
+          row.appendChild(desc);
+        }
         row.style.cssText = [
           `font:${cfg.statusFont}`, `height:${rowH}px`, "line-height:" + rowH + "px",
-          "padding:0 6px", "white-space:nowrap", "box-sizing:border-box",
+          "padding:0 6px", "white-space:pre", "box-sizing:border-box",
           "background:" + (i === sel ? "rgba(128,128,255,.35)" : "transparent"),
           "color:" + (i === sel ? cfg.insertFg : cfg.statusFg),
         ].join(";");
