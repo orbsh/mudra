@@ -29,6 +29,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn handle(&mut self, path: &str, body: &Value) -> Result<Value, String> {
         match path {
             "/open" => self.open(body),
+            "/history" => self.history(body),
             "/add" => self.add(body),
             "/close_page" => self.close_page(body),
             "/close_ctx" => self.close_ctx(body),
@@ -151,6 +152,8 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if let Some((_, i)) = alive {
             let (port, proxy, ext) = (i.port as u16, or_none(&i.proxy), or_none(&i.extensions));
             self.rt.launch_join(&ctx, &url, proxy, ext).map_err(|e| e.to_string())?;
+            let title = self.store.page_title_for_url(&url).unwrap_or_default();
+            self.store.history_bump(&url, &title, crate::watch::now_ms());
             return Ok(json!({"mode": "joined", "port": port, "ctx": ctx}));
         }
         // new instance: reuse the old row's config when present
@@ -166,7 +169,22 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if let Some((_, sw)) = self.store.site_width(&mudra_store::url_site(&url)) {
             self.rt.apply_site_width(pid, sw.proportion.0);
         }
+        self.store.history_bump(&url, "", crate::watch::now_ms());
         Ok(json!({"mode": "new", "port": port, "pid": pid, "ctx": ctx}))
+    }
+
+    /// POST /history {query?, limit?} — address-bar completion candidates
+    /// (similarity x visits fused via RRF; see mudra_store::history_candidates).
+    /// Read-only: no epoch, no runtime call.
+    pub fn history(&self, body: &Value) -> Result<Value, String> {
+        let query = body.get("query").and_then(Value::as_str).unwrap_or_default();
+        let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
+        let rows = self.store.history_all();
+        let cands = mudra_store::history_candidates(&rows, query, limit);
+        Ok(json!({"candidates": cands
+            .iter()
+            .map(|h| json!({"url": h.url, "title": h.title, "visits": h.visits}))
+            .collect::<Vec<_>>()}))
     }
 
     /// POST /add {url, ctx?} — join only; never silently spawns.
@@ -181,6 +199,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .alive_instance_for(&ctx)
             .ok_or(format!("ctx {ctx:?} not running; use open first"))?;
         self.rt.launch_join(&ctx, &url, or_none(&inst.proxy), or_none(&inst.extensions))?;
+        self.store.history_bump(&url, "", crate::watch::now_ms());
         Ok(json!({"mode": "joined", "port": inst.port, "ctx": ctx}))
     }
 

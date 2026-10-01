@@ -266,3 +266,66 @@ fn store_persist_and_reopen_recovers_every_collection() {
     let mut s3 = s2;
     assert_eq!(s3.next_id(state::PAGE_ID), pk.id + 1);
 }
+
+// ================= History (ns 7): visits, labels, ranking =================
+
+#[test]
+fn history_bump_creates_then_accumulates() {
+    // Contract: first sight creates the row (visits=1); repeats bump the
+    // counter and the stamp; an empty title keeps the stored label.
+    let (_d, mut s) = open_tmp();
+    s.history_bump("https://a.test/x", "Alpha", 100);
+    s.history_bump("https://a.test/x", "", 200);
+    let rows = s.history_all();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].visits, 2);
+    assert_eq!(rows[0].last_at, 200);
+    assert_eq!(rows[0].title, "Alpha");
+    s.history_bump("https://a.test/x", "Alpha Two", 300);
+    assert_eq!(s.history_all()[0].title, "Alpha Two");
+}
+
+fn row(url: &str, title: &str, visits: u64, last_at: u64) -> History {
+    History { url: url.into(), title: title.into(), visits, last_at }
+}
+
+#[test]
+fn sim_score_subsequence_and_run_bias() {
+    // exact prefix beats a scattered subsequence; non-subsequence is 0.
+    let exact = sim_score("github", "https://github.com/x");
+    let scattered = sim_score("gthub", "https://github.com/x");
+    let none = sim_score("gitlab", "https://github.com/x"); // no 'l' anywhere
+    assert!(exact > scattered);
+    assert!(exact > 0.0);
+    assert_eq!(none, 0.0);
+    // case-insensitive
+    assert!(sim_score("GIT", "https://github.com") > 0.0);
+    assert_eq!(sim_score("", "anything"), 0.0);
+}
+
+#[test]
+fn history_candidates_fuses_sim_and_visits() {
+    let rows = vec![
+        row("https://news.ycombinator.com", "Hacker News", 100, 9),
+        row("https://github.com/orbsh", "orbsh GitHub", 3, 8),
+        row("https://gitea.orb.sh", "Gitea", 50, 7),
+    ];
+    // "git": gitea leads both axes — its bare title "Gitea" matches the
+    // prefix head-to-head while "orbsh GitHub" scatters it; visits 50 > 3.
+    let c = history_candidates(&rows, "git", 10);
+    assert!(!c.iter().any(|h| h.url.contains("ycombinator")));
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[0].url, "https://gitea.orb.sh");
+    assert_eq!(c[1].url, "https://github.com/orbsh");
+    // "gith" flips the sim order (github keeps it contiguous, gitea's h
+    // lives in the url tail); visits flip the other rank — RRF ties and
+    // the stable sort keeps the sim winner first.
+    let c2 = history_candidates(&rows, "gith", 10);
+    assert_eq!(c2[0].url, "https://github.com/orbsh");
+    assert_eq!(c2.len(), 2);
+    // empty query = visits order (no sim filter)
+    let all = history_candidates(&rows, "", 10);
+    assert_eq!(all[0].url, "https://news.ycombinator.com"); // 100 visits
+    // limit respected
+    assert_eq!(history_candidates(&rows, "", 2).len(), 2);
+}

@@ -60,6 +60,12 @@ pub struct SiteWidthKey {
     pub id: u32,
 }
 
+/// History identity: surrogate id (`url` is indexed, never key materialized).
+#[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
+pub struct HistoryKey {
+    pub id: u64,
+}
+
 /// State identity: a fixed slot from the closed set in [`state`].
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
 pub struct StateKey {
@@ -206,6 +212,7 @@ pub mod state {
     pub const INSTANCE_ID: u8 = 9;
     pub const SITE_WIDTH_ID: u8 = 10;
     pub const PANEL_PID: u8 = 11;
+    pub const HISTORY_ID: u8 = 12;
 }
 
 /// One opaque raw value per State slot (text settings, u64 counters, the
@@ -215,6 +222,127 @@ pub mod state {
 #[ok_ns(6)]
 pub struct State {
     pub value: Bytes,
+}
+
+// ================= History (ns 7) =================
+
+fn history_url(h: &History) -> String {
+    h.url.clone()
+}
+
+/// One open-history entry: an address-bar visit accumulator. `visits`
+/// counts open-verb calls (no log — RRF ranks on the count directly);
+/// `title` carries the last-known title for candidate labels. `url`
+/// stays a func index (variable length, never key materialized) so the
+/// write path finds the row to bump by exact url without a full scan.
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(HistoryKey)]
+#[ok_ns(7)]
+#[ok_index(by_url { func(history_url) })]
+pub struct History {
+    pub url: String,
+    pub title: String,
+    pub visits: u64,
+    pub last_at: u64,
+}
+
+/// Address-bar style similarity: subsequence match of `query` over
+/// `target` (case-insensitive), rewarding contiguous runs and early
+/// matches. Returns 0.0..=1.0; a query that is not a subsequence is 0.
+/// Pure function — the ranking lives here so mudrad, tests, and any
+/// future consumer share one definition.
+pub fn sim_score(query: &str, target: &str) -> f64 {
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let t: Vec<char> = target.chars().flat_map(char::to_lowercase).collect();
+    if q.is_empty() {
+        return 0.0;
+    }
+    if t.is_empty() {
+        return 0.0;
+    }
+    // greedy scan with run/position accounting: find q[] in t[] left-to-
+    // right; every matched char scores 1, an extension of the previous
+    // contiguous run scores +1 extra, matching at the very start scores
+    // +1 extra (prefix bias).
+    let mut qi = 0usize;
+    let mut score = 0.0f64;
+    let mut prev_match: Option<usize> = None;
+    for (ti, tc) in t.iter().enumerate() {
+        if qi < q.len() && tc == &q[qi] {
+            let mut s = 1.0;
+            if ti > 0 && prev_match == Some(ti - 1) {
+                s += 1.0; // contiguous run bonus
+            }
+            if ti == qi {
+                s += 1.0; // prefix alignment bonus (matched at the head)
+            }
+            score += s;
+            prev_match = Some(ti);
+            qi += 1;
+        }
+    }
+    if qi < q.len() {
+        return 0.0; // not a subsequence
+    }
+    // normalize: max achievable is 3 per query char (run + prefix),
+    // floor is 1; divide by the span actually consumed so a match
+    // crammed at the head beats one scattered over the tail.
+    let max = 3.0 * q.len() as f64;
+    let span = prev_match.map_or(1, |last| last + 1).max(q.len()) as f64;
+    (score / max).min(1.0) * (q.len() as f64 / span).sqrt()
+}
+
+/// Reciprocal-rank fusion over two ranked lists (same items, rank 0 =
+/// best). k=60 is the standard smoothing constant.
+pub fn rrf(rank_a: usize, rank_b: usize, k: f64) -> f64 {
+    1.0 / (k + rank_a as f64 + 1.0) + 1.0 / (k + rank_b as f64 + 1.0)
+}
+
+/// RRF smoothing constant (standard paper value; also the panel default).
+pub const RRF_K: f64 = 60.0;
+
+/// Address-bar completion candidates: similarity x visits fused via RRF.
+/// Non-empty query keeps only subsequence hits (sim over url OR title,
+/// whichever is stronger); empty query falls back to pure visits order.
+/// Pure function over the row snapshot — the ranking law has one home.
+pub fn history_candidates(rows: &[History], query: &str, limit: usize) -> Vec<History> {
+    let q = query.trim();
+    if q.is_empty() {
+        let mut all: Vec<History> = rows.to_vec();
+        all.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_at.cmp(&a.last_at)));
+        all.truncate(limit);
+        return all;
+    }
+    let mut hits: Vec<(f64, History)> = rows
+        .iter()
+        .filter_map(|h| {
+            let sim = sim_score(q, &h.url).max(sim_score(q, &h.title));
+            (sim > 0.0).then(|| (sim, h.clone()))
+        })
+        .collect();
+    // sim order (ties: stable = row order); index in this vec IS rank_sim.
+    hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // visits rank among the same candidate set.
+    let mut by_visits: Vec<usize> = (0..hits.len()).collect();
+    by_visits.sort_by(|&i, &j| {
+        hits[j]
+            .1
+            .visits
+            .cmp(&hits[i].1.visits)
+            .then(hits[j].1.last_at.cmp(&hits[i].1.last_at))
+    });
+    let mut visit_rank = vec![0usize; hits.len()];
+    for (r, &i) in by_visits.iter().enumerate() {
+        visit_rank[i] = r;
+    }
+    let mut scored: Vec<(f64, usize)> = hits
+        .iter()
+        .enumerate()
+        .map(|(i, _)| (rrf(i, visit_rank[i], RRF_K), i))
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    scored.into_iter().map(|(_, i)| hits[i].1.clone()).collect()
 }
 
 // ================= generated index markers =================
@@ -228,6 +356,7 @@ pub use __OkmIndex_Page_by_instance as ByInstance;
 pub use __OkmIndex_Page_by_parent as ByPageParent;
 pub use __OkmIndex_Page_by_target as ByTarget;
 pub use __OkmIndex_Page_by_url as ByUrl;
+pub use __OkmIndex_History_by_url as ByHistoryUrl;
 pub use __OkmIndex_SiteWidth_by_site as BySite;
 pub use __OkmIndex_Tag_by_name as ByTagName;
 pub use __OkmIndex_Tag_by_parent as ByTagParent;
@@ -267,6 +396,7 @@ pub struct MudraStore {
     pub instances: Collection<FjallStore, InstanceKey, Instance>,
     pub site_widths: Collection<FjallStore, SiteWidthKey, SiteWidth>,
     pub state: Collection<FjallStore, StateKey, State>,
+    pub history: Collection<FjallStore, HistoryKey, History>,
     db: FjallStore,
 }
 
@@ -281,6 +411,7 @@ impl MudraStore {
             instances: Collection::new(store.clone()),
             site_widths: Collection::new(store.clone()),
             state: Collection::new(store.clone()),
+            history: Collection::new(store.clone()),
             db: store,
         })
     }
@@ -491,6 +622,59 @@ impl MudraStore {
             .scan::<BySite>(site.as_bytes())
             .into_iter()
             .find_map(|(pk, row)| row.map(|r| (pk.decoded, r)))
+    }
+
+    /// One open-verb visit: bump the History row for `url` (create on
+    /// first sight). Visits always count — no epoch-bump discipline here:
+    /// History is not a panel-visible collection (nothing re-scans on it),
+    /// and the open write's own notification already rides the verb.
+    pub fn history_bump(&mut self, url: &str, title: &str, ts: u64) {
+        let hit = self
+            .history
+            .scan::<ByHistoryUrl>(url.as_bytes())
+            .into_iter()
+            .find_map(|(pk, row)| row.map(|r| (pk.decoded, r)));
+        match hit {
+            Some((k, mut row)) => {
+                row.visits += 1;
+                row.last_at = ts;
+                if !title.is_empty() {
+                    row.title = title.to_string();
+                }
+                self.history.put(&k, &row);
+            }
+            None => {
+                let k = HistoryKey { id: self.next_id(state::HISTORY_ID) };
+                self.history.put(&k, &History {
+                    url: url.to_string(),
+                    title: title.to_string(),
+                    visits: 1,
+                    last_at: ts,
+                });
+            }
+        }
+    }
+
+    /// Every history row (id order; the caller ranks).
+    pub fn history_all(&self) -> Vec<History> {
+        self.history
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.history.get(&k))
+            .collect()
+    }
+
+    /// Last-known title for a URL from any live page row (the open verb
+    /// uses it to refresh the history label). Full-table scan: acceptable
+    /// at page scale, and this runs inside the verb's short lock anyway.
+    pub fn page_title_for_url(&self, url: &str) -> Option<String> {
+        self.pages
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.pages.get(&k))
+            .filter(|p| p.url == url && p.deleted_at == 0 && !p.title.is_empty())
+            .max_by_key(|p| p.opened_at)
+            .map(|p| p.title)
     }
 
     /// Tag ids linked to a page (junction A side: page → tags).

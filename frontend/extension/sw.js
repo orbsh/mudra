@@ -55,6 +55,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(out);
           break;
         }
+        case "history": {
+          // address-bar completion: ranked open-history candidates
+          const out = await post("/history", { query: msg.query, limit: msg.limit });
+          sendResponse(out);
+          break;
+        }
         case "focus_page": {
           // switch to another page via mudrad (CDP activate + WM raise)
           const out = await post("/focus_page", { page_id: msg.page_id });

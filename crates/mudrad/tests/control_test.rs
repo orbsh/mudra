@@ -857,3 +857,61 @@ fn panel_focus_without_a_window_spawns_one() {
     assert_eq!(h.store.state_text(state::PANEL_PID), "900001");
     assert!(matches!(h.calls()[0], Call::Panel));
 }
+
+// ================= history =================
+
+#[test]
+fn open_records_history_visits_without_epoch_bump() {
+    // The join branch writes a History row (visits accumulate) but never
+    // bumps the epoch: History is not panel-visible; the epoch discipline
+    // is for collections the panel re-scans.
+    let mut h = Harness::new();
+    seeded(&mut h);
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    let epoch_before = h.store.epoch();
+
+    h.verb("/open", json!({"url": "https://b.test"})).unwrap();
+    h.verb("/open", json!({"url": "https://b.test"})).unwrap();
+    let rows = h.store.history_all();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].visits, 2);
+    assert_eq!(h.store.epoch(), epoch_before, "history writes do not bump the epoch");
+}
+
+#[test]
+fn open_history_carry_from_reopen_of_watched_page() {
+    // The join branch refreshes the title from live page rows (watcher
+    // synced https://a.test/page with title "Alpha" — re-opening it
+    // updates the history label).
+    let mut h = Harness::new();
+    seeded(&mut h);
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.verb("/open", json!({"url": "https://a.test/page"})).unwrap();
+    let rows = h.store.history_all();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title, "Alpha");
+}
+
+#[test]
+fn history_verb_ranks_by_fused_score() {
+    let mut h = Harness::new();
+    let epoch_before = h.store.epoch();
+    // seed history directly on the store (visits semantics live in /open,
+    // the verb under test is the read/rank surface).
+    h.store.history_bump("https://news.ycombinator.com", "Hacker News", 1);
+    h.store.history_bump("https://github.com/orbsh", "orbsh GitHub", 1);
+    for _ in 0..3 {
+        h.store.history_bump("https://github.com/orbsh", "", 2);
+    }
+
+    let r = h.verb("/history", json!({"query": "git"})).unwrap();
+    let c = r["candidates"].as_array().unwrap();
+    assert_eq!(c.len(), 1, "ycombinator is not a subsequence of 'git'");
+    assert_eq!(c[0]["url"], "https://github.com/orbsh");
+    assert_eq!(c[0]["visits"], 4);
+    // read-only verb: no epoch write
+    assert_eq!(h.store.epoch(), epoch_before);
+    // limit clamps
+    let r = h.verb("/history", json!({"query": "", "limit": 1})).unwrap();
+    assert_eq!(r["candidates"].as_array().unwrap().len(), 1);
+}

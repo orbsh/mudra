@@ -61,32 +61,43 @@
     }
   };
 
-  // ---- open: branches by role (qutebrowser-style) ----
-  // page role: type a URL -> /open
-  // console role: typing also filters existing page candidates; Enter on a candidate -> focus_page, otherwise -> /open
+  // ---- open: address-bar completion in both roles ----
+  // candidates = live pages (console role only, jump targets) merged
+  // ahead of ranked open-history rows; Enter on no candidate opens the
+  // raw input as a URL.
   function openOnPage(arg) {
     if (!arg) return flashBar("usage: :open <url>");
     return send({ type: "open", url: arg }).then((r) =>
       flashBar(r.ok === false ? r.err || "open failed" : "open ok"));
   }
-  async function openOnConsole(initial) {
+  async function openWithHistory(initial) {
     const r = await send({ type: "pages" });
     if (r.ok === false) return flashBar(r.err || "pages failed");
-    const pages = r.pages || [];
-    const filter = (q, api) => {
+    const pages = role === "console" ? r.pages || [] : [];
+    const filter = async (q, api) => {
       const s = (q || "").toLowerCase();
-      api.setItems(pages
+      const pageC = pages
         .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
-        .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id })));
+        .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }));
+      const hr = await send({ type: "history", query: q || "", limit: 10 });
+      if (hr.ok === false) { api.setItems(pageC); return; }
+      const histC = (hr.candidates || [])
+        .filter((h) => !pages.some((p) => p.url === h.url))
+        .map((h) => ({
+          label: `\u2197 ${(h.title || h.url).slice(0, 42)}  ${h.url.slice(0, 60)}`,
+          value: h.url, kind: "history",
+        }));
+      api.setItems([...pageC, ...histC]);
     };
     const pick = async (cand, raw, api) => {
       cmdApi = null; await setMode("normal");
       const q = (raw || "").trim();
-      if (cand) {
+      if (cand && cand.kind === "page") {
         // a selected candidate -> jump to the page (via Tab completion or arrow selection)
         const res = await send({ type: "focus_page", page_id: cand.value });
         return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
       }
+      if (cand && cand.kind === "history") return openOnPage(cand.value);
       // no matching candidate -> open as a URL
       if (q) return openOnPage(q);
     };
@@ -117,8 +128,8 @@
     scrollBottom:{ defaultKey: "G", desc: "scroll to bottom", run: () => scrollTo({ top: document.documentElement.scrollHeight }) },
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
-    open:    { defaultKey: "o", desc: "open url / filter pages (console)",
-               run: (arg) => role === "console" ? openOnConsole(arg) : openOnPage(arg) },
+    open:    { defaultKey: "o", desc: "open url / filter pages + history",
+               run: (arg) => openWithHistory(arg) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
