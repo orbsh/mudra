@@ -66,6 +66,14 @@ pub struct HistoryKey {
     pub id: u64,
 }
 
+/// Event identity: surrogate id, monotone — the replay cursor domain
+/// (ADR-extension-protocol §4: consumers own their cursor, the log never
+/// reorders what the single writer assigned).
+#[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
+pub struct EventKey {
+    pub id: u64,
+}
+
 /// State identity: a fixed slot from the closed set in [`state`].
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
 pub struct StateKey {
@@ -213,6 +221,7 @@ pub mod state {
     pub const SITE_WIDTH_ID: u8 = 10;
     pub const PANEL_PID: u8 = 11;
     pub const HISTORY_ID: u8 = 12;
+    pub const EVENT_ID: u8 = 13;
 }
 
 /// One opaque raw value per State slot (text settings, u64 counters, the
@@ -244,6 +253,25 @@ pub struct History {
     pub title: String,
     pub visits: u64,
     pub last_at: u64,
+}
+
+// ================= Event (ns 8) =================
+
+/// One extension-protocol event: the append-only log half of the
+/// observe plane (ADR-extension-protocol §4). `args` is the
+/// self-describing JSON snapshot — consumers never call back into mudra
+/// to interpret an event. No indexes: the replay path is a primary-order
+/// cursor scan and nothing else reads this collection. Writing does NOT
+/// bump the epoch — the log is panel-invisible (same discipline as
+/// History). Retention is deferred (compaction design awaits a measured
+/// need); ids never reused, the log is monotone by construction.
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(EventKey)]
+#[ok_ns(8)]
+pub struct Event {
+    pub kind: String,
+    pub args: String,
+    pub at: u64,
 }
 
 /// Address-bar style similarity: subsequence match of `query` over
@@ -397,6 +425,7 @@ pub struct MudraStore {
     pub site_widths: Collection<FjallStore, SiteWidthKey, SiteWidth>,
     pub state: Collection<FjallStore, StateKey, State>,
     pub history: Collection<FjallStore, HistoryKey, History>,
+    pub events: Collection<FjallStore, EventKey, Event>,
     db: FjallStore,
 }
 
@@ -412,6 +441,7 @@ impl MudraStore {
             site_widths: Collection::new(store.clone()),
             state: Collection::new(store.clone()),
             history: Collection::new(store.clone()),
+            events: Collection::new(store.clone()),
             db: store,
         })
     }
@@ -661,6 +691,32 @@ impl MudraStore {
             .scan_keys()
             .into_iter()
             .filter_map(|k| self.history.get(&k))
+            .collect()
+    }
+
+    /// Append one event to the log; returns the assigned id (the live
+    /// fan-out rides it — a replayed consumer and a live consumer see
+    /// the same id). Append-only: no update or delete path exists, and
+    /// the epoch never moves for a log write (panel-invisible collection).
+    pub fn emit_event(&mut self, kind: &str, args: String, at: u64) -> u64 {
+        let id = self.next_id(state::EVENT_ID);
+        self.events.put(
+            &EventKey { id },
+            &Event { kind: kind.to_string(), args, at },
+        );
+        id
+    }
+
+    /// Replay the log after `cursor` (id-ordered, capped). A consumer
+    /// owns its checkpoint: it advances the cursor only past the rows it
+    /// has durably handled.
+    pub fn events_since(&self, cursor: u64, limit: usize) -> Vec<(u64, Event)> {
+        self.events
+            .scan_keys()
+            .into_iter()
+            .filter(|k| k.id > cursor)
+            .take(limit)
+            .filter_map(|k| self.events.get(&k).map(|e| (k.id, e)))
             .collect()
     }
 

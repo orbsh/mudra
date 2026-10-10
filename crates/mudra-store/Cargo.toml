@@ -10,11 +10,15 @@ description = "mudra storage schema: okm collections over fjall (docs/SCHEMA.md 
 # keys, documents, junction type, ns constants, pure query encodings —
 # everything byte-level, no engine types (fjall does not compile for wasm32).
 default = ["engine"]
-engine = ["dep:fjall", "okm-core/fjall"]
+engine = ["dep:fjall", "dep:serde_json", "okm-core/fjall"]
 
 [dependencies]
 okm-core = { workspace = true }
 okm-ngram.workspace = true
+# event args are self-describing JSON snapshots (ADR-extension-protocol
+# §4) — the workspace-locked serde_json, engine-gated use only (the wasm
+# schema layer never touches it), so it adds nothing to the lockfile.
+serde_json = { workspace = true, optional = true }
 # the public `open` signature returns `fjall::Result` (okm re-exports the
 # store type but not its error), so fjall is a real import, not a spare
 fjall = { workspace = true, optional = true }

@@ -1485,6 +1485,7 @@ dependencies = [
  "fjall",
  "okm-core",
  "okm-ngram",
+ "serde_json",
  "tempfile",
 ]
 

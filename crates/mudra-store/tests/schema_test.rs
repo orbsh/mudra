@@ -329,3 +329,40 @@ fn history_candidates_fuses_sim_and_visits() {
     // limit respected
     assert_eq!(history_candidates(&rows, "", 2).len(), 2);
 }
+
+// ================= Event (ns 8): append-only log & cursor replay =================
+
+#[test]
+fn event_log_is_append_only_and_replays_from_cursor() {
+    // Contract (ADR-extension-protocol §4): emit assigns monotone ids;
+    // a consumer owning its cursor sees every row exactly once, in id
+    // order, and re-opening the store replays the same ids — durability
+    // across restart is the whole point of logging the fan-out.
+    let (d, mut s) = open_tmp();
+    let id1 = s.emit_event("mudra:page_open", "{\"url\":\"a\"}".to_string(), 10);
+    let id2 = s.emit_event("mudra:tag_set", "{}".to_string(), 20);
+    assert!(id2 > id1);
+
+    let tail = s.events_since(id1, 100);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].1.kind, "mudra:tag_set");
+
+    // reopen the same engine dir; ids continue past the persisted
+    // counter (fjall single-handle lock: the old store must drop first)
+    drop(s);
+    let mut reopened = MudraStore::open(d.path()).expect("reopen");
+    let all = reopened.events_since(0, 100);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].1.args, "{\"url\":\"a\"}");
+    let cont = reopened.emit_event("mudra:page_close", "{}".into(), 30);
+    assert!(cont > id2);
+
+    // limit caps the replay page
+    assert_eq!(reopened.events_since(0, 1).len(), 1);
+
+    // a log write never moves the epoch (panel-invisible collection)
+    let mut s2 = MudraStore::open(tempfile::TempDir::new().unwrap().path()).unwrap();
+    let e0 = s2.epoch();
+    s2.emit_event("x", "{}".into(), 1);
+    assert_eq!(s2.epoch(), e0);
+}

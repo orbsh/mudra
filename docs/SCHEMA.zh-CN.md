@@ -82,7 +82,7 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
   - `epoch: u64`——失效计数器（见下节）。不属于任何页/tag payload，
     它是传输层状态。
   - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id`
-    ——每表自增计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行
+    / `event_id`——每表自增计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行
     无竞争，故计数器胜出，不用 `HighWater` reduce。
 
 ### History（ns 7）
@@ -99,6 +99,28 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
   mudra-store 内的纯函数：子序列相似度（`sim_score`）×访问次数，RRF
   融合（k=60）；计数直接参与排名（不做对数——排名位置本身已是单调
   统计量）。
+
+### Event（ns 8）
+
+- key：`id: u64`（自增，走 `event_id` 计数器）。
+- payload：`kind`（自由字面字符串，`mudra:` 前缀）、`args`（自描述
+  JSON 快照）、`at`（u64 墙钟毫秒，与所有 lifecycle 时间戳一样由调用方
+  供给）。
+- 访问方法：无——回放路径（`events_since`）就是主键序的 cursor 扫描；
+  没有任何其他读取方（SCHEMA 无覆盖索引纪律的延伸：连二级访问需求都
+  还不存在）。
+- 语义：扩展协议观察面中只追加的那一半（ADR-extension-protocol §4）。
+  发射编排在 lifecycle 转移里（单一事实源——watcher 与动词两条路径都从
+  它流过）：Insert/Revive/URL 变化的 Refresh 发 `mudra:page_open`
+  （watcher 重连的 baseline 重放**不是**事件——消费方经 /ctx_pages
+  快照追赶）；watcher 的 destroyed 路径、`/close` 动词、`mark_down`
+  清扫各发 `mudra:page_close`（尸体永远等不到 destroyed 事件）。
+  `mudra:tag_set` 携带变更后的**全量** id 集——单行可重建，绝不发要
+  排序的 delta。写不 bump epoch（面板不可见，与 History 同纪律）。
+  保留/压实推迟到有实测需求；id 永不复用，构造上单调。
+- 消费面：`POST /events {cursor, limit}`——只读回放窗口；checkpoint
+  归消费方，daemon 从不推进它。扩展宿主落地后 stdio 实时扇出加入这条
+  管线（pull 路径自身已完整：at-least-once，崩溃=不推进、重读）。
 
 ## epoch 失效信号
 

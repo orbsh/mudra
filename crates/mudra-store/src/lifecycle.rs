@@ -39,6 +39,61 @@ pub enum UpsertMode {
 }
 
 impl MudraStore {
+    // ================= event-log emission =================
+
+    /// Emit a page observation. Args are the self-describing snapshot
+    /// (ADR-extension-protocol §4: kind/page_id/ctx/url/title — a
+    /// consumer never calls back into mudra to interpret an event). The
+    /// `ctx` is resolved through the instance row (profile = leaf name);
+    /// an unresolvable instance leaves the field empty, never a withheld
+    /// event.
+    pub(crate) fn emit_page_event(
+        &mut self,
+        kind: &str,
+        instance_id: u32,
+        page_id: u64,
+        url: &str,
+        title: &str,
+        ts: u64,
+    ) {
+        let ctx = self
+            .instances
+            .get(&InstanceKey { id: instance_id })
+            .map(|i| i.profile)
+            .unwrap_or_default();
+        let args = serde_json::json!({
+            "kind": kind,
+            "page_id": page_id,
+            "ctx": ctx,
+            "url": url,
+            "title": title,
+        });
+        self.emit_event(kind, args.to_string(), ts);
+    }
+
+    /// Emit the page's full tag set (the post-change snapshot; the v3
+    /// args discipline: full tag_ids, not a delta — a consumer that
+    /// missed the toggle sequence still reconstructs state from one row).
+    pub(crate) fn emit_tag_set(&mut self, page: &PageKey, ts: u64) {
+        let Some(p) = self.pages.get(page) else {
+            return;
+        };
+        let ids: Vec<u32> = self.tags_of_page(page).into_iter().map(|k| k.id).collect();
+        let ctx = self
+            .instances
+            .get(&InstanceKey { id: p.instance_id })
+            .map(|i| i.profile)
+            .unwrap_or_default();
+        let args = serde_json::json!({
+            "kind": "mudra:tag_set",
+            "page_id": page.id,
+            "ctx": ctx,
+            "url": p.url,
+            "tag_ids": ids,
+        });
+        self.emit_event("mudra:tag_set", args.to_string(), ts);
+    }
+
     /// The instance row owning a context (latest by id — the Python
     /// `ORDER BY id DESC LIMIT 1` reuse rule that carries proxy/extensions
     /// across restarts).
@@ -203,6 +258,10 @@ impl MudraStore {
             if p.closed_at == 0 {
                 p.closed_at = ts;
                 self.pages.put(&pk, &p);
+                // an instance dying closes its pages — the log must not
+                // lose that observation (the watcher will never deliver a
+                // destroyed event for a corpse).
+                self.emit_page_event("mudra:page_close", instance_id, pk.id, &p.url, &p.title, ts);
                 changed = true;
             }
         }
@@ -218,6 +277,7 @@ impl MudraStore {
         instance_id: u32,
         infos: &[TargetInfo],
         ts: u64,
+        observe: bool,
     ) -> Option<u64> {
         if infos.is_empty() {
             return None;
@@ -225,7 +285,7 @@ impl MudraStore {
         let mut t2page: std::collections::HashMap<&str, PageKey> =
             std::collections::HashMap::new();
         for info in infos {
-            let (key, _) = self.upsert_target(instance_id, info, ts);
+            let (key, _) = self.upsert_target(instance_id, info, ts, observe);
             t2page.insert(info.target_id.as_str(), key);
         }
         // parent backfill: child's parent_id = the page that opened it,
@@ -251,11 +311,15 @@ impl MudraStore {
     /// One CDP targetInfo -> pages row (the port of `page_upsert_by_target`).
     /// Identity order: (instance, target) row wins; else revive the latest
     /// closed same-URL row; else insert. Returns the row key and why.
+    /// `observe` gates the event-log emit (live watcher path true, the
+    /// reconnect baseline replay false — a daemon restart is not a page
+    /// event; consumers catch up via /ctx_pages snapshots).
     pub fn upsert_target(
         &mut self,
         instance_id: u32,
         info: &TargetInfo,
         ts: u64,
+        observe: bool,
     ) -> (PageKey, UpsertMode) {
         // (a) same instance + same target: refresh url/title, reopen.
         if let Some((k, mut row)) = self
@@ -263,10 +327,17 @@ impl MudraStore {
             .into_iter()
             .find(|(_, p)| p.target_id == info.target_id)
         {
+            let navigated = row.url != info.url;
             row.url = info.url.clone();
             row.title = info.title.clone();
             row.closed_at = 0;
             self.pages.put(&k, &row);
+            // in-window navigation IS a page_open observation (the --app
+            // link-click path changes url on the same target); a
+            // title-only change is metadata, not an event.
+            if observe && navigated {
+                self.emit_page_event("mudra:page_open", instance_id, k.id, &info.url, &info.title, ts);
+            }
             return (k, UpsertMode::Refresh);
         }
         // (b) reopen lands a NEW target id: take over the latest closed,
@@ -283,6 +354,9 @@ impl MudraStore {
             row.closed_at = 0;
             row.opened_at = ts;
             self.pages.put(&k, &row);
+            if observe {
+                self.emit_page_event("mudra:page_open", instance_id, k.id, &info.url, &info.title, ts);
+            }
             return (k, UpsertMode::Revive);
         }
         // (c) genuinely new: position = per-instance max + 1.
@@ -306,6 +380,9 @@ impl MudraStore {
                 ..Default::default()
             },
         );
+        if observe {
+            self.emit_page_event("mudra:page_open", instance_id, k.id, &info.url, &info.title, ts);
+        }
         (k, UpsertMode::Insert)
     }
 
@@ -321,6 +398,7 @@ impl MudraStore {
             Some((k, mut p)) => {
                 p.closed_at = ts;
                 self.pages.put(&k, &p);
+                self.emit_page_event("mudra:page_close", instance_id, k.id, &p.url, &p.title, ts);
                 Some(self.bump_epoch())
             }
             None => None,
@@ -362,7 +440,7 @@ impl MudraStore {
 
     /// Toggle a tag on a page (junction link/unlink — port of
     /// `page_tag_toggle` returning "added"/"removed").
-    pub fn page_tag_toggle(&mut self, page: &PageKey, tag: &TagKey) -> bool {
+    pub fn page_tag_toggle(&mut self, page: &PageKey, tag: &TagKey, ts: u64) -> bool {
         let linked = self.tags_of_page(page).contains(tag);
         if linked {
             self.unlink_page_tag(page, tag);
@@ -371,6 +449,7 @@ impl MudraStore {
         }
         // The tree/tag display reads derive from junction entries, so a
         // toggle is a page-data invalidation too.
+        self.emit_tag_set(page, ts);
         self.bump_epoch();
         !linked
     }
@@ -381,7 +460,7 @@ impl MudraStore {
     /// (deleted tags filter out exactly like the Python `deleted=0`
     /// guard). Always bumps: a replace is a write even when the set ends
     /// up equal, keeping the invalidation contract one-write-one-bump.
-    pub fn page_tag_replace(&mut self, page: &PageKey, tag_ids: &[u32]) -> u64 {
+    pub fn page_tag_replace(&mut self, page: &PageKey, tag_ids: &[u32], ts: u64) -> u64 {
         let keep: Vec<TagKey> = tag_ids
             .iter()
             .map(|id| TagKey { id: *id })
@@ -393,6 +472,7 @@ impl MudraStore {
         for tk in keep {
             self.link_page_tag(page, &tk);
         }
+        self.emit_tag_set(page, ts);
         self.bump_epoch()
     }
 
@@ -435,6 +515,7 @@ impl MudraStore {
         let mut p = p;
         p.closed_at = ts;
         self.pages.put(page, &p);
+        self.emit_page_event("mudra:page_close", p.instance_id, page.id, &p.url, &p.title, ts);
         Some((p.target_id, self.bump_epoch()))
     }
 

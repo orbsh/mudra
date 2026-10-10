@@ -131,7 +131,7 @@ impl WatchSession {
         for t in infos {
             inject(self.port, &t.target_id, &self.ctx);
         }
-        let epoch = store.sync_targets(self.instance_id, infos, now_ms())?;
+        let epoch = store.sync_targets(self.instance_id, infos, now_ms(), false)?;
         notify(epoch);
         Some(epoch)
     }
@@ -159,7 +159,7 @@ impl WatchSession {
                 if created {
                     inject(self.port, &infos[0].target_id, &self.ctx);
                 }
-                if let Some(e) = store.sync_targets(self.instance_id, &infos, now_ms()) {
+                if let Some(e) = store.sync_targets(self.instance_id, &infos, now_ms(), true) {
                     epochs.push(e);
                     notify(e);
                 }

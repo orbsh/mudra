@@ -2,8 +2,11 @@
 
 > **Languages:** [English](ADR-extension-protocol.md) (primary) · [中文](ADR-extension-protocol.zh-CN.md)
 
-Date: 2026-10-01 (v2, same day)  Status: **Accepted (design finalized;
-implementation not started)**
+Date: 2026-10-01 (v2, same day)  Status: **Accepted; event-log slice
+implemented 2026-10-01** — ns 8 `Event` collection (SCHEMA bilingual),
+lifecycle-orchestrated emission (page_open / page_close / tag_set),
+`POST /events {cursor, limit}` read-only replay window. The extension host
+(stdio spawn/handshake/fan-out) is the next slice; not started.
 
 **Supersedes**: [ADR-aura-probe-federation](ADR-aura-probe-federation.md)
 (v3, proposal) — the prism transport leg and the effector-invoke leg are both

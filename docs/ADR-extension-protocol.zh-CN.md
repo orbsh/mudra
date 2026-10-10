@@ -2,7 +2,10 @@
 
 > **Languages:** [English](ADR-extension-protocol.md)（主文档） · [中文](ADR-extension-protocol.zh-CN.md)
 
-日期：2026-10-01（v2，同日）　状态：**Accepted（设计定案，实现未开始）**
+日期：2026-10-01（v2，同日）　状态：**Accepted；事件日志切片已实现
+（2026-10-01）**——ns 8 `Event` collection（SCHEMA 双语）、lifecycle 编排
+发射（page_open / page_close / tag_set）、`POST /events {cursor, limit}`
+只读回放窗口。扩展宿主（stdio spawn/handshake/扇出）是下一切片，未开始。
 
 **取代**：[ADR-aura-probe-federation](ADR-aura-probe-federation.md)（v3，
 proposal）——prism 运输腿与 effector-invoke 腿整体撤回。k10r 集成降级为

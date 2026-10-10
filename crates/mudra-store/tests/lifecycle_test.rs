@@ -37,7 +37,7 @@ fn first_sync_inserts_with_position_and_bumps_epoch_once_per_batch() {
         info("T2", "https://b.test", "B", ""),
     ];
     assert_eq!(s.epoch(), 0);
-    let e1 = s.sync_targets(7, &batch, 1000).expect("batch bumps");
+    let e1 = s.sync_targets(7, &batch, 1000, true).expect("batch bumps");
     assert_eq!(e1, 1);
 
     let pages = s.pages_of_instance(7, false);
@@ -52,7 +52,7 @@ fn first_sync_inserts_with_position_and_bumps_epoch_once_per_batch() {
     assert!(pages.iter().all(|(_, p)| p.opened_at == 1000 && p.closed_at == 0));
 
     // empty batch = no-op, epoch stays
-    assert_eq!(s.sync_targets(7, &[], 2000), None);
+    assert_eq!(s.sync_targets(7, &[], 2000, true), None);
     assert_eq!(s.epoch(), 1);
 }
 
@@ -63,10 +63,10 @@ fn same_target_resync_is_a_refresh_not_a_second_row() {
     // keeps its id, position, and opened_at (db.py: UPDATE only touches
     // url/title/closed_at).
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T1", "https://a.test", "old title", "")], 1000);
+    s.sync_targets(7, &[info("T1", "https://a.test", "old title", "")], 1000, true);
     let (k, _) = s.pages_of_instance(7, false).remove(0);
 
-    s.sync_targets(7, &[info("T1", "https://a.test/next", "new title", "")], 2000);
+    s.sync_targets(7, &[info("T1", "https://a.test/next", "new title", "")], 2000, true);
     let row = s.pages.get(&k).expect("same row refreshed");
     assert_eq!(row.url, "https://a.test/next");
     assert_eq!(row.title, "new title");
@@ -81,7 +81,7 @@ fn reopen_with_new_target_revives_the_closed_row() {
     // (rebind target_id, clear closed_at, refresh opened_at) instead of
     // inserting a duplicate — the Python E2E bug fixed before the rewrite.
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T-old", "https://a.test", "A", "")], 1000);
+    s.sync_targets(7, &[info("T-old", "https://a.test", "A", "")], 1000, true);
     let (k, _) = s.pages_of_instance(7, false).remove(0);
     s.close_target(7, "T-old", 1500).expect("close bumps");
 
@@ -89,7 +89,7 @@ fn reopen_with_new_target_revives_the_closed_row() {
         7,
         &info("T-new", "https://a.test", "A again", ""),
         2000,
-    );
+    true);
     assert_eq!(mode, UpsertMode::Revive);
     assert_eq!(k2, k); // same page id across the reopen
     let row = s.pages.get(&k).unwrap();
@@ -98,7 +98,7 @@ fn reopen_with_new_target_revives_the_closed_row() {
     assert_eq!(row.opened_at, 2000);
 
     // a different URL does NOT revive — it inserts a new row
-    let (_, mode) = s.upsert_target(7, &info("T-x", "https://z.test", "Z", ""), 3000);
+    let (_, mode) = s.upsert_target(7, &info("T-x", "https://z.test", "Z", ""), 3000, true);
     assert_eq!(mode, UpsertMode::Insert);
 }
 
@@ -108,18 +108,18 @@ fn reopen_cycles_never_duplicate_the_row() {
     // single row (each sync finds the latest closed same-URL row and
     // revives it; no second row is ever inserted).
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000);
+    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000, true);
     let (k1, _) = s.pages_of_instance(7, false).remove(0);
     s.close_target(7, "T1", 1100);
 
     // the second sync already revives k1 (latest closed, same URL)
-    s.sync_targets(7, &[info("T2", "https://a.test", "A", "")], 2000);
+    s.sync_targets(7, &[info("T2", "https://a.test", "A", "")], 2000, true);
     let k1_after = s.pages.get(&k1).unwrap();
     assert_eq!(k1_after.target_id, "T2");
     assert_eq!(k1_after.closed_at, 0);
 
     s.close_target(7, "T2", 2500);
-    s.sync_targets(7, &[info("T3", "https://a.test", "A", "")], 3000);
+    s.sync_targets(7, &[info("T3", "https://a.test", "A", "")], 3000, true);
     let rows = s.pages_of_instance(7, false);
     assert_eq!(rows.len(), 1, "no duplicates across reopens");
     assert_eq!(rows[0].1.target_id, "T3");
@@ -135,18 +135,18 @@ fn opener_id_backfills_once_and_never_overwrites() {
     let (_d, mut s) = open_tmp();
     let parent = info("T-p", "https://p.test", "P", "");
     let child = info("T-c", "https://c.test", "C", "T-p");
-    s.sync_targets(7, &[parent, child], 1000);
+    s.sync_targets(7, &[parent, child], 1000, true);
 
     let (ck, _) = s.page_by_target("T-c").expect("child row");
     let (pk, _) = s.page_by_target("T-p").expect("parent row");
     assert_eq!(s.pages.get(&ck).unwrap().parent_id, pk.id);
 
     // a second sync with a DIFFERENT opener must not reparent
-    s.sync_targets(7, &[info("T-c", "https://c.test/x", "C2", "other")], 2000);
+    s.sync_targets(7, &[info("T-c", "https://c.test/x", "C2", "other")], 2000, true);
     assert_eq!(s.pages.get(&ck).unwrap().parent_id, pk.id);
 
     // opener outside this batch resolves through the DB (by_target)
-    s.sync_targets(7, &[info("T-g", "https://g.test", "G", "T-c")], 3000);
+    s.sync_targets(7, &[info("T-g", "https://g.test", "G", "T-c")], 3000, true);
     let (gk, _) = s.page_by_target("T-g").unwrap();
     assert_eq!(s.pages.get(&gk).unwrap().parent_id, ck.id);
 
@@ -163,7 +163,7 @@ fn close_target_marks_closed_and_repeat_close_is_silent() {
     // A second close of an already-closed target is a no-op (epoch None),
     // mirroring `WHERE closed_at IS NULL`.
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000);
+    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000, true);
     assert_eq!(s.close_target(7, "T1", 1500), Some(2)); // epoch after sync = 1
     let row = s
         .pages_of_instance(7, false)
@@ -184,8 +184,8 @@ fn mark_down_closes_everything_and_flags_the_instance() {
     // all-closed instance is a silent no-op.
     let (_d, mut s) = open_tmp();
     let ik = s.launch_started(None, "inbox", 9201, 4242, None, None);
-    s.sync_targets(ik.id, &[info("T1", "https://a.test", "A", "")], 1000);
-    s.sync_targets(ik.id, &[info("T2", "https://b.test", "B", "")], 2000);
+    s.sync_targets(ik.id, &[info("T1", "https://a.test", "A", "")], 1000, true);
+    s.sync_targets(ik.id, &[info("T2", "https://b.test", "B", "")], 2000, true);
 
     let e = s.mark_down(ik.id, 3000).expect("teardown bumps");
     let inst = s.instances.get(&ik).unwrap();
@@ -205,7 +205,7 @@ fn delete_page_requires_closed_and_deletes_once() {
     // the store; deleting an open page errors, deleting twice errors, an
     // unknown page errors. deleted_at rows stay readable by history lists.
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000);
+    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000, true);
     let (k, _) = s.page_by_target("T1").unwrap();
 
     assert!(s.delete_page(&k, 1500).is_err()); // still open
@@ -269,18 +269,18 @@ fn page_tag_toggle_roundtrip_bumps_epoch() {
     // Contract: toggle adds then removes ("added"/"removed" semantics);
     // every toggle invalidates the panel (returns true/false = added).
     let (_d, mut s) = open_tmp();
-    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000);
+    s.sync_targets(7, &[info("T1", "https://a.test", "A", "")], 1000, true);
     let (pk, _) = s.page_by_target("T1").unwrap();
     let tk = TagKey { id: s.next_id(state::TAG_ID) as u32 };
     s.tags.put(&tk, &Tag { name: "unread".into(), parent_id: -1, ..Default::default() });
 
     let e0 = s.epoch();
-    assert!(s.page_tag_toggle(&pk, &tk)); // added
+    assert!(s.page_tag_toggle(&pk, &tk, 9000)); // added
     assert_eq!(s.epoch(), e0 + 1);
     assert_eq!(s.tags_of_page(&pk), vec![tk.clone()]);
     assert_eq!(s.pages_of_tag(&tk), vec![pk.clone()]);
 
-    assert!(!s.page_tag_toggle(&pk, &tk)); // removed
+    assert!(!s.page_tag_toggle(&pk, &tk, 9000)); // removed
     assert!(s.tags_of_page(&pk).is_empty());
 }
 
@@ -319,4 +319,81 @@ fn context_switch_validates_against_the_situation_tree() {
 
     assert!(s.set_context("nope").is_none()); // not a leaf: silent reject
     assert_eq!(s.state_text(state::CURRENT_CONTEXT), "work");
+}
+
+// ================= event-log orchestration (ADR-extension-protocol §4) =================
+
+#[test]
+fn observe_false_baseline_replay_emits_no_events() {
+    // Contract: the reconnect baseline is NOT a page event — a daemon
+    // restart must not flood the log with re-observations of pages that
+    // did not change. The same sync with observe=true would emit two
+    // page_open rows (Insert path).
+    let (_d, mut s) = open_tmp();
+    s.sync_targets(7, &[info("T1", "https://a.test", "A", ""), info("T2", "https://b.test", "B", "")], 1000, false);
+    assert!(s.events_since(0, 10).is_empty());
+}
+
+#[test]
+fn page_lifecycle_transitions_emit_the_snapshot_kinds() {
+    // Contract: insert + revive + refresh-navigation emit page_open; the
+    // title-only refresh stays silent (metadata, not an event); close
+    // paths (watcher + verb) emit page_close; the mark_down sweep emits
+    // one close per still-open page (corpses get no destroyed events).
+    let (_d, mut s) = open_tmp();
+    let ik = InstanceKey { id: s.next_id(state::INSTANCE_ID) as u32 };
+    s.instances.put(&ik, &Instance { profile: "work".into(), port: 9301, pid: 1, running: 1, ..Default::default() });
+
+    s.sync_targets(ik.id, &[info("T1", "https://a.test", "A", "")], 1000, true); // Insert -> open
+    s.sync_targets(ik.id, &[info("T1", "https://a.test", "A2", "")], 1100, true); // title-only -> silent
+    s.sync_targets(ik.id, &[info("T1", "https://a.test/x", "X", "")], 1200, true); // navigation -> open
+    s.close_target(ik.id, "T1", 1300); // watcher teardown -> close
+    let ev: Vec<(String, u64)> = s.events_since(0, 10).into_iter().map(|(_, e)| (e.kind, e.at)).collect();
+    assert_eq!(ev, vec![
+        ("mudra:page_open".to_string(), 1000),
+        ("mudra:page_open".to_string(), 1200),
+        ("mudra:page_close".to_string(), 1300),
+    ]);
+
+    // mark_down sweep: reopen one page, kill the instance — one close.
+    s.sync_targets(ik.id, &[info("T9", "https://z.test", "Z", "")], 2000, true);
+    let before = s.events_since(0, 1000).len();
+    s.mark_down(ik.id, 2500);
+    let new = s.events_since(0, 1000)[before..].to_vec();
+    assert_eq!(new.len(), 1);
+    assert_eq!(new[0].1.kind, "mudra:page_close");
+}
+
+#[test]
+fn event_args_carry_the_self_describing_snapshot() {
+    // Contract (args discipline): kind/page_id/ctx/url/title ride the
+    // row — a consumer never calls back into mudra. ctx resolves through
+    // the instance row. tag_set carries the FULL post-change id set.
+    let (_d, mut s) = open_tmp();
+    let ik = InstanceKey { id: s.next_id(state::INSTANCE_ID) as u32 };
+    s.instances.put(&ik, &Instance { profile: "work".into(), ..Default::default() });
+    s.sync_targets(ik.id, &[info("T1", "https://a.test", "A", "")], 1000, true);
+    let (_, e) = &s.events_since(0, 1)[0];
+    let args: serde_json::Value = serde_json::from_str(&e.args).unwrap();
+    assert_eq!(args["kind"], "mudra:page_open");
+    assert_eq!(args["ctx"], "work");
+    assert_eq!(args["url"], "https://a.test");
+    assert_eq!(args["title"], "A");
+
+    let pk = s.page_by_target("T1").unwrap().0;
+    let t1 = TagKey { id: s.next_id(state::TAG_ID) as u32 };
+    let t2 = TagKey { id: s.next_id(state::TAG_ID) as u32 };
+    s.tags.put(&t1, &Tag { name: "read".into(), ..Default::default() });
+    s.tags.put(&t2, &Tag { name: "star".into(), ..Default::default() });
+    s.page_tag_toggle(&pk, &t1, 1500);
+    s.page_tag_replace(&pk, &[t1.id, t2.id], 1600);
+    let tags: Vec<serde_json::Value> = s.events_since(0, 100)
+        .into_iter()
+        .filter(|(_, e)| e.kind == "mudra:tag_set")
+        .map(|(_, e)| serde_json::from_str(&e.args).unwrap())
+        .collect();
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0]["tag_ids"], serde_json::json!([t1.id]));
+    assert_eq!(tags[1]["tag_ids"], serde_json::json!([t1.id, t2.id]));
+    assert_eq!(tags[1]["page_id"], serde_json::json!(pk.id));
 }

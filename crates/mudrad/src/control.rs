@@ -30,6 +30,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         match path {
             "/open" => self.open(body),
             "/history" => self.history(body),
+            "/events" => self.events(body),
             "/add" => self.add(body),
             "/close_page" => self.close_page(body),
             "/close_ctx" => self.close_ctx(body),
@@ -187,6 +188,22 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .collect::<Vec<_>>()}))
     }
 
+    /// POST /events {cursor?, limit?} — the read-only replay window of
+    /// the extension-protocol event log (ADR-extension-protocol §4).
+    /// Consumers own their cursor; the daemon never advances it. Live
+    /// stdio fan-out will join this when the extension host lands; the
+    /// pull path is complete on its own (at-least-once: a consumer that
+    /// dies mid-page simply does not advance and re-reads).
+    pub fn events(&self, body: &Value) -> Result<Value, String> {
+        let cursor = body.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+        let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(100).clamp(1, 500) as usize;
+        let rows = self.store.events_since(cursor, limit);
+        Ok(json!({"events": rows
+            .iter()
+            .map(|(id, e)| json!({"id": id, "kind": e.kind, "args": serde_json::from_str::<Value>(&e.args).unwrap_or(Value::String(e.args.clone())), "at": e.at}))
+            .collect::<Vec<_>>()}))
+    }
+
     /// POST /add {url, ctx?} — join only; never silently spawns.
     pub fn add(&mut self, body: &Value) -> Result<Value, String> {
         let raw = body.get("url").and_then(Value::as_str).unwrap_or_default();
@@ -275,7 +292,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .filter(|(_, p)| p.closed_at == 0 && p.url.starts_with(prefix))
             .max_by_key(|(k, _)| k.id)
             .ok_or("page not open in this ctx")?;
-        let added = self.store.page_tag_toggle(&pk, &tk);
+        let added = self.store.page_tag_toggle(&pk, &tk, crate::watch::now_ms());
         self.rt.notify(self.store.epoch());
         Ok(json!({"tag": tag_name, "action": if added { "added" } else { "removed" }}))
     }
@@ -524,7 +541,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
             .unwrap_or_default();
-        let epoch = self.store.page_tag_replace(&pk, &ids);
+        let epoch = self.store.page_tag_replace(&pk, &ids, crate::watch::now_ms());
         self.rt.notify(epoch);
         Ok(json!({"page_id": page_id, "tag_ids": ids}))
     }

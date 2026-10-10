@@ -113,6 +113,33 @@ hole per the no-reuse rule (ADR-0002).
   (`sim_score`) x visits, fused via RRF (k=60); the count ranks directly
   (no log — rank position is already a monotone statistic).
 
+### Event (ns 8)
+
+- key: `id: u64` (auto-increment via the `event_id` counter).
+- payload: `kind` (free literal string, `mudra:` prefix), `args` (the
+  self-describing JSON snapshot), `at` (u64 wall-clock millis, caller-
+  supplied like every lifecycle timestamp).
+- access method: none — the replay path (`events_since`) is a primary-
+  order cursor scan; nothing else reads this collection (SCHEMA's
+  no-cover-index rule extended: no secondary access need at all yet).
+- semantics: the append-only half of the extension-protocol observe
+  plane (ADR-extension-protocol §4). Emission is orchestrated in the
+  lifecycle transitions (single source of truth — watcher and verb paths
+  both flow through it): `mudra:page_open` on Insert/Revive/URL-changed
+  Refresh (the baseline replay on watcher reconnect is NOT an event —
+  consumers catch up via /ctx_pages snapshots), `mudra:page_close` on
+  the watcher's destroyed path, the `/close` verb, and the `mark_down`
+  sweep (corpses never deliver destroyed events). `mudra:tag_set`
+  carries the FULL post-change id set — reconstruction from one row,
+  never a delta to sequence. Writing does NOT bump the epoch
+  (panel-invisible, same discipline as History). Retention/compaction
+  deferred until a measured need; ids never reused, monotone by
+  construction.
+- consumption: `POST /events {cursor, limit}` — the read-only replay
+  window; the consumer owns its checkpoint, the daemon never advances
+  it. Live stdio fan-out joins this when the extension host lands
+  (pull is complete on its own: at-least-once, crash = don't advance).
+
 ## Epoch invalidation signal
 
 mudrad bumps the `epoch` row after every CDP-driven write (page open /

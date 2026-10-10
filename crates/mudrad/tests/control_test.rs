@@ -183,6 +183,7 @@ fn seeded(h: &mut Harness) -> InstanceKey {
             opener_id: String::new(),
         }],
         1000,
+        false,
     );
     k
 }
@@ -509,6 +510,7 @@ fn ctx_pages_includes_closed_rows_with_tags() {
             opener_id: "T1".into(),
         }],
         2000,
+        false,
     );
     let pk2 = h.store.page_by_target("T2").unwrap().0;
     h.store.close_target(k.id, "T2", 3000);
@@ -914,4 +916,50 @@ fn history_verb_ranks_by_fused_score() {
     // limit clamps
     let r = h.verb("/history", json!({"query": "", "limit": 1})).unwrap();
     assert_eq!(r["candidates"].as_array().unwrap().len(), 1);
+}
+
+// ================= /events — the read-only replay window =================
+
+#[test]
+fn events_verb_pages_the_log_by_consumer_cursor() {
+    // Contract (ADR-extension-protocol §4): the verb reads, never
+    // advances — cursor/limit are the consumer's; args parse back as
+    // JSON objects (the self-describing snapshot survives the round
+    // trip through the store).
+    let mut h = Harness::new();
+    let _k = seeded(&mut h); // baseline: observe=false, no events
+    let empty = h.verb("/events", json!({})).unwrap();
+    assert_eq!(empty["events"].as_array().unwrap().len(), 0);
+
+    // a live watcher-path observation + one tag write produce rows
+    h.store.sync_targets(
+        _k.id,
+        &[mudra_store::TargetInfo {
+            target_id: "T5".into(),
+            url: "https://e.test".into(),
+            title: "E".into(),
+            opener_id: String::new(),
+        }],
+        5000,
+        true,
+    );
+    let pk = h.store.page_by_target("T5").unwrap().0;
+    let t = mudra_store::TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
+    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() });
+    h.store.page_tag_toggle(&pk, &t, 6000);
+
+    let r = h.verb("/events", json!({"limit": 1})).unwrap();
+    assert_eq!(r["events"].as_array().unwrap().len(), 1);
+    let first_id = r["events"][0]["id"].as_u64().unwrap();
+
+    let r = h.verb("/events", json!({"cursor": first_id})).unwrap();
+    let evs = r["events"].as_array().unwrap();
+    assert_eq!(evs.len(), 1); // the tag_set row only
+    assert_eq!(evs[0]["kind"], "mudra:tag_set");
+    assert_eq!(evs[0]["args"]["ctx"], "work"); // object, not a string
+
+    // the cursor is not stored server-side: re-reading from 0 still
+    // returns both rows
+    let all = h.verb("/events", json!({})).unwrap();
+    assert_eq!(all["events"].as_array().unwrap().len(), 2);
 }
