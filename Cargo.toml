@@ -18,7 +18,7 @@ okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-ngram = { git = "https://github.com/orbsh/okm", branch = "main" }
 fjall = "3"
 libc = "0.2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal", "process"] }
 tokio-tungstenite = "0.26"
 tungstenite = "0.26"
 futures-util = "0.3"

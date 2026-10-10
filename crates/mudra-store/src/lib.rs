@@ -720,6 +720,14 @@ impl MudraStore {
             .collect()
     }
 
+    /// The log's current head id (the counter, no allocation) — an
+    /// extension session starts its cursor here: a fresh subscriber does
+    /// not replay history (the aura ADR-0014 subscribe rule; a consumer
+    /// that wants the past advances its own cursor through `/events`).
+    pub fn event_head(&self) -> u64 {
+        self.state_u64(state::EVENT_ID)
+    }
+
     /// Last-known title for a URL from any live page row (the open verb
     /// uses it to refresh the history label). Full-table scan: acceptable
     /// at page scale, and this runs inside the verb's short lock anyway.

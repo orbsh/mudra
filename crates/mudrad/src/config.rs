@@ -122,6 +122,19 @@ pub fn parse(text: &str) -> Result<Value, String> {
                 let Some(value) = first_arg(child) else { continue };
                 out.insert(key.to_string(), to_json(value, INT_KEYS.contains(&key)));
             }
+        } else if gname == "extensions" {
+            // ADR-extension-protocol §1: name -> executable path.
+            // Routing metadata only — which processes to run; what they
+            // listen to lives in the script's schema (hello-carried).
+            let ex = out
+                .entry("extensions")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let ex = ex.as_object_mut().expect("just created as object");
+            for child in children(group) {
+                if let Some(value) = first_arg(child) {
+                    ex.insert(child.name().value().to_string(), to_json(value, false));
+                }
+            }
         } else if gname == "keys" {
             // per-key entries: child name = key, first arg = command name
             let kb = out
@@ -142,23 +155,28 @@ pub fn parse(text: &str) -> Result<Value, String> {
 }
 
 /// Fold one parsed layer into the accumulator (Python `load`'s body):
-/// flat keys replace, `keybindings` merges per-key, an empty keybindings
-/// is skipped (`if kb:` truthiness — a layer with no keys never injects
-/// a keybindings object into the result).
+/// flat keys replace, `keybindings` and `extensions` merge per-key (an
+/// empty group is skipped — `if kb:` truthiness; a layer with no keys
+/// never injects the object into the result).
 fn apply_layer(base: &mut serde_json::Map<String, Value>, parsed: Value) {
     let Value::Object(mut parsed) = parsed else { return };
-    let kb = parsed.remove("keybindings");
+    let mut mergeable: Vec<(&str, serde_json::Map<String, Value>)> = Vec::new();
+    for key in ["keybindings", "extensions"] {
+        if let Some(Value::Object(group)) = parsed.remove(key)
+            && !group.is_empty()
+        {
+            mergeable.push((key, group));
+        }
+    }
     for (k, v) in parsed {
         base.insert(k, v);
     }
-    if let Some(Value::Object(kb)) = kb
-        && !kb.is_empty()
-    {
+    for (key, group) in mergeable {
         let entry = base
-            .entry("keybindings")
+            .entry(key)
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Some(e) = entry.as_object_mut() {
-            for (k, v) in kb {
+            for (k, v) in group {
                 e.insert(k, v);
             }
         }

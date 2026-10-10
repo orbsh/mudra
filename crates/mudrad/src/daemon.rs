@@ -223,7 +223,7 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
 
 /// One verb against the shared store + runtime. Verbs are synchronous,
 /// so the lock never spans an await (it's only taken for the call).
-async fn run_verb(d: &Arc<Daemon>, path: &str, req: Value) -> Result<Value, String> {
+pub(crate) async fn run_verb(d: &Arc<Daemon>, path: &str, req: Value) -> Result<Value, String> {
     let mut store = d.store.lock().await;
     let mut rt = d.rt.lock().await;
     let out = {
@@ -593,6 +593,7 @@ pub async fn run() -> Result<(), String> {
     { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_panel_static(d2).await.expect("static server") }); }
     { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_panel_ws(d2).await.expect("ws server") }); }
     { let d2 = Arc::clone(&d); tokio::spawn(async move { scheduler(d2).await }); }
+    { let d2 = Arc::clone(&d); tokio::spawn(async move { crate::host::supervise(d2).await }); }
 
     eprintln!("[mudrad] started");
     tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
