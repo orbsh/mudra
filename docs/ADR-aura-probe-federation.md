@@ -2,8 +2,11 @@
 
 > **Languages:** [English](ADR-aura-probe-federation.md) (primary) · [中文](ADR-aura-probe-federation.zh-CN.md)
 
-Date: 2026-09-29  Status: **proposal (draft v3 for review; no code until
-accepted)**
+Date: 2026-09-29  Status: **Superseded (2026-10-01) by
+[ADR-extension-protocol.md](ADR-extension-protocol.md)** — v3 was never
+accepted; the prism transport and the effector-invoke leg are both withdrawn
+(mudra↔k10r is direct RPC over k10r's own HTTP; browser effects are host-managed
+extensions + hooks). Kept as the scenario record it was.
 
 > v3 replaces the bespoke HTTP-endpoint transport with the **prism
 > connection plane**: events are ordinary `{"ev": "mudra:<kind>"}` frames,

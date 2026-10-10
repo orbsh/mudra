@@ -2,7 +2,11 @@
 
 > **Languages:** [English](ADR-aura-probe-federation.md)（主文档） · [中文](ADR-aura-probe-federation.zh-CN.md)
 
-日期：2026-09-29　状态：**proposal（v3 草案待审；接受前不写码）**
+日期：2026-09-29　状态：**Superseded（2026-10-01，被
+[ADR-extension-protocol.md](ADR-extension-protocol.md) 取代）**——v3 未经
+接受即作废；prism 运输腿与 effector-invoke 腿整体撤回（mudra↔k10r 走 k10r
+自己的 HTTP 直连 RPC；浏览器效应归宿主管理的扩展 + 钩子）。本文保留为当时
+的场景记录。
 
 > v3 用 **prism 连接面**取代了自造的 HTTP endpoint 运输：事件就是普通的
 > `{"ev": "mudra:<kind>"}` 帧，payload 是纯数据，命名空间是自由约定

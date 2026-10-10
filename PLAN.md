@@ -398,22 +398,25 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   按键 shell 的环境。
 
 ### 开放项（未定，方向记录）
-- **aura+probe 对接**：mudrad 控制动词暴露为 actor invoke；扩展侧胶水平面
-  可由投递脚本（probe carrier）承接——替代"用 Python 因为扩展"的原始动机。
-  注意 probe 铁律：probe 不持存储、不依赖 aura crate，KV 持久化落 aura 节点
-  侧（okm ADR-0010 §7）。此方向改变控制面拓扑，动手前单独成 ADR（v3 草案
-  已在 `docs/ADR-aura-probe-federation.md` 双语落盘，proposal 待审——事件
-  外流为正体走 prism 连接面，动词降为效应器）。
-  **场景分析（2026-09-29 讨论定调，未排期）**：
+- **扩展协议（定案 v2，实现未开始）**：mudra 以 stdio 承载常驻子进程扩
+  展，**线契约采用 aura BGI**（ADR-0035 §3 + 其 2026-10-01 应答契约
+  Update），自造帧词汇表与 LSP 类比已撤回。config.kdl `[extensions]` 只
+  管 name→path；事件订阅声明在脚本 interface_schema、由 hello 携带（不进
+  配置、不是协商）；投递=BGI `Tier`——Hot+deadline=拦截（超时=failure
+  value，mudra 策略映射 fail-open）、Cold=观察（不泊产生方，事件落只追加
+  Event collection、扩展自持 cursor 回放）；效应经 `host:invoke` 帧落回
+  动词面（不碰 CDP）；`store` 臂不实现（扩展状态归扩展自己）；扩展间只
+  共享事件日志。可移植性=重点：同一 shim 两边通吃（mudrad / aura
+  effector），mudra 零 aura crate 依赖。k10r 集成=一个扩展示例，mudra 不
+  认识 k10r。设计全文 `docs/ADR-extension-protocol.md`（双语，Accepted）；
+  其前身的场景记录见 `docs/ADR-aura-probe-federation.md`（Superseded）。
+  **场景分析（2026-09-29 讨论定调）**：
   - **页面钩子（首要场景，Tampermonkey 式）**：carrier 分发的是 **JS 脚本
     数据**（match/事件/开关，进 store 新 collection、由 8899 动词治理），
     执行落点=既有 CDP 注入桥（INJECT_JS 同一根管子）。wasm guest 进不了
-    页面 world（胶囊同款 CSP 排除，结构性）；钩子回写走动词通道=probe
-    不持存储自洽。
-  - **krystallizer 接入=联邦，非内置/连接二选一**：二选一争进程边界，
-    联邦问数据归属（aura ADR-0013 同型）——页事件**推送**给记忆节点
-    （对方挂了捕获照常），记忆侧**invoke** mudra 动词（`page_id`=跨节点
-    引用，显式寻址=特性）。前置=页事件外流通道（钩子回流同需此管）。
+    页面 world（胶囊同款 CSP 排除，结构性）；钩子回写走动词通道。
+    轻量规则类样式留在纯 Hook JS（不起进程）；扩展留给需要状态/算力/网络
+    的逻辑。
   - **8899 不设身份准入（2026-09-29 用户裁决）**：服务的存在目的=任意
     进程可调用，本机=天然信任边界。跨节点（联邦）的认证走 well-known
     协议那一层，不适用于本机面。
