@@ -964,6 +964,68 @@ fn events_verb_pages_the_log_by_consumer_cursor() {
     assert_eq!(all["events"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn events_tail_reads_the_newest_rows_and_reports_head() {
+    // Contract (the panel's log view): `tail: N` is the SAME read-only
+    // window anchored at the end — the newest N rows, id ascending,
+    // N doubling as the cap. Exact, not approximate: event ids are a
+    // dense counter (append-only, no delete path), so head - N is the
+    // cursor. `cursor` keeps its own meaning and no replay is reordered.
+    let mut h = Harness::new();
+    let k = seeded(&mut h); // baseline: observe=false, no events
+    let empty = h.verb("/events", json!({ "tail": 10 })).unwrap();
+    assert_eq!(empty["events"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["head"], 0, "the head rides back on every response");
+
+    // three rows through the live paths: page_open, tag_set, page_close
+    h.store.sync_targets(
+        k.id,
+        &[mudra_store::TargetInfo {
+            target_id: "T5".into(),
+            url: "https://e.test".into(),
+            title: "E".into(),
+            opener_id: String::new(),
+        }],
+        5000,
+        true,
+    );
+    let pk = h.store.page_by_target("T5").unwrap().0;
+    let t = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
+    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() });
+    h.store.page_tag_toggle(&pk, &t, 6000);
+    h.store.close_target(k.id, "T5", 7000);
+
+    let all = h.verb("/events", json!({})).unwrap();
+    assert_eq!(all["head"], 3);
+    let kinds: Vec<&str> = all["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["mudra:page_open", "mudra:tag_set", "mudra:page_close"]);
+
+    // the newest N, ascending; N is also the cap (not a hint)
+    let tail2 = h.verb("/events", json!({ "tail": 2 })).unwrap();
+    let evs = tail2["events"].as_array().unwrap();
+    assert_eq!(evs.len(), 2);
+    assert_eq!(evs[0]["kind"], "mudra:tag_set");
+    assert_eq!(evs[1]["kind"], "mudra:page_close");
+    assert!(evs[0]["id"].as_u64().unwrap() < evs[1]["id"].as_u64().unwrap());
+
+    let tail1 = h.verb("/events", json!({ "tail": 1 })).unwrap();
+    assert_eq!(tail1["events"][0]["kind"], "mudra:page_close");
+
+    // a tail wider than the log is not an error: clamp to what exists
+    let wide = h.verb("/events", json!({ "tail": 100 })).unwrap();
+    assert_eq!(wide["events"].as_array().unwrap().len(), 3);
+
+    // the cursor form is untouched and ignores tail-less defaults
+    let one = h.verb("/events", json!({ "cursor": 1, "limit": 1 })).unwrap();
+    assert_eq!(one["events"][0]["kind"], "mudra:tag_set");
+    assert_eq!(one["head"], 3);
+}
+
 // ================= ns 9: the hook verbs (the page-side rule path) =================
 
 #[test]

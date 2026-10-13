@@ -200,14 +200,33 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// loop (the host pulls the window on each epoch change); the pull
     /// path is complete on its own (at-least-once: a consumer that
     /// dies mid-page simply does not advance and re-reads).
+    ///
+    /// `{tail: N}` is the log-view form of the very same read: the
+    /// newest N rows, id ascending, N doubling as the cap. It is exact
+    /// rather than approximate because event ids are a dense counter
+    /// (append-only, no delete path), so `head - N` is the cursor. The
+    /// `cursor` contract is untouched.
     pub fn events(&self, body: &Value) -> Result<Value, String> {
-        let cursor = body.get("cursor").and_then(Value::as_u64).unwrap_or(0);
-        let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(100).clamp(1, 500) as usize;
+        let head = self.store.event_head();
+        let (cursor, limit) = match body.get("tail").and_then(Value::as_u64) {
+            Some(n) => {
+                let n = n.clamp(1, 500);
+                (head.saturating_sub(n), n as usize)
+            }
+            None => (
+                body.get("cursor").and_then(Value::as_u64).unwrap_or(0),
+                body.get("limit").and_then(Value::as_u64).unwrap_or(100).clamp(1, 500) as usize,
+            ),
+        };
         let rows = self.store.events_since(cursor, limit);
         Ok(json!({"events": rows
             .iter()
             .map(|(id, e)| json!({"id": id, "kind": e.kind, "args": serde_json::from_str::<Value>(&e.args).unwrap_or(Value::String(e.args.clone())), "at": e.at}))
-            .collect::<Vec<_>>()}))
+            .collect::<Vec<_>>(),
+            // the log head (the counter, no allocation): a log view
+            // shows it, a cursor consumer can use it to tell "caught
+            // up" from "the daemon restarted"
+            "head": head}))
     }
 
     /// POST /add {url, ctx?} — join only; never silently spawns.
