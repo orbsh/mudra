@@ -169,3 +169,129 @@ fn extensions_group_absent_is_just_absent() {
     let cfg = mudrad::config::load(&default, &dir.path().join("missing.kdl")).unwrap();
     assert!(cfg.get("extensions").is_none());
 }
+
+// ================= §4: the intercept plane =================
+
+#[test]
+fn verdict_vocabulary_is_deny_redirect_allow() {
+    use mudrad::host::{Verdict, parse_verdict};
+
+    assert_eq!(parse_verdict(&json!({ "verdict": "allow" })), Verdict::Allow);
+    assert_eq!(parse_verdict(&json!({ "verdict": "deny" })), Verdict::Deny);
+    assert_eq!(
+        parse_verdict(&json!({ "verdict": "redirect", "url": "https://safe.test" })),
+        Verdict::Redirect("https://safe.test".into())
+    );
+    // every unrecognised shape is `allow`: fail-open is structural, not a
+    // branch someone can forget to take
+    assert_eq!(parse_verdict(&json!({})), Verdict::Allow);
+    assert_eq!(parse_verdict(&json!({ "verdict": "block" })), Verdict::Allow); // a typo is not a veto
+    assert_eq!(parse_verdict(&json!({ "verdict": "redirect" })), Verdict::Allow); // no url, no redirect
+    assert_eq!(parse_verdict(&json!({ "verdict": "redirect", "url": "" })), Verdict::Allow);
+    assert_eq!(parse_verdict(&json!("deny")), Verdict::Allow); // not an object
+}
+
+/// Stub sessions for the gate: no process, no pipe — the gate's own logic.
+enum Policy {
+    Answer(Value),
+    /// Hold the waiter and never answer: a stalled session.
+    Silent,
+}
+
+fn stub_session(reg: &mudrad::host::Registry, name: &str, declares: bool, policy: Policy) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<mudrad::host::HotCall>(4);
+    let events = if declares {
+        vec![mudrad::host::BEFORE_NAVIGATE.to_string()]
+    } else {
+        Vec::new()
+    };
+    reg.register(mudrad::host::Handle::new(name, events, tx));
+    tokio::spawn(async move {
+        while let Some(hot) = rx.recv().await {
+            match &policy {
+                Policy::Answer(v) => {
+                    let _ = hot.reply.send(v.clone());
+                }
+                Policy::Silent => std::mem::forget(hot.reply),
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn first_non_allow_verdict_wins_and_everything_else_fails_open() {
+    use mudrad::host::{Registry, Verdict, before_navigate};
+    use std::time::{Duration, Instant};
+
+    // no session at all: allow
+    let reg = Registry::default();
+    assert_eq!(before_navigate(&reg, "https://a.test", "inbox").await.0, Verdict::Allow);
+
+    // declared, but stalled: the budget expires and the verdict is allow
+    let reg = Registry::default();
+    stub_session(&reg, "silent", true, Policy::Silent);
+    let t = Instant::now();
+    assert_eq!(before_navigate(&reg, "https://a.test", "inbox").await.0, Verdict::Allow);
+    assert!(t.elapsed() >= Duration::from_millis(200), "waited the budget: {:?}", t.elapsed());
+
+    // a session that did not DECLARE the event is never asked
+    let reg = Registry::default();
+    stub_session(&reg, "other", false, Policy::Answer(json!({ "verdict": "deny" })));
+    assert_eq!(before_navigate(&reg, "https://a.test", "inbox").await.0, Verdict::Allow);
+
+    // registration order decides among declarers: allow then deny -> deny,
+    // and the answer names who denied
+    let reg = Registry::default();
+    stub_session(&reg, "a-allow", true, Policy::Answer(json!({ "verdict": "allow" })));
+    stub_session(&reg, "b-deny", true, Policy::Answer(json!({ "verdict": "deny" })));
+    let (v, by) = before_navigate(&reg, "https://a.test", "inbox").await;
+    assert_eq!(v, Verdict::Deny);
+    assert_eq!(by.as_deref(), Some("b-deny"));
+
+    // the first non-allow SHORT-CIRCUITS: an earlier redirect beats a later deny
+    let reg = Registry::default();
+    stub_session(
+        &reg,
+        "a-redirect",
+        true,
+        Policy::Answer(json!({ "verdict": "redirect", "url": "https://safe.test" })),
+    );
+    stub_session(&reg, "b-deny", true, Policy::Answer(json!({ "verdict": "deny" })));
+    let (v, by) = before_navigate(&reg, "https://a.test", "inbox").await;
+    assert_eq!(v, Verdict::Redirect("https://safe.test".into()));
+    assert_eq!(by.as_deref(), Some("a-redirect"));
+
+    // a session that is gone is not asked (the handle is unregistered)
+    let reg = Registry::default();
+    stub_session(&reg, "gone", true, Policy::Answer(json!({ "verdict": "deny" })));
+    reg.unregister("gone");
+    assert_eq!(before_navigate(&reg, "https://a.test", "inbox").await.0, Verdict::Allow);
+}
+
+#[tokio::test]
+async fn hot_call_ids_stay_out_of_the_event_log_id_space() {
+    use mudrad::host::{BEFORE_NAVIGATE, Registry, HotCall, Handle};
+    use std::sync::Arc;
+
+    // The gate assigns ids from its own space: a guest answering a delivered
+    // EVENT can never be mis-correlated with a pending verdict.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<HotCall>(4);
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = Arc::clone(&seen);
+    tokio::spawn(async move {
+        while let Some(hot) = rx.recv().await {
+            seen2.lock().unwrap().push(hot.frame.id);
+            let _ = hot.reply.send(json!({ "verdict": "allow" }));
+        }
+    });
+    let reg = Registry::default();
+    reg.register(Handle::new("stub", vec![BEFORE_NAVIGATE.to_string()], tx));
+
+    for _ in 0..3 {
+        let _ = mudrad::host::before_navigate(&reg, "https://a.test", "inbox").await;
+    }
+    let ids = seen.lock().unwrap().clone();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.iter().all(|id| *id >= (1u64 << 62)), "ids: {ids:?}");
+    assert!(ids.windows(2).all(|w| w[0] != w[1]), "ids must be distinct: {ids:?}");
+}

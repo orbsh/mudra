@@ -76,6 +76,9 @@ pub struct Daemon {
     /// instance_id -> watcher task's abort handle: never two watchers
     /// over one instance; a finished handle frees the slot for a retry.
     pub watched: Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>,
+    /// Live extension sessions — the dispatch end of the §4 intercept
+    /// plane (see `host`).
+    pub host: Arc<crate::host::Registry>,
     pub frontend_dir: std::path::PathBuf,
     /// Static root: the trunk build output (crates/mudra-panel/dist).
     /// R2 slice 2 switch: the served panel is the wasm bundle — the
@@ -204,6 +207,14 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
     }
 
     let req: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    // §4 intercept plane, on the human/CLI surface only. Deliberately NOT
+    // inside run_verb: a guest's own `host:invoke` routes through run_verb
+    // too, and gating that would let a verdict wait on the very session
+    // carrying it out (self-deadlock).
+    let (req, blocked) = crate::host::intercept(&d, &path, req).await;
+    if let Some(reply) = blocked {
+        return http_response(&mut sock, 200, reply.to_string().as_bytes(), "application/json").await;
+    }
     let outcome = run_verb(&d, &path, req).await;
     let (status, payload) = match outcome {
         Ok(mut out) => {
@@ -583,6 +594,7 @@ pub async fn run() -> Result<(), String> {
         rt: Arc::new(Mutex::new(real)),
         epoch_tx,
         watched: Arc::new(Mutex::new(HashMap::new())),
+        host: Arc::new(crate::host::Registry::default()),
         frontend_dir: frontend,
         panel_root,
         config_default: home.join("config.kdl"),

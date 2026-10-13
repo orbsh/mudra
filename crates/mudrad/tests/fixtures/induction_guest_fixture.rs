@@ -29,8 +29,15 @@ fn main() {
     let seen_path = format!("{dir}/seen.json");
     let out_path = format!("{dir}/out.json");
 
-    let hello = induction_protocol::Hello::from_on("probe", ["mudra:page_open".to_string()]);
+    let hello = induction_protocol::Hello::from_on(
+        "probe",
+        [
+            "mudra:page_open".to_string(),
+            "mudra:before_navigate".to_string(),
+        ],
+    );
     println!("{}", hello.to_line());
+    let nav_path = format!("{dir}/nav.json");
 
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -42,6 +49,25 @@ fn main() {
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
         if v["kind"] != "call" {
+            continue;
+        }
+        // §4 intercept: answer the verdict call — echoing the id the HOST
+        // assigned — and STAY ALIVE (the delivery call below is the one that
+        // exits). The verdict is a pure function of the url here; a real
+        // extension would consult its own state.
+        if v["event"] == "mudra:before_navigate" {
+            std::fs::write(&nav_path, line.trim()).ok();
+            let url = v["args"]["url"].as_str().unwrap_or_default();
+            let verdict = if url.contains("blocked") {
+                serde_json::json!({ "verdict": "deny" })
+            } else if url.contains("redirect-me") {
+                serde_json::json!({ "verdict": "redirect", "url": "https://safe.test/" })
+            } else {
+                serde_json::json!({ "verdict": "allow" })
+            };
+            let result = induction_protocol::ResultFrame::new(v["id"].clone(), verdict);
+            println!("{}", result.to_line());
+            std::io::stdout().flush().ok();
             continue;
         }
         // what the guest received — the cursor rule's assertion input

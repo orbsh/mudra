@@ -47,6 +47,7 @@ async fn test_daemon(home: &std::path::Path) -> Arc<mudrad::daemon::Daemon> {
         rt: Arc::new(Mutex::new(real)),
         epoch_tx,
         watched: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        host: Arc::new(mudrad::host::Registry::default()),
         frontend_dir: home.join("frontend"),
         panel_root: home.join("panel-dist"),
         config_default: home.join("config.kdl"),
@@ -74,7 +75,11 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
 
     // stale fixture outputs from a previous run must not satisfy the poll
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/induction-live");
-    for p in [format!("{dir}/seen.json"), format!("{dir}/out.json")] {
+    for p in [
+        format!("{dir}/seen.json"),
+        format!("{dir}/out.json"),
+        format!("{dir}/nav.json"),
+    ] {
         let _ = std::fs::remove_file(&p);
     }
 
@@ -96,6 +101,68 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
         tokio::spawn(async move { mudrad::host::session(&d2, "probe", &path).await });
     // let the handshake complete and the cursor snapshot at the head
     tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // §4 intercept plane, against the REAL child: the fixture answers `deny`
+    // for urls carrying "blocked" and `allow` otherwise, echoing the id the
+    // host assigned (the guest never picks the id).
+    let (verdict, by) =
+        mudrad::host::before_navigate(&d.host, "https://blocked.test/x", "work").await;
+    assert_eq!(verdict, mudrad::host::Verdict::Deny);
+    assert_eq!(by.as_deref(), Some("probe"));
+
+    let nav = wait_for_file(&format!("{dir}/nav.json"), 5)
+        .await
+        .expect("the guest must receive the verdict call");
+    let f: Value = serde_json::from_str(&nav).unwrap();
+    assert_eq!(f["event"], "mudra:before_navigate");
+    assert_eq!(f["args"]["url"], "https://blocked.test/x");
+    assert_eq!(f["args"]["ctx"], "work");
+    assert!(
+        f["id"].as_u64().unwrap() >= (1u64 << 62),
+        "host-assigned id space (disjoint from event-log ids): {}",
+        f["id"]
+    );
+
+    // the same session answering the other way: allow, and nothing blocks
+    let (verdict, by) =
+        mudrad::host::before_navigate(&d.host, "https://fine.test/", "inbox").await;
+    assert_eq!(verdict, mudrad::host::Verdict::Allow);
+    assert_eq!(by, None);
+
+    // the request-level policy the 8899 shell applies: `/open` and `/nav
+    // goto` are gated; a deny answers WITHOUT executing the verb and a
+    // redirect rewrites the body (the gate never touches the store).
+    let (req, blocked) =
+        mudrad::host::intercept(&d, "/open", json!({ "url": "https://blocked.test/x" })).await;
+    assert_eq!(req["url"], "https://blocked.test/x");
+    let blocked = blocked.expect("a deny must produce the short-circuit reply");
+    assert_eq!(blocked["blocked"], true);
+    assert_eq!(blocked["by"], "probe");
+
+    let (req, blocked) = mudrad::host::intercept(
+        &d,
+        "/open",
+        json!({ "url": "https://redirect-me.test/x" }),
+    )
+    .await;
+    assert!(blocked.is_none(), "a redirect executes, it does not short-circuit");
+    assert_eq!(req["url"], "https://safe.test/");
+
+    let (_, blocked) = mudrad::host::intercept(
+        &d,
+        "/nav",
+        json!({ "cmd": "goto", "url": "https://blocked.test/y" }),
+    )
+    .await;
+    assert!(blocked.is_some(), "`goto` is a navigation entry too");
+
+    // the other nav commands carry no url: never gated
+    let (_, blocked) = mudrad::host::intercept(&d, "/nav", json!({ "cmd": "reload" })).await;
+    assert!(blocked.is_none());
+
+    // and a verb that is not a navigation entry is untouched
+    let (_, blocked) = mudrad::host::intercept(&d, "/forest", json!({})).await;
+    assert!(blocked.is_none());
 
     // the live event, then the epoch change that triggers the pull
     {
