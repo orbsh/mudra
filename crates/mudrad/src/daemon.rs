@@ -429,7 +429,7 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
         }
     };
     // injection is a CDP round trip: awaited OUTSIDE the store lock
-    inject_pages(port, &ctx, &infos).await;
+    inject_pages(port, &ctx, &infos, &hook_sources(&d).await).await;
     {
         let mut store = d.store.lock().await;
         let mut bumped: Option<u64> = None;
@@ -468,7 +468,7 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
                     })
                     .map(cdp::target_info_of)
                     .collect();
-                inject_pages(port, &ctx, &infos).await;
+                inject_pages(port, &ctx, &infos, &hook_sources(&d).await).await;
             }
         }
     }
@@ -486,10 +486,48 @@ async fn teardown(d: &Daemon, instance_id: u32) {
     d.watched.lock().await.remove(&instance_id);
 }
 
+/// One hook as an injectable source: its code wrapped in a URL guard,
+/// composed by literal substitution — no `eval` / `new Function` (strict-
+/// site CSP forbids dynamic code; the injected source itself is not subject
+/// to it). Each hook ships as its OWN `addScriptToEvaluateOnNewDocument`
+/// source, so a parse error takes that hook down alone instead of the
+/// page's whole injection. The code runs inside `(function(){…}).call(
+/// window)`: its own scope (hooks cannot leak vars into one another) with
+/// `this` still the window. An empty `matches` list guards on `true` —
+/// every page.
+pub fn hook_source(h: &mudra_store::Hook) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for s in h.matches.split(',') {
+        let s = s.trim();
+        if !s.is_empty() {
+            // a JSON string literal IS a JS string literal: quoting and
+            // escaping come from one encoder, not a hand-rolled escaper
+            parts.push(format!("u.indexOf({})>=0", Value::String(s.to_string())));
+        }
+    }
+    let guard = if parts.is_empty() { "true".to_string() } else { parts.join("||") };
+    let name = Value::String(h.name.clone()).to_string();
+    format!(
+        "(function(){{var u=location.href;if({guard}){{try{{(function(){{{code}}}).call(window)}}\
+catch(e){{console.warn(\"[mudra:hook] \"+{name},e)}}}}}})();",
+        code = h.code
+    )
+}
+
+/// The composed sources for the currently enabled hooks. A short store
+/// lock, no await held across it — callers are outside the lock (the
+/// injection is a CDP round trip and must stay outside too).
+pub async fn hook_sources(d: &Arc<Daemon>) -> Vec<String> {
+    let store = d.store.lock().await;
+    store.hooks_enabled().iter().map(hook_source).collect()
+}
+
 /// inject = per-page CDP round trip (awaited OUTSIDE the store lock):
 /// resolve page ws urls via /json, arm the interception script for new
-/// documents and run it into already-loaded pages.
-pub async fn inject_pages(port: u16, ctx: &str, infos: &[TargetInfo]) {
+/// documents and run it into already-loaded pages. `hooks` are the
+/// pre-composed [`hook_source`] strings for the enabled hooks — one extra
+/// document script each (the light-weight rule path, no process).
+pub async fn inject_pages(port: u16, ctx: &str, infos: &[TargetInfo], hooks: &[String]) {
     if infos.is_empty() {
         return;
     }
@@ -512,6 +550,12 @@ pub async fn inject_pages(port: u16, ctx: &str, infos: &[TargetInfo]) {
             .call("Page.addScriptToEvaluateOnNewDocument", json!({"source": src.clone()}))
             .await;
         let _ = conn.call("Runtime.evaluate", json!({"expression": src})).await;
+        for hs in hooks {
+            let _ = conn
+                .call("Page.addScriptToEvaluateOnNewDocument", json!({"source": hs.clone()}))
+                .await;
+            let _ = conn.call("Runtime.evaluate", json!({"expression": hs.clone()})).await;
+        }
     }
 }
 

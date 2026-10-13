@@ -68,6 +68,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
             "/dev" => self.dev(body),
             "/tag_seed" => self.tag_seed(),
             "/tag_set" => self.tag_set(body),
+            // ns 9: the page-side rule path (Hook collection) — JS as data,
+            // governed here, executed through the existing INJECT_JS bridge
+            "/hook_set" => self.hook_set(body),
+            "/hook_list" => self.hook_list(),
+            "/hook_delete" => self.hook_delete(body),
             "/sort" => self.sort(body),
             "/panel" => self.panel(body),
             other => Err(format!("unknown endpoint {other}")),
@@ -566,6 +571,127 @@ impl<'a, R: Runtime> Controller<'a, R> {
             self.rt.notify(self.store.epoch());
         }
         Ok(json!({"id": k.id}))
+    }
+
+    /// POST /hook_set {name, code?, matches?, enabled?} — the Hook collection's
+    /// write verb (SCHEMA ns 9): idempotent upsert on `name` where ABSENT
+    /// fields keep their stored values (a code-only edit must not silently
+    /// reset the scope; the `instance_set_config` rule). Then a best-effort
+    /// re-inject into the live pages of every running instance, so a hook
+    /// takes effect without a reload. No epoch bump (panel-invisible).
+    pub fn hook_set(&mut self, body: &Value) -> Result<Value, String> {
+        let name = body
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if name.is_empty() {
+            return Err("hook name required".into());
+        }
+        let existing = self.store.hook_by_name(name).map(|(_, h)| h);
+        let code = body
+            .get("code")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| existing.as_ref().map(|h| h.code.clone()))
+            .unwrap_or_default();
+        if code.trim().is_empty() {
+            return Err("hook code required".into());
+        }
+        let matches = body
+            .get("matches")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| existing.as_ref().map(|h| h.matches.clone()))
+            .unwrap_or_default();
+        let enabled = match body.get("enabled").and_then(Value::as_u64) {
+            Some(v) => v.min(1) as u8,
+            None => existing.as_ref().map(|h| h.enabled).unwrap_or(1),
+        };
+        let (id, created) =
+            self.store.hook_upsert(name, &matches, &code, enabled, crate::watch::now_ms());
+        let injected = self.reinject_hooks();
+        Ok(json!({ "id": id, "created": created, "enabled": enabled, "injected": injected }))
+    }
+
+    /// POST /hook_list {} — every hook, id order. The code rides along (the
+    /// caller decides whether to print it).
+    pub fn hook_list(&self) -> Result<Value, String> {
+        let hooks: Vec<Value> = self
+            .store
+            .hooks_all()
+            .into_iter()
+            .map(|(k, h)| {
+                json!({
+                    "id": k.id,
+                    "name": h.name,
+                    "matches": h.matches,
+                    "code": h.code,
+                    "enabled": h.enabled,
+                    "updated_at": h.updated_at,
+                })
+            })
+            .collect();
+        Ok(json!({ "hooks": hooks }))
+    }
+
+    /// POST /hook_delete {name} — remove both halves (primary + by_name).
+    /// Already-running code cannot be recalled from a live page: a delete (or
+    /// a disable) stops FUTURE documents; a reload re-arms from the current
+    /// set.
+    pub fn hook_delete(&mut self, body: &Value) -> Result<Value, String> {
+        let name = body
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if name.is_empty() {
+            return Err("hook name required".into());
+        }
+        Ok(json!({ "deleted": self.store.hook_delete_by_name(name), "name": name }))
+    }
+
+    /// Push every enabled hook into the live pages of every running instance.
+    /// Best effort by construction (a vanished instance or target is skipped):
+    /// the durable arming is `inject_pages`, which covers every new document.
+    /// Returns the number of page targets that got the sources.
+    fn reinject_hooks(&mut self) -> u32 {
+        let sources: Vec<String> = self
+            .store
+            .hooks_enabled()
+            .iter()
+            .map(crate::daemon::hook_source)
+            .collect();
+        if sources.is_empty() {
+            return 0;
+        }
+        let mut injected = 0u32;
+        for (_k, inst) in self.running_instances() {
+            let port = inst.port as u16;
+            let Ok(targets) = self.rt.list_targets(port) else { continue };
+            for t in targets {
+                if t.get("type").and_then(Value::as_str) != Some("page") {
+                    continue;
+                }
+                let Some(tid) = t.get("id").and_then(Value::as_str) else { continue };
+                for src in &sources {
+                    let _ = self.rt.page_command(
+                        port,
+                        tid,
+                        "Page.addScriptToEvaluateOnNewDocument",
+                        json!({ "source": src }),
+                    );
+                    let _ = self.rt.page_command(
+                        port,
+                        tid,
+                        "Runtime.evaluate",
+                        json!({ "expression": src }),
+                    );
+                }
+                injected += 1;
+            }
+        }
+        injected
     }
 
     /// POST /close {page_id} — set closed_at AND close the target

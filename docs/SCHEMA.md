@@ -149,7 +149,10 @@ hole per the no-reuse rule (ADR-0002).
   derive has no bool), `updated_at` (u64 wall-clock millis, caller-supplied).
 - access method: `by_name` func index on `name` — `hook_set` is an upsert
   keyed on it (the `create_tag` (parent,name) idempotency rule); reads are
-  full scans (hooks are a handful, no other secondary need).
+  full scans (hooks are a handful, no other secondary need). ABSENT fields
+  in `hook_set` keep their stored values (a code-only edit must not reset
+  the scope — the `instance_set_config` rule); `code` is required on
+  create and cannot be blanked (delete the hook instead).
 - semantics: the **light-weight rule path** of ADR-extension-protocol §5 —
   page-side JS as *data*: no process, no pipe. Governance is the 8899 verb
   surface (`/hook_set`, `/hook_list`, `/hook_delete`); execution is the

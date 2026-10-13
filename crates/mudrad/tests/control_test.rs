@@ -963,3 +963,82 @@ fn events_verb_pages_the_log_by_consumer_cursor() {
     let all = h.verb("/events", json!({})).unwrap();
     assert_eq!(all["events"].as_array().unwrap().len(), 2);
 }
+
+// ================= ns 9: the hook verbs (the page-side rule path) =================
+
+#[test]
+fn hook_verbs_upsert_list_delete_and_reinject_into_live_pages() {
+    let mut h = Harness::new();
+    seeded(&mut h);
+    // the fake browser reports one live page target on the instance's port
+    h.rt.targets = vec![json!({ "id": "T1", "type": "page" })];
+
+    // set: creates, and arms the new-document path in the LIVE page too
+    let out = h
+        .verb(
+            "/hook_set",
+            json!({ "name": "adfree", "matches": "a.test", "code": "document.title='x';" }),
+        )
+        .unwrap();
+    assert_eq!(out["created"], true);
+    assert_eq!(out["enabled"], 1);
+    assert_eq!(out["injected"], 1, "the live page got the source");
+    let id = out["id"].as_u64().unwrap();
+
+    let methods: Vec<String> = h
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Page { method, .. } => Some(method),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        ["Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate"],
+        "armed for future documents AND run once now"
+    );
+
+    // idempotent on the name: same id, no second row, code replaced
+    let out = h
+        .verb("/hook_set", json!({ "name": "adfree", "code": "document.title='y';" }))
+        .unwrap();
+    assert_eq!(out["created"], false);
+    assert_eq!(out["id"].as_u64().unwrap(), id);
+
+    let out = h.verb("/hook_list", json!({})).unwrap();
+    let hooks = out["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0]["name"], "adfree");
+    assert_eq!(hooks[0]["code"], "document.title='y';");
+    assert_eq!(hooks[0]["matches"], "a.test");
+
+    // a disabled hook is listed but not injected
+    h.verb("/hook_set", json!({ "name": "off", "code": "1;", "enabled": 0 })).unwrap();
+    let _ = h.calls();
+    let out = h.verb("/hook_set", json!({ "name": "adfree", "code": "2;" })).unwrap();
+    assert_eq!(out["injected"], 1, "only the enabled hook is pushed");
+    let pushed = h.calls().into_iter().filter_map(|c| match c {
+        Call::Page { method, .. } => Some(method),
+        _ => None,
+    }).count();
+    assert_eq!(pushed, 2, "one source = two calls (arm + evaluate)");
+
+    // hooks are panel-invisible: no epoch movement
+    let e0 = h.store.epoch();
+    h.verb("/hook_set", json!({ "name": "quiet", "code": "3;" })).unwrap();
+    assert_eq!(h.store.epoch(), e0);
+
+    // delete removes it (and the second delete is a no-op)
+    let out = h.verb("/hook_delete", json!({ "name": "adfree" })).unwrap();
+    assert_eq!(out["deleted"], true);
+    let out = h.verb("/hook_delete", json!({ "name": "adfree" })).unwrap();
+    assert_eq!(out["deleted"], false);
+    let left = h.verb("/hook_list", json!({})).unwrap();
+    assert_eq!(left["hooks"].as_array().unwrap().len(), 2); // off + quiet
+
+    // the verb's own validation owns the missing fields
+    assert!(h.verb("/hook_set", json!({ "name": "x" })).is_err(), "code required");
+    assert!(h.verb("/hook_set", json!({ "code": "1;" })).is_err(), "name required");
+    assert!(h.verb("/hook_delete", json!({})).is_err());
+}

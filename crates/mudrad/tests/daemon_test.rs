@@ -132,3 +132,48 @@ fn env_gate_uses_the_full_session_var_set() {
     let gaps = startup_env_gaps();
     assert!(gaps.len() <= 4, "subset of the set: {gaps:?}");
 }
+
+// ================= ns 9: hook sources (the injection bridge) =================
+
+#[test]
+fn hook_sources_guard_composes_without_dynamic_code() {
+    // Contract (SCHEMA ns 9): one guarded source per hook, composed by
+    // literal substitution — the code is embedded, never eval'd (strict-site
+    // CSP forbids dynamic code; the injected source itself is not subject to
+    // it), and every guard string is a JSON literal, i.e. an escaped JS one.
+    use mudra_store::Hook;
+    use mudrad::daemon::hook_source;
+
+    let h = Hook {
+        name: "adfree".into(),
+        matches: "infoq.com, qbit".into(),
+        code: "kill();".into(),
+        enabled: 1,
+        updated_at: 0,
+    };
+    let src = hook_source(&h);
+    assert!(
+        src.contains(r#"u.indexOf("infoq.com")>=0||u.indexOf("qbit")>=0"#),
+        "one trimmed guard per entry: {src}"
+    );
+    assert!(src.contains("kill();"), "the code rides verbatim: {src}");
+    assert!(
+        src.contains(r#""[mudra:hook] "+"adfree""#),
+        "the name rides as a JS string literal: {src}"
+    );
+    assert!(
+        !src.contains("eval(") && !src.contains("new Function"),
+        "no dynamic code: {src}"
+    );
+
+    // empty / separator-only match lists mean every page
+    let all = hook_source(&Hook { matches: " , ".into(), ..h.clone() });
+    assert!(all.contains("if(true)"), "{all}");
+    let none = hook_source(&Hook { matches: String::new(), ..h.clone() });
+    assert!(none.contains("if(true)"), "{none}");
+
+    // a quote in a match cannot break out of the guard (JSON string literal
+    // is the escaper)
+    let q = hook_source(&Hook { matches: r#"a"b"#.into(), ..h.clone() });
+    assert!(q.contains(r#"u.indexOf("a\"b")>=0"#), "{q}");
+}

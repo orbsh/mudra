@@ -131,7 +131,9 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
   调用方供给）。
 - 访问方法：`name` 上的 `by_name` func 索引——`hook_set` 以它为键做 upsert
   （`create_tag` 的 (parent,name) 幂等规则）；读取走全扫（钩子就一小把，
-  没有别的二级需求）。
+  没有别的二级需求）。`hook_set` 里**缺省字段保留原值**（只改 code 的一次
+  编辑不得顺手清掉 scope——`instance_set_config` 同规则）；`code` 在新建时
+  必填，且不能被清空（要停用就 delete 或 disable）。
 - 语义：ADR-extension-protocol §5 的**轻量规则路径**——页面侧 JS 作为
   **数据**：不起进程、不走管道。治理面=8899 动词（`/hook_set`、
   `/hook_list`、`/hook_delete`）；执行落点=既有 CDP 注入桥（`INJECT_JS`
