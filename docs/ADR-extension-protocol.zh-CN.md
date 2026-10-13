@@ -1,11 +1,16 @@
-# ADR: 扩展协议——mudra 以 stdio 承载常驻子进程（BGI 线契约）
+# ADR: 扩展协议——mudra 以 stdio 承载常驻子进程（Induction 线契约）
 
 > **Languages:** [English](ADR-extension-protocol.md)（主文档） · [中文](ADR-extension-protocol.zh-CN.md)
 
 日期：2026-10-01（v2，同日）　状态：**Accepted；事件日志切片已实现
 （2026-10-01）**——ns 8 `Event` collection（SCHEMA 双语）、lifecycle 编排
 发射（page_open / page_close / tag_set）、`POST /events {cursor, limit}`
-只读回放窗口。扩展宿主（stdio spawn/handshake/扇出）是下一切片，未开始。
+只读回放窗口。扩展宿主（stdio spawn/handshake/扇出）已于 2026-10-10 实现
+（`243fca4`——手写 BGI 形状的帧、双面 live smoke 通过），2026-10-13 起改
+立在独立的 `induction-protocol` / `induction-host` crates 上：帧、带预算的
+会话 I/O、PDEATHSIG spawn 与臂分派器都归库——mudra 直接驱动共享的
+`route_frame` 核（effector 的进程载体跑同一个核）；事件拉取与动词面留在
+mudra。
 
 **取代**：[ADR-aura-probe-federation](ADR-aura-probe-federation.md)（v3，
 proposal）——prism 运输腿与 effector-invoke 腿整体撤回。k10r 集成降级为
@@ -29,28 +34,30 @@ prism 为一条本机、单消费者的链路额外引入一个进程依赖和�
 任何总线上的推送本来就不携带送达保证。联邦运输因此整体去掉，剩下的问题
 ——一条事件流上的多个本机消费者——答案是**托管它们**，不是给它们发消息。
 
-为什么是 BGI 而不是 LSP：LSP 式能力协商解决的是**两个独立演化的对等体**
+为什么是 Induction 而不是 LSP：LSP 式能力协商解决的是**两个独立演化的对等体**
 的协调问题——没有任何编辑器或语言服务器能要求对方实现完整规范，能力清
 单是唯一求交集的机制。mudra 扩展是单向的：宿主提供能力，扩展自行决定用
 不用；线词汇表是静态的、双方天然知道（同机、同版纪律，decode 失败本身就是
 版本错配信号——不需要一个协商面预先消除它）。这正是 aura 已经命名并落地
 的形状——**BGI**（Booth Gateway Interface），FastCGI 血统的常驻桥：类型
 化 host 帧、逐 target 静态应答语义（`Tier::Hot/Cold`）、每语言一个包装器
-作为可移植面。mudra 采用该契约，不再发明第二种线格式。
+作为可移植面——后抽取为独立的 **Induction** 协议 crates（`~/world/induction`）。
+mudra 经这些 crates 采用该契约，不发明第二种线格式。
 
 ## 决策
 
-### 1. 扩展是常驻子进程（bgi 形态）
+### 1. 扩展是常驻子进程（induction 形态）
 
 在 `config.kdl` 声明（`[extensions]` 组：名字 → 可执行文件路径——只是路
 由元数据：跑哪些进程，与它们监听什么无关）。mudrad 负责 spawn 与守护：
 `PDEATHSIG`、读 `/proc` state 探僵尸、带退避的重启——既有 spawn 纪律整
 体复用。扩展永不绑端口；它唯一的 socket 就是管道。
 
-### 2. 运输：BGI 帧，仅 json-lines codec
+### 2. 运输：Induction 帧，仅 json-lines codec
 
 帧词汇表即 aura ADR-0035 §3（`call` / `result` / `host` / `host_reply`，
-加 `iterate` 各臂——为何空载落地见「后果」）。codec：**仅 json-lines**
+加 `iterate` 各臂——为何空载落地见「后果」），类型定义在
+`induction-protocol`。codec：**仅 json-lines**
 ——CBOR 是 aura 给自带 codec 的载体留的声明式升级路径，本机单宿主面用
 不上。坏 discriminator 在 decode 层失败，不是跑到一半炸。
 
@@ -64,12 +71,12 @@ ext   → { "type": "hello", "name": "adfree", "schema": { "on": ["mudra:page_op
 事件订阅声明在**脚本的 interface_schema** 里（aura 既有的声明面——ADR-
 0016 `@cron`、ADR-0026 §4 装饰器派生 schema），**不写在配置里**：作者本
 来就知道代码在监听什么，为改一个订阅去反复编辑部署配置是配置绝不该承载
-的摩擦。进程外的 binary 无法像上传脚本那样被宿主内省，所以 BGI 垫片把
-schema 作为会话数据带出来——注册时刻在管道上的表达。daemon 只向声明过
+的摩擦。进程外的 binary 无法像上传脚本那样被宿主内省，所以 Induction
+guest 把 schema 作为会话数据带出来——注册时刻在管道上的表达。daemon 只向声明过
 的 kind 扇出——不广播、无隐藏 dispatch。命名是自由字面字符串；schema 是
 静态声明，不是协商。
 
-### 4. 投递 = BGI `Tier`，不是新词汇
+### 4. 投递 = 声明的 `Tier`，不是新词汇
 
 `Tier` 在脚本 schema 里随 handler 声明——逐 handler、静态、绝不在运行时
 猜测（ADR-0035 Update）：
@@ -95,10 +102,20 @@ kind 不存在。
 词目录（8899 面）；注入脚本由 Hook collection 治理、执行落点是既有
 `INJECT_JS`。没有扩展直连 CDP，没有扩展开第二个浏览器。
 
-**`store` 臂不实现。** BGI 的存储面是宿主代持的摊位状态（aura ADR-0026：
+**`store` 臂不实现。** aura 的存储面是宿主代持的摊位状态（aura ADR-0026：
 每个摊位类型在 realm 引擎里占一个真实 okm ns）。扩展状态归扩展自己（自
 家目录，或经 k10r 自己的 HTTP 存 k10r）——每份数据只有一个家。事件日志
 是**宿主**拥有的，属投递基础设施，不是扩展存储；两者勿混。
+
+**臂集对齐说明（2026-10-12，aura ADR-0043 落地）：** Induction 的臂集是
+ctx 对象的 CALLABLE 成员（`invoke | iterate.start/next/dispose | store |
+emit | timer.register | timer.cancel | queue.depth | queue.skip_to_head |
+schema`）。臂字符串是点分方法路径；`emit` 按契约**不带应答**
+（fire-and-forget）。mudra 只实现 `invoke`，不需要 storage/timer/queue 各
+臂（§5 的单一家裁决）；扩展面将来扩容时逐字采用这些名字，不造同义词——
+全部宿主一个词汇表。注册（`on`/`receives`）没有运行时臂：子进程加载期
+装配自己的注册表，由 hello/schema 应答携带（保留 `__sleep`/`__wake` 钩子
+走同一个数组）。
 
 ### 6. 扩展之间没有直连信道
 
@@ -114,7 +131,7 @@ kind 不存在。
 
 ### 8. 可移植性是重点
 
-每语言一个 BGI 垫片，两个世界通用：对着本契约写的扩展，mudrad 与 aura
+每语言一个 Induction guest，两个世界通用：对着本契约写的扩展，mudrad 与 aura
 effector 都能原样托管（k10r 同步扩展是第一个预期两边通吃的消费者）。
 mudra 不依赖任何 aura crate——契约就是依赖（如 `aura_alloc` 之于 wasm
 guest 的 ABI）。
@@ -133,8 +150,8 @@ guest 的 ABI）。
   需要状态、算力或网络的逻辑，不替代 Hook 机制。
 - 事件日志 = 新 collection（只追加、cursor 可回放）；ns 槽与键布局在实现
   启动时按 schema 定稿纪律登记进 SCHEMA 双语。
-- `iterate` 各臂空载落地：mudra 今天没有可分发的流式动词。垫片在触及时以
-  unknown-kind 错误应答；mudra 侧的 iterate 只在出现自报需求的消费者时落
+- `iterate` 各臂空载落地：mudra 今天没有可分发的流式动词。宿主的臂表在触
+  及它们时以显式错误值拒答；mudra 侧的 iterate 只在出现自报需求的消费者时落
   地。
 - 永久撤回：prism 运输；effector 式后台→浏览器 RPC（被持久意图取代——
   声明的 handler + 钩子）；每扩展一个网络服务；wasm guest 进页面 world

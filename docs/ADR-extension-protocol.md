@@ -1,4 +1,4 @@
-# ADR: Extension protocol — mudra hosts resident subprocesses over stdio (BGI wire contract)
+# ADR: Extension protocol — mudra hosts resident subprocesses over stdio (the Induction wire contract)
 
 > **Languages:** [English](ADR-extension-protocol.md) (primary) · [中文](ADR-extension-protocol.zh-CN.md)
 
@@ -6,7 +6,13 @@ Date: 2026-10-01 (v2, same day)  Status: **Accepted; event-log slice
 implemented 2026-10-01** — ns 8 `Event` collection (SCHEMA bilingual),
 lifecycle-orchestrated emission (page_open / page_close / tag_set),
 `POST /events {cursor, limit}` read-only replay window. The extension host
-(stdio spawn/handshake/fan-out) is the next slice; not started.
+(stdio spawn/handshake/fan-out) implemented 2026-10-10 (`243fca4` —
+hand-written BGI-shape frames, live smoke passed both planes) and re-based on
+the standalone `induction-protocol` / `induction-host` crates (2026-10-13:
+the frames, the budgeted session I/O, the PDEATHSIG spawn AND the arm
+dispatcher are the library's — mudra drives the shared `route_frame` core
+effector's process carrier also runs; the event pull and the verb surface
+stay mudra's).
 
 **Supersedes**: [ADR-aura-probe-federation](ADR-aura-probe-federation.md)
 (v3, proposal) — the prism transport leg and the effector-invoke leg are both
@@ -38,7 +44,7 @@ So the federation transport is dropped entirely, and what remains — many
 local consumers on one event stream — is answered by hosting them, not by
 messaging them.
 
-Why BGI and not LSP: LSP-style capability negotiation solves the
+Why Induction and not LSP: LSP-style capability negotiation solves the
 coordination problem of **two independently-evolving peers** — no editor or
 language server can require the other to implement the whole spec, so the
 capability list is the only way to find the intersection. A mudra extension
@@ -49,12 +55,13 @@ signal — it does not need a negotiation to pre-empt it). This is exactly the
 shape aura already named and shipped — **BGI** (Booth Gateway Interface), a
 FastCGI-lineage resident bridge with typed host frames, per-target static
 reply semantics (`Tier::Hot/Cold`), and one per-language wrapper as the
-portability surface. mudra adopts the contract; it does not invent a second
-wire.
+portability surface — since extracted into the standalone **Induction**
+protocol crates (`~/world/induction`). mudra adopts the contract through
+those crates; it does not invent a second wire.
 
 ## Decision
 
-### 1. An extension is a resident subprocess (bgi shape)
+### 1. An extension is a resident subprocess (the induction shape)
 
 Declared in `config.kdl` (`[extensions]` group: name → executable path —
 routing metadata only: which processes to run, nothing about what they
@@ -62,11 +69,12 @@ listen to). mudrad spawns and supervises: `PDEATHSIG`, zombie-probing
 `/proc` state, restart with backoff — the existing spawn discipline reused
 wholesale. An extension never binds a port; its only socket is the pipe.
 
-### 2. Wire: BGI frames, json-lines codec only
+### 2. Wire: Induction frames, json-lines codec only
 
 The frame vocabulary is aura ADR-0035 §3 (`call` / `result` / `host` /
 `host_reply`, plus the `iterate` arms — see Consequences for why they ship
-unexercised). Codec: **json-lines only** — CBOR is aura's declared upgrade
+unexercised), typed in `induction-protocol`. Codec: **json-lines only** —
+CBOR is aura's declared upgrade
 for carriers that bring a codec; a local single-host surface does not need
 it. Bad discriminators fail at decode, not mid-flight.
 
@@ -82,13 +90,13 @@ Event subscriptions are declared in the **script's interface_schema**
 decorator-derived schema), **not in config**: the author knows what the code
 listens to, and re-editing a deployment config to change a subscription is
 friction config should never carry. An out-of-process binary cannot be
-introspected by the host the way an uploaded script can, so the BGI shim
-carries the schema out as session data — the registration moment, expressed
+introspected by the host the way an uploaded script can, so the Induction
+guest carries the schema out as session data — the registration moment, expressed
 on the pipe. The daemon fans out only declared kinds — no broadcast, no
 hidden dispatch. Names are free literal strings; the schema is a static
 declaration, not a negotiation.
 
-### 4. Delivery = BGI `Tier`, not a new vocabulary
+### 4. Delivery = the declared `Tier`, not a new vocabulary
 
 `Tier` is declared beside the handler in the script's schema — per-handler,
 static, never guessed at runtime (ADR-0035 Update):
@@ -119,12 +127,24 @@ mudra's verb surface — the invoke arm maps onto the existing verb directory
 and execute at the existing `INJECT_JS` point. No extension talks CDP
 directly, no extension opens a second browser.
 
-**The `store` arm is not implemented.** BGI's store plane is host-carried
+**The `store` arm is not implemented.** The store plane in aura is host-carried
 booth state (aura ADR-0026: each booth type occupies a real okm ns in the
 realm's engine). Extension state lives with the extension (its own
 directory, or k10r over k10r's HTTP) — every datum has exactly one home.
 The event log is *host*-owned and is delivery infrastructure, not extension
 storage; do not conflate the two.
+
+**Arm-set alignment note (2026-10-12, aura ADR-0043 landed):** the Induction
+arm set is the ctx object's CALLABLE members (`invoke | iterate.start/next/
+dispose | store | emit | timer.register | timer.cancel | queue.depth |
+queue.skip_to_head | schema`). The arm strings are the dotted method paths;
+`emit` carries NO reply (fire-and-forget by contract). mudra ships `invoke`
+only and needs none of the storage/timer/queue arms (§5's one-home ruling);
+when mudra's extension surface grows, adopt these names verbatim rather
+than minting synonyms — one vocabulary across hosts. Registration (`on`/
+`receives`) has no runtime arm: the child's load-time pass assembles its
+registry and the hello/schema answer carries it (reserved `__sleep`/
+`__wake` hooks ride the same array).
 
 ### 6. No extension-to-extension channel
 
@@ -142,7 +162,7 @@ to a federation layer, not here.
 
 ### 8. Portability is the point
 
-One per-language BGI shim runs in both worlds: an extension written against
+One per-language Induction guest runs in both worlds: an extension written against
 this contract can be hosted by mudrad or by an aura effector unchanged
 (k10r-sync is the first expected both-sides consumer). mudra depends on no
 aura crate — the contract is the dependency (as `aura_alloc` is the ABI for
@@ -167,8 +187,9 @@ user without k10r simply does not run the extension.
   and key layout get registered in SCHEMA at implementation start, per the
   schema-finalization discipline.
 - The `iterate` arms ship unexercised: mudra has no streaming verb to
-  dispatch today. The shim answers them as unknown-kind errors if reached;
-  a mudra-side iterate lands only when a consumer names itself.
+  dispatch today. The host's arm table declines them with an explicit error
+  value if reached; a mudra-side iterate lands only when a consumer names
+  itself.
 - Withdrawn for good: prism transport; effector-style background→browser
   RPC (replaced by persistent intents — declared handlers + hooks);
   per-extension network services; wasm guests in page worlds (CSP,

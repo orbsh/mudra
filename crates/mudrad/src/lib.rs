@@ -18,7 +18,7 @@
 //!   typed int reads (port of mudralib/config.py)
 //! - `daemon`   — assembly: flock singleton, env gate, control/static/WS
 //!   servers, watcher scheduler, capsule SSR passthrough
-//! - `host`     — extension host: BGI sessions over stdio (ADR-
+//! - `host`     — extension host: induction sessions over stdio (ADR-
 //!   extension-protocol): spawn+PDEATHSIG, initialize/hello, event-log
 //!   fan-out on epoch changes, host:invoke frames routed to run_verb
 
