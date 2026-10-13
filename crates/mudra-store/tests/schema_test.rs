@@ -223,6 +223,9 @@ fn physical_key_layout_is_locked() {
     assert_eq!(<InstanceKey as okm_core::KeyEncode>::KEY_LEN, 4);
     assert_eq!(<SiteWidthKey as okm_core::KeyEncode>::KEY_LEN, 4);
     assert_eq!(<StateKey as okm_core::KeyEncode>::KEY_LEN, 1);
+    assert_eq!(<HistoryKey as okm_core::KeyEncode>::KEY_LEN, 8);
+    assert_eq!(<EventKey as okm_core::KeyEncode>::KEY_LEN, 8);
+    assert_eq!(<HookKey as okm_core::KeyEncode>::KEY_LEN, 8);
     assert_eq!(&PageKey { id: 258 }.encode(), &[0, 0, 0, 0, 0, 0, 1, 2]);
 
     // document ns prefixes: [0 ns_hi][ns_lo] per declaration order
@@ -231,6 +234,9 @@ fn physical_key_layout_is_locked() {
     assert_eq!(<Instance as Document>::NS_PREFIX, vec![0, 4]);
     assert_eq!(<SiteWidth as Document>::NS_PREFIX, vec![0, 5]);
     assert_eq!(<State as Document>::NS_PREFIX, vec![0, 6]);
+    assert_eq!(<History as Document>::NS_PREFIX, vec![0, 7]);
+    assert_eq!(<Event as Document>::NS_PREFIX, vec![0, 8]);
+    assert_eq!(<Hook as Document>::NS_PREFIX, vec![0, 9]); // ns 3 stays the retired hole
 
     // junction entries: one per endpoint ns, dir bit in slot low byte
     let e = PageTag { page: Ref::ref_key(PageKey { id: 1 }), tag: Ref::ref_key(TagKey { id: 2 }) };
@@ -364,5 +370,76 @@ fn event_log_is_append_only_and_replays_from_cursor() {
     let mut s2 = MudraStore::open(tempfile::TempDir::new().unwrap().path()).unwrap();
     let e0 = s2.epoch();
     s2.emit_event("x", "{}".into(), 1);
+    assert_eq!(s2.epoch(), e0);
+}
+
+// ================= Hook (ns 9): the page-side rule path =================
+
+#[test]
+fn hook_upsert_is_idempotent_on_name_and_keeps_the_id() {
+    // Contract (SCHEMA ns 9): `name` is the upsert identity, reached
+    // through the by_name func index — the same name updates in place
+    // (same id), and an edit never burns a counter tick.
+    let (_d, mut s) = open_tmp();
+    let (id1, created1) = s.hook_upsert("adfree", "infoq.com", "/* v1 */", 1, 1000);
+    assert!(created1);
+    let (id2, created2) = s.hook_upsert("adfree", "infoq.com, qbit", "/* v2 */", 1, 2000);
+    assert!(!created2);
+    assert_eq!(id1, id2);
+
+    let (k, h) = s.hook_by_name("adfree").expect("indexed lookup finds it");
+    assert_eq!(k.id, id1);
+    assert_eq!(h.code, "/* v2 */");
+    assert_eq!(h.matches, "infoq.com, qbit");
+    assert_eq!(h.updated_at, 2000);
+    assert_eq!(s.hooks_all().len(), 1);
+
+    // a different name is a different row, and the counter ticks once per
+    // CREATE only
+    let (id3, created3) = s.hook_upsert("restyler", "", "1;", 0, 3000);
+    assert!(created3);
+    assert_ne!(id3, id1);
+    assert_eq!(s.hooks_all().len(), 2);
+}
+
+#[test]
+fn hooks_enabled_filters_by_flag_and_reads_in_id_order() {
+    let (_d, mut s) = open_tmp();
+    s.hook_upsert("b-off", "", "1;", 0, 1);
+    s.hook_upsert("a-on", "x.test", "2;", 1, 2);
+    s.hook_upsert("c-on", "", "3;", 1, 3);
+    let on: Vec<String> = s.hooks_enabled().into_iter().map(|h| h.name).collect();
+    assert_eq!(on, ["a-on", "c-on"], "enabled only, creation order");
+
+    // the injection bridge reads the same order the operator sees
+    let all: Vec<String> = s.hooks_all().into_iter().map(|(_, h)| h.name).collect();
+    assert_eq!(all, ["b-off", "a-on", "c-on"]);
+}
+
+#[test]
+fn hook_delete_removes_both_halves_and_frees_the_name() {
+    // Contract: `hook_delete_by_name` takes `delete`'s sound source (the
+    // document from the same read that found the key), so no by_name
+    // entry is orphaned — a later upsert of that name creates afresh
+    // instead of resurrecting a stale row.
+    let (d, mut s) = open_tmp();
+    let (id1, _) = s.hook_upsert("tmp", "a.test", "1;", 1, 10);
+    assert!(s.hook_delete_by_name("tmp"));
+    assert!(!s.hook_delete_by_name("tmp"), "second delete is a no-op");
+    assert!(s.hook_by_name("tmp").is_none());
+    assert!(s.hooks_all().is_empty());
+
+    s.hook_upsert("later", "b.test", "2;", 1, 20);
+    s.persist().expect("persist");
+    drop(s); // fjall single-handle lock: the old store drops first
+    let mut s2 = MudraStore::open(d.path()).expect("reopen");
+    assert!(s2.hook_by_name("tmp").is_none(), "no dangling index hit");
+    let (id2, created) = s2.hook_upsert("tmp", "c.test", "3;", 1, 30);
+    assert!(created, "the name is free again");
+    assert_ne!(id2, id1, "ids are never reused");
+
+    // hooks are panel-invisible: writing never moves the epoch
+    let e0 = s2.epoch();
+    s2.hook_upsert("tmp", "d.test", "4;", 1, 40);
     assert_eq!(s2.epoch(), e0);
 }

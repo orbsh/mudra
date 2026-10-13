@@ -74,6 +74,14 @@ pub struct EventKey {
     pub id: u64,
 }
 
+/// Hook identity: surrogate id. `name` is the upsert identity (indexed),
+/// never key materialized — the surrogate key discipline every table here
+/// follows.
+#[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
+pub struct HookKey {
+    pub id: u64,
+}
+
 /// State identity: a fixed slot from the closed set in [`state`].
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
 pub struct StateKey {
@@ -222,6 +230,7 @@ pub mod state {
     pub const PANEL_PID: u8 = 11;
     pub const HISTORY_ID: u8 = 12;
     pub const EVENT_ID: u8 = 13;
+    pub const HOOK_ID: u8 = 14;
 }
 
 /// One opaque raw value per State slot (text settings, u64 counters, the
@@ -272,6 +281,35 @@ pub struct Event {
     pub kind: String,
     pub args: String,
     pub at: u64,
+}
+
+// ================= Hook (ns 9) =================
+
+fn hook_name(h: &Hook) -> String {
+    h.name.clone()
+}
+
+/// One page-side hook: JS as *data* — the light-weight rule path of
+/// ADR-extension-protocol §5 (no process, no pipe). Governance is the
+/// 8899 verb surface; execution is the existing `INJECT_JS` injection
+/// bridge, which composes one guarded source per enabled hook. `name` is
+/// both the human handle and the upsert identity (`hook_upsert` is
+/// idempotent on it, the `create_tag` rule). `matches` is a comma-
+/// separated URL-substring list — empty matches every page. `enabled` is
+/// u8 (okm's derive has no bool). Writing does NOT bump the epoch
+/// (panel-invisible, same discipline as History and Event); the effect
+/// path is a best-effort re-inject into live pages, which is a runtime
+/// concern, not a store one.
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(HookKey)]
+#[ok_ns(9)]
+#[ok_index(by_name { func(hook_name) })]
+pub struct Hook {
+    pub name: String,
+    pub matches: String,
+    pub code: String,
+    pub enabled: u8,
+    pub updated_at: u64,
 }
 
 /// Address-bar style similarity: subsequence match of `query` over
@@ -388,6 +426,7 @@ pub use __OkmIndex_History_by_url as ByHistoryUrl;
 pub use __OkmIndex_SiteWidth_by_site as BySite;
 pub use __OkmIndex_Tag_by_name as ByTagName;
 pub use __OkmIndex_Tag_by_parent as ByTagParent;
+pub use __OkmIndex_Hook_by_name as ByHookName;
 
 // ================= engine-free byte layout =================
 
@@ -426,6 +465,7 @@ pub struct MudraStore {
     pub state: Collection<FjallStore, StateKey, State>,
     pub history: Collection<FjallStore, HistoryKey, History>,
     pub events: Collection<FjallStore, EventKey, Event>,
+    pub hooks: Collection<FjallStore, HookKey, Hook>,
     db: FjallStore,
 }
 
@@ -442,6 +482,7 @@ impl MudraStore {
             state: Collection::new(store.clone()),
             history: Collection::new(store.clone()),
             events: Collection::new(store.clone()),
+            hooks: Collection::new(store.clone()),
             db: store,
         })
     }
@@ -726,6 +767,87 @@ impl MudraStore {
     /// that wants the past advances its own cursor through `/events`).
     pub fn event_head(&self) -> u64 {
         self.state_u64(state::EVENT_ID)
+    }
+
+    // ---- hooks (ns 9): the page-side rule path --------------------------
+
+    /// One hook by its upsert identity (`name`), through the by_name func
+    /// index — the write path's lookup, so the probe encoding cannot drift
+    /// from the index's.
+    pub fn hook_by_name(&self, name: &str) -> Option<(HookKey, Hook)> {
+        self.hooks
+            .scan::<ByHookName>(name.as_bytes())
+            .into_iter()
+            .filter_map(|(pk, row)| row.map(|h| (pk.decoded, h)))
+            .next()
+    }
+
+    /// Idempotent upsert on `name`: an existing hook is updated in place
+    /// (same id, new payload), `updated_at` advances either way. Returns
+    /// `(id, created)`. No epoch bump — hooks are panel-invisible
+    /// (SCHEMA ns 9, the History/Event discipline).
+    pub fn hook_upsert(
+        &mut self,
+        name: &str,
+        matches: &str,
+        code: &str,
+        enabled: u8,
+        at: u64,
+    ) -> (u64, bool) {
+        let row = Hook {
+            name: name.to_string(),
+            matches: matches.to_string(),
+            code: code.to_string(),
+            enabled,
+            updated_at: at,
+        };
+        match self.hook_by_name(name) {
+            Some((k, _)) => {
+                self.hooks.put(&k, &row);
+                (k.id, false)
+            }
+            None => {
+                let k = HookKey { id: self.next_id(state::HOOK_ID) };
+                self.hooks.put(&k, &row);
+                (k.id, true)
+            }
+        }
+    }
+
+    /// Every hook, id order (the operator-facing read).
+    pub fn hooks_all(&self) -> Vec<(HookKey, Hook)> {
+        let mut rows: Vec<(HookKey, Hook)> = self
+            .hooks
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.hooks.get(&k).map(|h| (k, h)))
+            .collect();
+        rows.sort_by_key(|(k, _)| k.id);
+        rows
+    }
+
+    /// The enabled hooks, id order — exactly what the injection bridge
+    /// composes into guarded sources.
+    pub fn hooks_enabled(&self) -> Vec<Hook> {
+        self.hooks_all()
+            .into_iter()
+            .filter(|(_, h)| h.enabled == 1)
+            .map(|(_, h)| h)
+            .collect()
+    }
+
+    /// Delete by name; `false` when there was nothing to delete. The
+    /// document comes from the same read that found the key (`delete`'s
+    /// sound-source contract — index entries and primary entry stay in
+    /// step).
+    pub fn hook_delete_by_name(&mut self, name: &str) -> bool {
+        match self.hook_by_name(name) {
+            Some((k, h)) => {
+                self.hooks.delete(&k, &h);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Last-known title for a URL from any live page row (the open verb
