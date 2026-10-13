@@ -116,6 +116,15 @@ guest 自己的 `host:invoke` 不能被它正在执行的那个判决拦住。�
 词目录（8899 面）；注入脚本由 Hook collection 治理、执行落点是既有
 `INJECT_JS`。没有扩展直连 CDP，没有扩展开第二个浏览器。
 
+**已实现（mudra 侧，2026-10-13）。** Hook collection = ns 9（`name` /
+`matches` / `code` / `enabled` / `updated_at`，按 name 幂等 upsert，不 bump
+epoch），治理面 `/hook_set`、`/hook_list`、`/hook_delete`，CLI 侧 `mudra hook
+set|ls|rm`。执行走同一根管子：每个 enabled 钩子一份**自己**的带守卫注入源码
+（`matches` = 逗号分隔 URL 子串，空 = 所有页）——语法错只杀掉那一个钩子；
+code 逐字内联（不用 `eval` / `new Function`，严格站点 CSP 禁动态代码）；
+写钩子后对运行中实例的活页面做一次重注入（reload 按当前集合重新武装，这也
+正是 disable / delete 生效的方式：已经跑起来的代码收不回来）。
+
 **`store` 臂不实现。** 该臂在库里存在是为了 aura 的摊位状态（aura
 ADR-0026：每个摊位类型在 realm 引擎里占一个真实 okm ns）；mudra 没有摊位
 这回事。扩展状态归扩展自己（自家目录，或经 k10r 自己的 HTTP 存 k10r）——

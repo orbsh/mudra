@@ -146,6 +146,18 @@ mudra's verb surface — the invoke arm maps onto the existing verb directory
 and execute at the existing `INJECT_JS` point. No extension talks CDP
 directly, no extension opens a second browser.
 
+**Implemented (mudra's side, 2026-10-13).** The Hook collection is ns 9
+(`name` / `matches` / `code` / `enabled` / `updated_at`, upsert on the name,
+no epoch bump) with `/hook_set`, `/hook_list`, `/hook_delete` behind it and
+`mudra hook set|ls|rm` on the CLI. Execution rides the same bridge: each
+enabled hook ships as its OWN guarded document source (`matches` = a
+comma-separated URL-substring list, empty = every page) so a syntax error
+takes that hook down alone; the code is embedded literally — no `eval` /
+`new Function`, which strict-site CSP forbids — and a write re-injects into
+the live pages of running instances (a reload re-arms from the current set,
+which is also how a disable or delete takes effect: running code cannot be
+recalled).
+
 **The `store` arm is not implemented.** That arm exists in the library for
 aura's booth state (aura ADR-0026: each booth type occupies a real okm ns in the
 realm's engine); mudra has no booths. Extension state lives with the extension

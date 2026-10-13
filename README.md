@@ -26,8 +26,10 @@ The **extension plane** is live too: page lifecycle lands in an append-only even
 log (`POST /events` replays it from a cursor), resident subprocess extensions are
 hosted over stdio on the Induction contract, and a guest declaring
 `mudra:before_navigate` gets a pre-navigation **verdict** (allow / deny / redirect)
-on `/open` and `/nav goto` under a fail-open budget
-(`docs/ADR-extension-protocol.md`). See `PLAN.md` §11, `docs/PANEL.md`, and below.
+on `/open` and `/nav goto` under a fail-open budget. Page-side **hooks** (ns 9) are
+the no-process half: JS as data, governed by `mudra hook`, injected into matching
+pages at the existing bridge (`docs/ADR-extension-protocol.md`). See `PLAN.md` §11,
+`docs/PANEL.md`, and below.
 
 ---
 
@@ -196,6 +198,7 @@ and writes the store; the panel talks to the same API over WebSocket.
 | `mudra conf <leaf> [--proxy <p>] [--ext <csv>]` | per-context proxy/extensions (applied on next open/add) |
 | `mudra col remember\|show` | remember/per-site apply column width (niri) |
 | `mudra tag init\|add\|remove` | tag-forest seed / page assignment |
+| `mudra hook set\|ls\|rm <name>` | page-side hooks (ns 9): JS as data, injected into matching pages (`--code`/`--file`, `--matches`, `--enable`/`--disable`) |
 | `mudra sort mru\|mtime\|rating` | set the panel sort preference |
 | `mudra dev [on\|off]` | extension dev mode (clear chromium extension caches on spawn) |
 | `mudra ui` | open the web console — the tag-forest management surface |
@@ -257,10 +260,10 @@ and writes the store; the panel talks to the same API over WebSocket.
 
 **Verified**: `--app` w/o chrome, CDP lists/attaches `--app`, niri
 move/focus/column-width, `--load-extension`, walker multi-char prefixes + `argument_delimiter`.
-**Pending/⏳**: the Hook collection that governs injected page scripts (the
-Tampermonkey-style scenario); the refinement pipeline of §10 (html→md + full-text
-search, naive-Bayes scoring, RSS capture, LLM summarization); CDP navigation on error
-pages; a hyprland `WmExt` backend.
+**Pending/⏳**: the refinement pipeline of §10 (html→md + full-text search,
+naive-Bayes scoring, RSS capture, LLM summarization); CDP navigation on error pages;
+a hyprland `WmExt` backend; the extension arms mudra leaves empty (`iterate`, the
+`store` arm).
 
 **Known issue (deferred)**: passwords aren't saved in `--app` (Linux keyring absent) —
 candidates: `gnome-keyring` or `--password-store=basic`.

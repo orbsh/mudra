@@ -419,8 +419,12 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   **场景分析（2026-09-29 讨论定调）**：
   - **页面钩子（首要场景，Tampermonkey 式）**：carrier 分发的是 **JS 脚本
     数据**（match/事件/开关，进 store 新 collection、由 8899 动词治理），
-    执行落点=既有 CDP 注入桥（INJECT_JS 同一根管子）。wasm guest 进不了
-    页面 world（胶囊同款 CSP 排除，结构性）；钩子回写走动词通道。
+    执行落点=既有 CDP 注入桥（INJECT_JS 同一根管子）。**已落地（2026-10-13）**：
+    Hook collection（ns 9，`/hook_set` `/hook_list` `/hook_delete`，`mudra hook
+    set|ls|rm`）——每个 enabled 钩子一份带字面子串守卫的注入源码（一钩子一源，
+    语法错只杀自己；不用 eval，严格站点 CSP），写钩子后对活页做一次
+    best-effort 重注入。wasm guest 进不了页面 world（胶囊同款 CSP 排除，
+    结构性）；钩子回写走动词通道。
     轻量规则类样式留在纯 Hook JS（不起进程）；扩展留给需要状态/算力/网络
     的逻辑。
   - **8899 不设身份准入（2026-09-29 用户裁决）**：服务的存在目的=任意
