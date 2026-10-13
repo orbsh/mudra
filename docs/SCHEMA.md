@@ -137,8 +137,12 @@ hole per the no-reuse rule (ADR-0002).
   construction.
 - consumption: `POST /events {cursor, limit}` — the read-only replay
   window; the consumer owns its checkpoint, the daemon never advances
-  it. Live stdio fan-out joins this when the extension host lands
-  (pull is complete on its own: at-least-once, crash = don't advance).
+  it. `{tail: N}` anchors the SAME read at the end (the newest N rows,
+  id ascending — `head - N` is the cursor, exact because ids are a
+  dense counter), and every response carries `head`, the counter. The
+  live stdio fan-out reads by cursor, the console's log view by tail.
+  Pull is complete on its own: at-least-once, a consumer that dies
+  simply does not advance and re-reads.
 
 ### Hook (ns 9) — registered at implementation start, per the schema-finalization rule
 

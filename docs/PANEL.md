@@ -37,7 +37,29 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
 - **HTTP `:8899`** = 一切写 + shaped reads（面板契约动词）：`/forest`、`/ctx_pages`、
   `/set_tags {page_id, tag_ids[]}`、`/create_tag {name, parent_id?}`、`/close {page_id}`、
   `/reopen {page_id}`、`/delete {page_id}`、`/shot {page_id}`、`/ctx`、`/focus {page_id}`、
+  `/events {tail}`（事件日志，见下）、`/hook_list` `/hook_set` `/hook_delete`（钩子面，见下）、
   `/config`（`ui.thumbnails` 开关）。响应均带 `Access-Control-Allow-Origin: *`。
+
+### 视图（三个面共用一个壳）
+
+头部第一行是面切换钮 `pages | events | hooks`（默认页面树）。ctx 选择器 / 时间排序 /
+计数 / tag 过滤 chips 只属于页面树，切走即隐藏（`lib.rs` 的 Show 分支）。
+
+- **pages**：下面的页面树，唯一有面板可见状态的面。
+- **events**（`crates/mudra-panel/src/events.rs`，只读）：最近 200 条事件倒序一行一条
+  （`#id  kind  args 摘要  相对时间`），args 压成单行（全文在 `title`），kind chip 多选过滤。
+  读法=`/events {tail: N}`——服务端锚定尾部，面板不持游标，重拉即覆盖。重拉挂 epoch 提示：
+  事件自身不 bump epoch（面板不可见 collection 纪律），但现有全部事件种类都伴随页面/标签写入，
+  那个写会 bump，故提示实际覆盖；将来出现纯日志写入的种类需另行裁决（轮询 vs 让日志参与 epoch），
+  不另开推送通道。
+- **hooks**（`crates/mudra-panel/src/hooks.rs`，读写）：每钩子一行（启用开关 / name / matches
+  （空显示 `*`）/ 相对时间 / code 首行），行内可开关与删除（删除二次确认），新建与编辑走
+  name + matches + code 表单——name 是幂等 upsert 身份，编辑既有条目时只读；保存不显式传
+  `enabled`，故编辑不会顺带翻开关。全部写走上面那三个 8899 动词（不开第二通道），写完自持重拉
+  （hook 写不 bump epoch）。表单是非受控的（初值 + 提交时读 draft），不把输入写回 signal，
+  以免 textarea 每次按键重置光标。
+- **边界照文档写**：disable / delete 只影响未来文档；活页上已跑的代码要 reload 才按当前集合重新
+  武装，面板不承诺“一删即停”。
 
 ### UI 布局（按用户规格）
 

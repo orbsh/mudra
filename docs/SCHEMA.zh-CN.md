@@ -119,8 +119,10 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
   排序的 delta。写不 bump epoch（面板不可见，与 History 同纪律）。
   保留/压实推迟到有实测需求；id 永不复用，构造上单调。
 - 消费面：`POST /events {cursor, limit}`——只读回放窗口；checkpoint
-  归消费方，daemon 从不推进它。扩展宿主落地后 stdio 实时扇出加入这条
-  管线（pull 路径自身已完整：at-least-once，崩溃=不推进、重读）。
+  归消费方，daemon 从不推进它。`{tail: N}` 是同一读法的尾部锚定（最近
+  N 条，id 升序——`head - N` 即游标，因 id 是稠密计数器而精确），响应
+  始终带回 `head`（计数器）。stdio 实时扇出按 cursor 读，控制台日志视图
+  按 tail 读。pull 路径自身已完整：at-least-once，崩溃=不推进、重读。
 
 ### Hook（ns 9）——按 schema 定稿纪律在实现启动时登记
 

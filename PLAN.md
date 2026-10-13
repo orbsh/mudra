@@ -423,8 +423,12 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
     Hook collection（ns 9，`/hook_set` `/hook_list` `/hook_delete`，`mudra hook
     set|ls|rm`）——每个 enabled 钩子一份带字面子串守卫的注入源码（一钩子一源，
     语法错只杀自己；不用 eval，严格站点 CSP），写钩子后对活页做一次
-    best-effort 重注入。wasm guest 进不了页面 world（胶囊同款 CSP 排除，
-    结构性）；钩子回写走动词通道。
+    best-effort 重注入。**控制台入口（2026-10-13）**：面板加 `events` /
+    `hooks` 两个视图（头部三钮切换：pages / events / hooks）——事件日志按
+    `/events {tail: N}` 读最近 N 条（`head` 随响应回传），钩子视图用同一组
+    8899 动词做 CRUD（开关 / 删除 / 新建 / 编辑），写完自持重拉（两者都不
+    bump epoch，视图自己负责回读）。wasm guest 进不了页面 world（胶囊同款
+    CSP 排除，结构性）；钩子回写走动词通道。
     轻量规则类样式留在纯 Hook JS（不起进程）；扩展留给需要状态/算力/网络
     的逻辑。
   - **8899 不设身份准入（2026-09-29 用户裁决）**：服务的存在目的=任意

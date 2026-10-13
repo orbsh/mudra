@@ -23,7 +23,8 @@ instance is chosen by the current `situation` leaf) is implemented: the **wasm
 web console** (`mudra ui`) is the management surface, and all lifecycle ops go
 through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
 The **extension plane** is live too: page lifecycle lands in an append-only event
-log (`POST /events` replays it from a cursor), resident subprocess extensions are
+log (`POST /events` replays it from a cursor, or by `{tail: N}` for the console's log
+view; every response carries the log `head`), resident subprocess extensions are
 hosted over stdio on the Induction contract, and a guest declaring
 `mudra:before_navigate` gets a pre-navigation **verdict** (allow / deny / redirect)
 on `/open` and `/nav goto` under a fail-open budget. Page-side **hooks** (ns 9) are
@@ -133,8 +134,9 @@ state(key, value)               -- current_context(situation), sort, ...
   not SurfingKeys/Vimium).
 - **KV store + console** — tag-forest org & refine, isolated instances, window↔process
   mapping, url record/filter, per-site column width. The console reads shaped views off
-  the control API (`/forest`, `/ctx_pages`) and hears a WebSocket epoch bus; the CLI is
-  the scripting surface.
+  the control API (`/forest`, `/ctx_pages`, `/events`, `/hook_list`) and hears a WebSocket
+  epoch bus; it carries three surfaces (page tree / event log / hook list), switched by
+  tabs at the top; the CLI is the scripting surface.
 - **Extension plane** (fourth machine surface, stdio) — resident subprocesses declared in
   `config.kdl` `[extensions]` and hosted by mudrad over the Induction wire contract (the
   same contract aura's effectors speak; `~/world/induction` crates, pulled as a git

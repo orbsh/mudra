@@ -14,7 +14,9 @@ dispatcher are the library's — mudra drives the shared `route_frame` core
 effector's process carrier also runs; the event pull and the verb surface
 stay mudra's). The intercept (`Hot`) face landed 2026-10-13 (§4 below):
 `mudra:before_navigate` verdicts (allow / deny / redirect), host-assigned
-call ids, a fail-open budget, gated at `/open` and `/nav goto`.
+call ids, a fail-open budget, gated at `/open` and `/nav goto`. Both the log
+and the hook set got their console views the same day (`events` / `hooks`
+tabs; the log reads `{tail: N}` and every response carries `head`).
 
 **Supersedes**: [ADR-aura-probe-federation](ADR-aura-probe-federation.md)
 (v3, proposal) — the prism transport leg and the effector-invoke leg are both
@@ -149,7 +151,8 @@ directly, no extension opens a second browser.
 **Implemented (mudra's side, 2026-10-13).** The Hook collection is ns 9
 (`name` / `matches` / `code` / `enabled` / `updated_at`, upsert on the name,
 no epoch bump) with `/hook_set`, `/hook_list`, `/hook_delete` behind it and
-`mudra hook set|ls|rm` on the CLI. Execution rides the same bridge: each
+`mudra hook set|ls|rm` on the CLI, plus the console's `hooks` view (the same
+three verbs, no second channel). Execution rides the same bridge: each
 enabled hook ships as its OWN guarded document source (`matches` = a
 comma-separated URL-substring list, empty = every page) so a syntax error
 takes that hook down alone; the code is embedded literally — no `eval` /

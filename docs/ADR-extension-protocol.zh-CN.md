@@ -12,7 +12,8 @@
 `route_frame` 核（effector 的进程载体跑同一个核）；事件拉取与动词面留在
 mudra。拦截（`Hot`）面已于 2026-10-13 落地（见 §4）：`mudra:before_navigate`
 判决（allow / deny / redirect）、宿主分配调用 id、超时放行预算，闸门挂
-`/open` 与 `/nav` 的 `goto`。
+`/open` 与 `/nav` 的 `goto`。事件日志与钩子集同日拿到控制台视图（`events` /
+`hooks` 两个切换面；日志按 `{tail: N}` 读，响应始终带回 `head`）。
 
 **取代**：[ADR-aura-probe-federation](ADR-aura-probe-federation.md)（v3，
 proposal）——prism 运输腿与 effector-invoke 腿整体撤回。k10r 集成降级为
@@ -119,8 +120,9 @@ guest 自己的 `host:invoke` 不能被它正在执行的那个判决拦住。�
 **已实现（mudra 侧，2026-10-13）。** Hook collection = ns 9（`name` /
 `matches` / `code` / `enabled` / `updated_at`，按 name 幂等 upsert，不 bump
 epoch），治理面 `/hook_set`、`/hook_list`、`/hook_delete`，CLI 侧 `mudra hook
-set|ls|rm`。执行走同一根管子：每个 enabled 钩子一份**自己**的带守卫注入源码
-（`matches` = 逗号分隔 URL 子串，空 = 所有页）——语法错只杀掉那一个钩子；
+set|ls|rm`，控制台侧 `hooks` 视图（同一组动词，不开第二通道）。执行走同一
+根管子：每个 enabled 钩子一份**自己**的带守卫注入源码（`matches` = 逗号分隔
+URL 子串，空 = 所有页）——语法错只杀掉那一个钩子；
 code 逐字内联（不用 `eval` / `new Function`，严格站点 CSP 禁动态代码）；
 写钩子后对运行中实例的活页面做一次重注入（reload 按当前集合重新武装，这也
 正是 disable / delete 生效的方式：已经跑起来的代码收不回来）。
