@@ -190,9 +190,10 @@ impl<'a, R: Runtime> Controller<'a, R> {
 
     /// POST /events {cursor?, limit?} — the read-only replay window of
     /// the extension-protocol event log (ADR-extension-protocol §4).
-    /// Consumers own their cursor; the daemon never advances it. Live
-    /// stdio fan-out will join this when the extension host lands; the
-    /// pull path is complete on its own (at-least-once: a consumer that
+    /// Consumers own their cursor; the daemon never advances it. The
+    /// live stdio fan-out reads this same surface through the session
+    /// loop (the host pulls the window on each epoch change); the pull
+    /// path is complete on its own (at-least-once: a consumer that
     /// dies mid-page simply does not advance and re-reads).
     pub fn events(&self, body: &Value) -> Result<Value, String> {
         let cursor = body.get("cursor").and_then(Value::as_u64).unwrap_or(0);

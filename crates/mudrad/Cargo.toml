@@ -18,9 +18,22 @@ futures-util.workspace = true
 serde_json.workspace = true
 kdl.workspace = true
 libc.workspace = true
+# the extension wire protocol + host half (frames, session I/O, PDEATHSIG
+# spawn) — path form matches aura-booth; mudra owns the event model and
+# the verb surface, the crates own the pipe
+induction-protocol = { path = "../../../induction/crates/induction-protocol" }
+induction-host = { path = "../../../induction/crates/induction-host" }
 
 [dev-dependencies]
 tempfile = "3"
+
+# the live-test guest: a bin of the package so cargo builds it for the
+# integration test and exports CARGO_BIN_EXE_… (never a stale fixture)
+[[bin]]
+name = "induction_guest_fixture"
+path = "tests/fixtures/induction_guest_fixture.rs"
+test = false
+doc = false
 
 [lints]
 workspace = true
