@@ -204,6 +204,28 @@ enum Cmd {
     },
     /// launch the management panel (focus existing window or spawn)
     Ui,
+    /// page-side hooks (ns 9): set / ls / rm — JS as data, injected by mudrad
+    Hook {
+        /// set | ls | rm
+        action: String,
+        /// hook name (set/rm)
+        name: Option<String>,
+        /// JS source inline
+        #[arg(long)]
+        code: Option<String>,
+        /// read the JS source from a file (wins over --code)
+        #[arg(long)]
+        file: Option<String>,
+        /// comma-separated URL substrings; empty (the default) = every page
+        #[arg(long)]
+        matches: Option<String>,
+        /// store the hook enabled
+        #[arg(long)]
+        enable: bool,
+        /// store the hook disabled
+        #[arg(long)]
+        disable: bool,
+    },
     /// set sort preference (MRU/time/rating)
     Sort { kind: SortKind },
 }
@@ -228,6 +250,9 @@ fn main() {
         Cmd::Conf { ctx, proxy, ext } => conf(&ctx, proxy, ext),
         Cmd::Col { action, site } => col(&action, site),
         Cmd::Tag { action, tag_id, page_id } => tag(&action, tag_id, page_id),
+        Cmd::Hook { action, name, code, file, matches, enable, disable } => {
+            hook(&action, name, code, file, matches, enable, disable)
+        }
         Cmd::Ui => ui(),
         Cmd::Sort { kind } => {
             let kind = match kind {
@@ -584,4 +609,93 @@ fn ui() -> i32 {
         );
     }
     0
+}
+
+/// ns 9: the hook surface. `set` takes the code inline (`--code`) or from a
+/// file (`--file`, the ergonomic form for real hooks); an absent field keeps
+/// its stored value server-side, so `--matches`/`--enable`/`--disable` are
+/// all optional. `ls` prints name/flag/scope; `rm` deletes by name.
+fn hook(
+    action: &str,
+    name: Option<String>,
+    code: Option<String>,
+    file: Option<String>,
+    matches: Option<String>,
+    enable: bool,
+    disable: bool,
+) -> i32 {
+    match action {
+        "ls" | "list" => {
+            let r = ctl("/hook_list", json!({}));
+            let hooks = r["hooks"].as_array().cloned().unwrap_or_default();
+            if hooks.is_empty() {
+                println!("no hooks");
+                return 0;
+            }
+            for h in hooks {
+                let name = h["name"].as_str().unwrap_or_default();
+                let scope = h["matches"].as_str().unwrap_or_default();
+                let scope = if scope.is_empty() { "*" } else { scope };
+                let flag = if h["enabled"].as_u64().unwrap_or(0) == 1 { "on" } else { "off" };
+                let bytes = h["code"].as_str().unwrap_or_default().len();
+                println!("{} {} {} {} ({}B)", h["id"], name, flag, scope, bytes);
+            }
+            0
+        }
+        "rm" | "delete" => {
+            let Some(name) = name else {
+                eprintln!("hook rm needs a name");
+                return 1;
+            };
+            let r = ctl("/hook_delete", json!({ "name": name }));
+            if r["deleted"].as_bool().unwrap_or(false) {
+                println!("removed hook '{name}'");
+                0
+            } else {
+                println!("no hook '{name}'");
+                1
+            }
+        }
+        "set" => {
+            let Some(name) = name else {
+                eprintln!("hook set needs a name");
+                return 1;
+            };
+            let src = match file {
+                Some(p) => match std::fs::read_to_string(&p) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("hook set: {p}: {e}");
+                        return 1;
+                    }
+                },
+                None => code.unwrap_or_default(),
+            };
+            let mut body = json!({ "name": name });
+            if !src.trim().is_empty() {
+                body["code"] = json!(src);
+            }
+            if let Some(m) = matches {
+                body["matches"] = json!(m);
+            }
+            if disable {
+                body["enabled"] = json!(0);
+            } else if enable {
+                body["enabled"] = json!(1);
+            }
+            let r = ctl("/hook_set", body);
+            let id = r["id"].as_u64().unwrap_or(0);
+            let verb = if r["created"].as_bool().unwrap_or(false) { "created" } else { "updated" };
+            println!(
+                "hook '{name}' {verb} id={id} enabled={} injected={}",
+                r["enabled"].as_u64().unwrap_or(0),
+                r["injected"].as_u64().unwrap_or(0),
+            );
+            0
+        }
+        other => {
+            eprintln!("unknown hook action {other:?} (set|ls|rm)");
+            1
+        }
+    }
 }
