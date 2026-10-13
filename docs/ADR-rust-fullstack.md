@@ -1,6 +1,13 @@
 # ADR: Rust full-stack rewrite (mudrad + okm storage + leptos panel)
 
-Date: 2026-09-26  Status: accepted, not yet implemented
+Date: 2026-09-26  Status: **accepted, implemented** — R1 (Rust store / spawn /
+CDP / lifecycle / control / daemon) landed 2026-09-28, R2 (leptos panel +
+tag-forest crate + the 14 control verbs + `mudra-cli`) 2026-09-28/29, R3
+(okm-side `localstorage` backend + `WireClient`) closed 2026-09-29. The Python
+tree was deleted in one commit the same day (`73e62e7`, −6329 lines) and the
+daemon now runs as a systemd user service. The aura+probe direction recorded
+under Mitigations was superseded 2026-10-01 by
+[ADR-extension-protocol](ADR-extension-protocol.md) (Accepted).
 
 ## Context
 

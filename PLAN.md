@@ -1,6 +1,8 @@
 # mudra — browser session manager: implementation plan
 
-> **Status**: planning
+> **Status**: §9 (tag forest) and §11 (Rust full-stack) landed 2026-09; §1–§8 are the
+> original plan record — Python + sqlite + the session model + the launcher layer, all
+> since superseded
 > **Date**: 2026-08-28
 > **Design source**: `~/.hermes/wiki/keyboard-wm-browser-mode.md` (the authoritative design; keep in sync)
 

@@ -14,13 +14,18 @@ are organized by a **tag forest** (multi-dimensional, replace-of-session) and ca
 scored by importance / urgency, so the browser becomes a tool that *pre-sorts your
 information* instead of just showing webpages.
 
-**Status**: core (spawn / realtime CDP sync / navigation / niri window mapping+move /
-proxy+extensions / column-width memory) works as CLI+daemon `mudra` / `mudrad` (Rust).
-**Context model** (tag forest, *replaces session* — pages hang directly off an
-instance; the instance is chosen by the current `situation` leaf) is implemented: a
-**wasm web console** (`mudra ui`, leptos) is the management surface, all lifecycle ops
-go through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
-See `PLAN.md` §11, `docs/PANEL.md`, and below.
+**Status**: the stack is Rust end to end — `mudra` (CLI) / `mudrad` (daemon) +
+an okm/fjall KV store + a leptos wasm console; the Python tree is gone
+(2026-09-29). Core (spawn / realtime CDP sync / navigation / niri window
+mapping+move / proxy+extensions / column-width memory) works. **Context model**
+(tag forest, *replaces session* — pages hang directly off an instance; the
+instance is chosen by the current `situation` leaf) is implemented: the **wasm
+web console** (`mudra ui`) is the management surface, and all lifecycle ops go
+through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
+The **extension plane** is live too: page lifecycle lands in an append-only event
+log (`POST /events` replays it from a cursor) and resident subprocess extensions
+are hosted over stdio on the Induction contract
+(`docs/ADR-extension-protocol.md`). See `PLAN.md` §11, `docs/PANEL.md`, and below.
 
 ---
 
@@ -122,9 +127,17 @@ state(key, value)               -- current_context(situation), sort, ...
   commands, `:set` live config. All open/tag/page ops route through mudrad. See
   `docs/KEYS.md` (keymap & config) and `docs/ADR-self-maintained-extension.md` (why
   not SurfingKeys/Vimium).
-- **KV store + launcher** — tag-forest org & refine, isolated instances, window↔process
-  mapping, url record/filter, per-site column width; walker lists pages filtered by tag
-  and does address input.
+- **KV store + console** — tag-forest org & refine, isolated instances, window↔process
+  mapping, url record/filter, per-site column width. The console reads shaped views off
+  the control API (`/forest`, `/ctx_pages`) and hears a WebSocket epoch bus; the CLI is
+  the scripting surface.
+- **Extension plane** (fourth machine surface, stdio) — resident subprocesses declared in
+  `config.kdl` `[extensions]` and hosted by mudrad over the Induction wire contract (the
+  same contract aura's effectors speak; `~/world/induction` crates, pulled as a git
+  dependency like okm). Subscriptions are declared in the guest's schema and carried by
+  the `hello` frame — never in config. Delivery is the declared BGI `Tier` (Hot+deadline =
+  intercept, Cold = observe), and effects ride `host:invoke` frames back into the verb
+  surface: an extension never talks CDP. Design: `docs/ADR-extension-protocol.md`.
 
 **Engine control — verified**: chromium is the only engine with a mature **CDP**.
 Ladybird/Servo both have remote control but over the **Firefox RDP** (actor/TCP JSON),
@@ -242,8 +255,10 @@ and writes the store; the panel talks to the same API over WebSocket.
 
 **Verified**: `--app` w/o chrome, CDP lists/attaches `--app`, niri
 move/focus/column-width, `--load-extension`, walker multi-char prefixes + `argument_delimiter`.
-**Pending/⏳**: tag-forest migration (situation switch, isolated instances, scoring
-trees, ML), CDP error-page nav, walker provider protocol (P7b).
+**Pending/⏳**: the extension *intercept* plane (Hot + deadline on
+`mudra:before_navigate`) and the Hook collection that governs injected page scripts; the
+refinement pipeline of §10 (html→md + full-text search, naive-Bayes scoring, RSS capture,
+LLM summarization); CDP navigation on error pages; a hyprland `WmExt` backend.
 
 **Known issue (deferred)**: passwords aren't saved in `--app` (Linux keyring absent) —
 candidates: `gnome-keyring` or `--password-store=basic`.
@@ -254,5 +269,7 @@ candidates: `gnome-keyring` or `--password-store=basic`.
 ## Roadmap
 
 See `PLAN.md` — P4/P5 done (proxy+extensions, column memory), P6 done (new-window
-interception), P7a done (WmExt interface + niri backend), **P7b** (walker launcher
-menus via elephant `menus` provider), then the **tag-forest architecture** (§9).
+interception), P7a done (WmExt interface + niri backend); P7b (walker launcher menus) was
+dropped 2026-09 — the console is the whole management surface. §9 tag-forest architecture
+and §11 Rust full-stack rewrite both landed (2026-09-05 / 2026-09-28–29). Next: the
+refinement phases of §10 (P8–P12) and the extension intercept/Hook surface.

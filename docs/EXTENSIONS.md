@@ -1,5 +1,12 @@
 # mudra extensions — WM & launcher integration
 
+> **Scope**: this document covers *integration modules* — the WM seam behind `WmExt`
+> (P7). It is **not** the extension plane: resident subprocess extensions hosted over
+> stdio are specified in `docs/ADR-extension-protocol.md`. The launcher half was dropped
+> in 2026-09 (the console is the whole management surface), so the walker / elephant
+> sections below are history kept for reference, and the Python paths they mention
+> (`mudralib/wm.py`, `scripts/mudra_menus.py`, `mudra.sqlite`) belong to the deleted tree.
+
 `mudra` core is **WM/launcher-agnostic**: it manages sessions, instances, pages and CDP.
 Environment-specific integrations are **pluggable extension modules** loaded behind a
 small interface, so the same core works on any WM / launcher that can satisfy it
@@ -7,10 +14,10 @@ small interface, so the same core works on any WM / launcher that can satisfy it
 niri & hyprland qualify; cosmic-de does not yet).
 
 This document specifies the *integration approach* (P7). **P7a is live**: the `WmExt` interface
-+ `NiriExt` backend (Python `mudralib/wm.py`; since the Rust rewrite, the niri seams in
-`crates/mudrad/src/runtime.rs`) are implemented and `mudra move` / `add` run on it. P7b
-(`LauncherExt` walker menus) 走 elephant `menus` provider（见下）；walker provider 不能外部插件。
-交互模型已定稿：面板（`mudra ui`）承担 tag 富交互，launcher 只留 `p`（见下）。P0–P6 implement core +
++ `NiriExt` backend (the niri seams in `crates/mudrad/src/runtime.rs`; originally
+`mudralib/wm.py` in the Python tree, deleted 2026-09-29) are implemented and `mudra move` /
+`add` run on it. **P7b (launcher menus) is dropped** — see the scope note; the console
+(`mudra ui`) carries the tag interactions the launcher was going to. P0–P6 implement core +
 the niri bits; the interface below is the target shape.
 
 ## Interface: WM extension (`WmExt`)
@@ -46,7 +53,11 @@ Core calls these operations on an enabled WM module (it never touches `niri` dir
 Same `WmExt` interface, implemented over hyprctl IPC. Include once core consumers
 (`mudra move`, focus, column-width) have fully migrated onto the interface.
 
-## Interface: Launcher extension (`LauncherExt`)
+## Interface: Launcher extension (`LauncherExt`) — dropped 2026-09
+
+> Historical: the launcher layer was abandoned (PLAN §7 P7b, README "Window management"), and
+> the `sessions()` view below predates the tag-forest model (PLAN §9). Kept as the record of
+> the abandoned direction.
 
 Core exposes clean data; the launcher module renders it and dispatches selections back
 to core actions:
@@ -56,7 +67,7 @@ to core actions:
 - actions: `open_session(name)`, `focus_page(query)`, `open_url(url)`,
   `move_session(name, ws)`, `new_session(name, url)`
 
-### walker implementation (elephant menus)
+### walker implementation (elephant menus) — historical
 
 walker 的 provider 是 **编译进二进制的**（apps/files/windows…），不能从外部加插件。mudra 的动态
 菜单走 **elephant `menus` provider**（本机 cwdhist/windowsmru 已验证的模式）：
@@ -68,7 +79,8 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
          → 选中 → Lua `Action` / walker `[providers.actions."menus:<x>"]` → 回调 `mudra` CLI
 ```
 
-- **数据层**：`scripts/mudra_menus.py` 读 `mudra.sqlite`（`sessions`/`pages`/`state`），零第三方依赖。
+- **数据层**（历史）：`scripts/mudra_menus.py` 读 `mudra.sqlite`（`sessions`/`pages`/`state`），零第三方依赖。
+  两者都随 Python 树一起删除（2026-09-29）；现在没有 launcher 数据层。
 - **动作层**：优先复用现有 `mudra` CLI（`focus`/`close`/`open`/`move`/`use`）；action 命令名与
   Lua entry 的 `Actions` map 键一致。
 - **多字符前缀已核实**（`walker src/data.rs` `text.starts_with(&prefix.prefix)`，任意长 String）：
@@ -124,9 +136,12 @@ launcher 中过滤，本来就是统一切换的优势，无需在浏览器内�
 `Runtime` seams in `crates/mudrad/src/runtime.rs`), move/add migrated to it;
 column-width read (`layout.tile_size[0]`/`logical.width`) + set (`<N>%`) verified; `mudra col
 remember/show` + `open`/`add` auto-apply (P5).
-**Pending (P7b)**: elephant menus（`mudra_menus.py` + `menus/mudra*.lua` + walker 前缀绑定 + `p`
-热路径交互）；mudra 侧补星级/bookmark、排序偏好 state、当前聚焦 tab 识别；named `web:*` workspace
-config；hyprland backend.
+**Pending**: hyprland backend (same `WmExt`, over hyprctl IPC); named `web:*` workspace
+declaration in the niri config (until then `move` takes an index/name ref). The launcher
+items that used to head this list (elephant menus, the `p` hot path, star/bookmark data)
+are void: the launcher layer was dropped 2026-09, the rating axes are tag-forest trees
+(`importance` / `urgency` / `quality` seeded in the store), and sort preference is a
+`state` slot.
 
 ### 重构影响（tag 森林 → PLAN §9 / wiki `tag-forest.md`）
 LauncherExt 从 session/page 视角向 **tag 森林** 演进：`p` 模式按 tag 维度过滤
