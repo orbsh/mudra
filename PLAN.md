@@ -401,9 +401,9 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
 
 ### 开放项（未定，方向记录）
 - **扩展协议（事件日志/宿主 2026-10-10，`243fca4`；拦截面 2026-10-13）**：mudra 以 stdio 承载常驻子进程扩
-  展，**线契约采用 Induction**（aura BGI 词汇抽取的独立协议，ADR-0035 §3 +
-  其 2026-10-01 应答契约
-  Update），自造帧词汇表与 LSP 类比已撤回。config.kdl `[extensions]` 只
+  展，**线契约采用 Induction**（独立协议 crates 住 `~/world/induction`；词汇
+  出自 aura BGI 的抽取——ADR-0035 §3 及其 2026-10-01 应答契约 Update 是来处，
+  库是它的家），自造帧词汇表与 LSP 类比已撤回。config.kdl `[extensions]` 只
   管 name→path；事件订阅声明在脚本 interface_schema、由 hello 携带（不进
   配置、不是协商）；投递=声明的 `Tier`——Hot+deadline=拦截（超时=failure
   value，mudra 策略映射 fail-open）、Cold=观察（不泊产生方，事件落只追加

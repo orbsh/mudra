@@ -73,11 +73,12 @@ wholesale. An extension never binds a port; its only socket is the pipe.
 
 ### 2. Wire: Induction frames, json-lines codec only
 
-The frame vocabulary is aura ADR-0035 §3 (`call` / `result` / `host` /
+The frame vocabulary is `induction-protocol`'s (`call` / `result` / `host` /
 `host_reply`, plus the `iterate` arms — see Consequences for why they ship
-unexercised), typed in `induction-protocol`. Codec: **json-lines only** —
-CBOR is aura's declared upgrade
-for carriers that bring a codec; a local single-host surface does not need
+unexercised); the library records it as the extraction of aura ADR-0035 §3 —
+aura is where the names came from, the library is their home. Codec:
+**json-lines only** — CBOR is the upgrade the contract declares for carriers
+that bring a codec; a local single-host surface does not need
 it. Bad discriminators fail at decode, not mid-flight.
 
 ### 3. Handshake: hello carries the interface_schema
@@ -87,9 +88,9 @@ mudra → { "type": "initialize", "protocol": 1, … }
 ext   → { "type": "hello", "name": "adfree", "schema": { "on": ["mudra:page_open", …] } }
 ```
 
-Event subscriptions are declared in the **script's interface_schema**
-(aura's established declaration surface — ADR-0016 `@cron`, ADR-0026 §4
-decorator-derived schema), **not in config**: the author knows what the code
+Event subscriptions are declared in the **script's interface_schema** (the
+declaration surface the contract inherits — the practice started in aura
+ADR-0016 `@cron` / ADR-0026 §4), **not in config**: the author knows what the code
 listens to, and re-editing a deployment config to change a subscription is
 friction config should never carry. An out-of-process binary cannot be
 introspected by the host the way an uploaded script can, so the Induction
@@ -145,24 +146,26 @@ mudra's verb surface — the invoke arm maps onto the existing verb directory
 and execute at the existing `INJECT_JS` point. No extension talks CDP
 directly, no extension opens a second browser.
 
-**The `store` arm is not implemented.** The store plane in aura is host-carried
-booth state (aura ADR-0026: each booth type occupies a real okm ns in the
-realm's engine). Extension state lives with the extension (its own
-directory, or k10r over k10r's HTTP) — every datum has exactly one home.
-The event log is *host*-owned and is delivery infrastructure, not extension
+**The `store` arm is not implemented.** That arm exists in the library for
+aura's booth state (aura ADR-0026: each booth type occupies a real okm ns in the
+realm's engine); mudra has no booths. Extension state lives with the extension
+(its own directory, or k10r over k10r's HTTP) — every datum has exactly one
+home. The event log is *host*-owned and is delivery infrastructure, not extension
 storage; do not conflate the two.
 
-**Arm-set alignment note (2026-10-12, aura ADR-0043 landed):** the Induction
-arm set is the ctx object's CALLABLE members (`invoke | iterate.start/next/
-dispose | store | emit | timer.register | timer.cancel | queue.depth |
-queue.skip_to_head | schema`). The arm strings are the dotted method paths;
-`emit` carries NO reply (fire-and-forget by contract). mudra ships `invoke`
-only and needs none of the storage/timer/queue arms (§5's one-home ruling);
-when mudra's extension surface grows, adopt these names verbatim rather
-than minting synonyms — one vocabulary across hosts. Registration (`on`/
-`receives`) has no runtime arm: the child's load-time pass assembles its
-registry and the hello/schema answer carries it (reserved `__sleep`/
-`__wake` hooks ride the same array).
+**Arm-set note (the vocabulary lives in the library).** The arms a guest may
+invoke are `induction-protocol`'s `Arm` — 11 of them: `invoke |
+iterate.start/next/dispose | store | emit | timer.register | timer.cancel |
+queue.depth | queue.skip_to_head | schema`. The library records that set as the
+extraction of the aura ctx object's CALLABLE members (aura ADR-0043 §5 is where
+the names came from, not a dependency edge of this repo). The arm strings are
+the dotted method paths; `emit` carries NO reply (fire-and-forget by contract).
+mudra ships `invoke` only and needs none of the storage/timer/queue arms (§5's
+one-home ruling); when mudra's extension surface grows, adopt the library's
+names verbatim rather than minting synonyms — one vocabulary across hosts.
+Registration (`on`/`receives`) has no runtime arm: the child's load-time pass
+assembles its registry and the hello/schema answer carries it (reserved
+`__sleep`/`__wake` hooks ride the same array).
 
 ### 6. No extension-to-extension channel
 

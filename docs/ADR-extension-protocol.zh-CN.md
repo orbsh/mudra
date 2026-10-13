@@ -57,10 +57,10 @@ mudra 经这些 crates 采用该契约，不发明第二种线格式。
 
 ### 2. 运输：Induction 帧，仅 json-lines codec
 
-帧词汇表即 aura ADR-0035 §3（`call` / `result` / `host` / `host_reply`，
-加 `iterate` 各臂——为何空载落地见「后果」），类型定义在
-`induction-protocol`。codec：**仅 json-lines**
-——CBOR 是 aura 给自带 codec 的载体留的声明式升级路径，本机单宿主面用
+帧词汇表归 `induction-protocol`（`call` / `result` / `host` / `host_reply`，
+加 `iterate` 各臂——为何空载落地见「后果」）；库把它记录为 aura ADR-0035 §3
+的抽取——aura 是名字的来处，库是它的家。codec：**仅 json-lines**
+——CBOR 是契约给自带 codec 的载体留的声明式升级路径，本机单宿主面用
 不上。坏 discriminator 在 decode 层失败，不是跑到一半炸。
 
 ### 3. 握手：hello 携带 interface_schema
@@ -70,8 +70,8 @@ mudra → { "type": "initialize", "protocol": 1, … }
 ext   → { "type": "hello", "name": "adfree", "schema": { "on": ["mudra:page_open", …] } }
 ```
 
-事件订阅声明在**脚本的 interface_schema** 里（aura 既有的声明面——ADR-
-0016 `@cron`、ADR-0026 §4 装饰器派生 schema），**不写在配置里**：作者本
+事件订阅声明在**脚本的 interface_schema** 里（契约继承的声明面——做法起于
+aura ADR-0016 `@cron`、ADR-0026 §4），**不写在配置里**：作者本
 来就知道代码在监听什么，为改一个订阅去反复编辑部署配置是配置绝不该承载
 的摩擦。进程外的 binary 无法像上传脚本那样被宿主内省，所以 Induction
 guest 把 schema 作为会话数据带出来——注册时刻在管道上的表达。daemon 只向声明过
@@ -116,19 +116,21 @@ guest 自己的 `host:invoke` 不能被它正在执行的那个判决拦住。�
 词目录（8899 面）；注入脚本由 Hook collection 治理、执行落点是既有
 `INJECT_JS`。没有扩展直连 CDP，没有扩展开第二个浏览器。
 
-**`store` 臂不实现。** aura 的存储面是宿主代持的摊位状态（aura ADR-0026：
-每个摊位类型在 realm 引擎里占一个真实 okm ns）。扩展状态归扩展自己（自
-家目录，或经 k10r 自己的 HTTP 存 k10r）——每份数据只有一个家。事件日志
-是**宿主**拥有的，属投递基础设施，不是扩展存储；两者勿混。
+**`store` 臂不实现。** 该臂在库里存在是为了 aura 的摊位状态（aura
+ADR-0026：每个摊位类型在 realm 引擎里占一个真实 okm ns）；mudra 没有摊位
+这回事。扩展状态归扩展自己（自家目录，或经 k10r 自己的 HTTP 存 k10r）——
+每份数据只有一个家。事件日志是**宿主**拥有的，属投递基础设施，不是扩展
+存储；两者勿混。
 
-**臂集对齐说明（2026-10-12，aura ADR-0043 落地）：** Induction 的臂集是
-ctx 对象的 CALLABLE 成员（`invoke | iterate.start/next/dispose | store |
-emit | timer.register | timer.cancel | queue.depth | queue.skip_to_head |
-schema`）。臂字符串是点分方法路径；`emit` 按契约**不带应答**
-（fire-and-forget）。mudra 只实现 `invoke`，不需要 storage/timer/queue 各
-臂（§5 的单一家裁决）；扩展面将来扩容时逐字采用这些名字，不造同义词——
-全部宿主一个词汇表。注册（`on`/`receives`）没有运行时臂：子进程加载期
-装配自己的注册表，由 hello/schema 应答携带（保留 `__sleep`/`__wake` 钩子
+**臂集说明（词汇表归库）：** 宿主帧可用的臂集就是 `induction-protocol` 的
+`Arm`——共 11 个：`invoke | iterate.start/next/dispose | store | emit |
+timer.register | timer.cancel | queue.depth | queue.skip_to_head | schema`。
+库把这套臂记录为 aura ctx 对象 CALLABLE 成员的抽取（aura ADR-0043 §5 是名字
+的出处，不是本仓的依赖边）。臂字符串是点分方法路径；`emit` 按契约**不带
+应答**（fire-and-forget）。mudra 只实现 `invoke`，不需要 storage/timer/queue
+各臂（§5 的单一家裁决）；扩展面将来扩容时逐字采用库里这些名字，不造同义
+词——全部宿主一个词汇表。注册（`on`/`receives`）没有运行时臂：子进程加载
+期装配自己的注册表，由 hello/schema 应答携带（保留 `__sleep`/`__wake` 钩子
 走同一个数组）。
 
 ### 6. 扩展之间没有直连信道
