@@ -160,3 +160,59 @@ pub async fn create_tag(parent_id: u32, name: &str) -> Result<u32, String> {
     .await?
     .id)
 }
+
+// ---- the two operator surfaces the CLI used to own alone -------------
+// (`/events` = ns 8's replay window, `/hook_list` = ns 9's rule set)
+
+/// One event row: `args` is the self-describing snapshot the emit site
+/// recorded — an object for every lifecycle kind, a bare string when a
+/// producer wrote one — so it rides as a `Value`.
+#[derive(serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct EventRow {
+    pub id: u64,
+    pub kind: String,
+    #[serde(default)]
+    pub args: Value,
+    #[serde(default)]
+    pub at: u64,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct Events {
+    pub events: Vec<EventRow>,
+    /// The log head id. Informational: the panel's log view reads by
+    /// `tail`, never by cursor.
+    #[serde(default)]
+    pub head: u64,
+}
+
+/// The newest `tail` rows — the daemon anchors them server-side (the
+/// panel keeps no cursor for a log view; a re-pull is an overwrite).
+pub async fn events(tail: u64) -> Result<Events, String> {
+    call_json("/events", serde_json::json!({ "tail": tail })).await
+}
+
+/// One hook row. The code rides along in full; the view decides how
+/// much of it to show.
+#[derive(serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct HookRow {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub matches: String,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub enabled: u8,
+    #[serde(default)]
+    pub updated_at: u64,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct Hooks {
+    pub hooks: Vec<HookRow>,
+}
+
+pub async fn hook_list() -> Result<Hooks, String> {
+    call_json("/hook_list", serde_json::json!({})).await
+}

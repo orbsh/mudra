@@ -15,12 +15,20 @@
 //! (ADR-0028 consumer half, `uistate.rs`) — reload keeps it, the node
 //! stays the only business-data owner.
 //!
+//! Three surfaces share the shell: the page tree (default), the event
+//! log (`events.rs`, ns 8) and the hook list (`hooks.rs`, ns 9). Only
+//! the tree has panel-visible state — both other collections are
+//! epoch-silent, so those views carry their own re-read on top of the
+//! shared epoch hint.
+//!
 //! Reactivity contract (the Solid lesson, in leptos terms): a re-pull
 //! replaces the whole signal payload with fresh allocations, so `For`
 //! keys on the `Arc` pointer identity make every row rebuild; row
 //! closures therefore compute their content from the snapshot they were
 //! built with (the JS panel's memo-rebuild did the same).
 
+pub mod events;
+pub mod hooks;
 pub mod http;
 pub mod remote;
 pub mod schema;
@@ -135,6 +143,11 @@ pub fn App() -> impl IntoView {
     let (pending, set_pending) = signal(None::<(u64, f64, f64, u64)>);
     let (generation, set_generation) = signal(0u64);
     let (timer_id, set_timer_id) = signal(0i32);
+    // the surface switch (page tree / event log / hook list) and the
+    // epoch hint as a counter: the log and hook views re-read on it, and
+    // neither brings a push channel of its own
+    let (view, set_view) = signal("pages".to_string());
+    let (tick, set_tick) = signal(0u64);
 
     // ---- load path ----
     // /forest: shaped tree + contexts + current in one round trip; the
@@ -255,6 +268,9 @@ pub fn App() -> impl IntoView {
             if !c.is_empty() {
                 do_pages(c);
             }
+            // the log and hook views read the hint as a counter (their
+            // collections never bump the epoch themselves)
+            set_tick.update(|t| *t += 1);
         }
     });
     // keep the link's Rc alive for the page's lifetime. Every WS closure
@@ -487,91 +503,119 @@ pub fn App() -> impl IntoView {
         hover,
     };
 
-    // header: context select, sort toggle, count, filter chips
+    // header: the surface switch is always there; the tree's own controls
+    // (context select, sort toggle, count, filter chips) belong to the
+    // tree, so they render only while it is the visible surface
     let hdr = view! {
         <header class="hdr">
-            <div class="hdr-row">
-                <select
-                    prop:value=move || ctx.get()
-                    on:change={
-                        move |ev: leptos::ev::Event| {
-                            if let Some(v) = ev
-                                .target()
-                                .and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned())
-                            {
-                                switch_ctx(v.value());
-                            }
-                        }
-                    }
-                >
-                    <For
-                        each=move || (*contexts.get()).clone()
-                        key=|c| c.clone()
-                        children=move |c: String| {
-                            let v = c.clone();
-                            view! { <option value=v>{c}</option> }
-                        }
-                    />
-                </select>
-                <button class="b" on:click={
-                    let ui2 = ui.clone();
-                    move |_| {
-                        let mut s = false;
-                        set_sort_new.update(|x| {
-                            *x = !*x;
-                            s = *x;
-                        });
-                        ui2.save_sort(s);
-                    }
-                }>
-                    {move || if sort_new.get() { "new->old" } else { "old->new" }}
-                </button>
-                <span class="count">{move || format!("{} pages", pages.get().len())}</span>
+            <div class="hdr-row views">
+                <ViewTab name="pages" label="pages" view=view set_view=set_view />
+                <ViewTab name=events::VIEW label="events" view=view set_view=set_view />
+                <ViewTab name=hooks::VIEW label="hooks" view=view set_view=set_view />
             </div>
-            <div class="filts">
-                <For
-                    each=move || (*leaves.get()).clone()
-                    key=|(id, _)| *id
-                    children=move |(id, path): (u32, String)| {
-                        let on = move || filters.get().contains(&id);
-                        let onclick: tf::VoidCb = {
-                            let ui = ui.clone();
-                            Arc::new(move || {
-                                let mut next: Vec<u32> = Vec::new();
-                                set_filters.update(|f| {
-                                    let mut n: Vec<u32> = (**f).clone();
-                                    match n.iter().position(|t| *t == id) {
-                                        Some(i) => {
-                                            n.remove(i);
+            <Show when=move || view.get() == "pages" fallback=|| ()>
+                {
+                    // the tree's controls need the panel-state handle by
+                    // value in their own closures; Show's children are
+                    // `Fn` (rebuilt on every mount), so each mount takes a
+                    // fresh clone instead of moving the component's
+                    let ui = ui.clone();
+                    view! {
+                        <div class="hdr-row">
+                            <select
+                                prop:value=move || ctx.get()
+                                on:change={
+                                    move |ev: leptos::ev::Event| {
+                                        if let Some(v) = ev
+                                            .target()
+                                            .and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned())
+                                        {
+                                            switch_ctx(v.value());
                                         }
-                                        None => n.push(id),
                                     }
-                                    next = n.clone();
-                                    *f = Arc::new(n);
-                                });
-                                ui.save_filters(&next);
-                            })
-                        };
-                        tf::chip(path, on, onclick)
+                                }
+                            >
+                                <For
+                                    each=move || (*contexts.get()).clone()
+                                    key=|c| c.clone()
+                                    children=move |c: String| {
+                                        let v = c.clone();
+                                        view! { <option value=v>{c}</option> }
+                                    }
+                                />
+                            </select>
+                            <button class="b" on:click={
+                                let ui2 = ui.clone();
+                                move |_| {
+                                    let mut s = false;
+                                    set_sort_new.update(|x| {
+                                        *x = !*x;
+                                        s = *x;
+                                    });
+                                    ui2.save_sort(s);
+                                }
+                            }>
+                                {move || if sort_new.get() { "new->old" } else { "old->new" }}
+                            </button>
+                            <span class="count">{move || format!("{} pages", pages.get().len())}</span>
+                        </div>
+                        <div class="filts">
+                            <For
+                                each=move || (*leaves.get()).clone()
+                                key=|(id, _)| *id
+                                children=move |(id, path): (u32, String)| {
+                                    let on = move || filters.get().contains(&id);
+                                    let onclick: tf::VoidCb = {
+                                        let ui = ui.clone();
+                                        Arc::new(move || {
+                                            let mut next: Vec<u32> = Vec::new();
+                                            set_filters.update(|f| {
+                                                let mut n: Vec<u32> = (**f).clone();
+                                                match n.iter().position(|t| *t == id) {
+                                                    Some(i) => {
+                                                        n.remove(i);
+                                                    }
+                                                    None => n.push(id),
+                                                }
+                                                next = n.clone();
+                                                *f = Arc::new(n);
+                                            });
+                                            ui.save_filters(&next);
+                                        })
+                                    };
+                                    tf::chip(path, on, onclick)
+                                }
+                            />
+                        </div>
                     }
-                />
-            </div>
+                }
+            </Show>
         </header>
     };
 
-    // tree (key = Arc pointer identity: every re-pull replaces the
-    // signal with fresh allocations, so changed rows rebuild — the
-    // Solid memo-rebuild semantics the JS panel relied on)
+    // main: one surface at a time. The tree's `For` keeps the Arc
+    // pointer-identity key (every re-pull replaces the signal with fresh
+    // allocations, so changed rows rebuild — the Solid memo-rebuild
+    // semantics the JS panel relied on); the other two views are
+    // components of their own, so this file stays the shell.
     let main = view! {
         <main class="tree">
-            <For
-                each=move || tree.get()
-                key=|n| Arc::as_ptr(&n.p) as usize
-                children={
-                    let cx = cx.clone();
-                    move |nd: Node| page_node(nd, cx.clone())
-                }
-            />
+            <Show when=move || view.get() == "pages" fallback=|| ()>
+                <For
+                    each=move || tree.get()
+                    key=|n| Arc::as_ptr(&n.p) as usize
+                    children={
+                        let cx = cx.clone();
+                        move |nd: Node| page_node(nd, cx.clone())
+                    }
+                />
+            </Show>
+            <Show when=move || view.get() == events::VIEW fallback=|| ()>
+                <events::EventsView view=view tick=tick />
+            </Show>
+            <Show when=move || view.get() == hooks::VIEW fallback=|| ()>
+                <hooks::HooksView view=view tick=tick />
+            </Show>
         </main>
     };
 
@@ -650,6 +694,24 @@ pub fn App() -> impl IntoView {
             {main}
             {popups}
         </div>
+    }
+}
+
+/// One surface-switch button. `name` is the view key (`events::VIEW` /
+/// `hooks::VIEW` keep the tabs and the branches on one spelling), `label`
+/// is what the operator reads.
+#[component]
+fn ViewTab(
+    name: &'static str,
+    label: &'static str,
+    view: ReadSignal<String>,
+    set_view: WriteSignal<String>,
+) -> impl IntoView {
+    view! {
+        <button
+            class=move || if view.get() == name { "b v on" } else { "b v" }
+            on:click=move |_| set_view.set(name.to_string())
+        >{label}</button>
     }
 }
 
@@ -913,7 +975,7 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
     .into_any()
 }
 
-fn time_ago(millis: u64) -> String {
+pub(crate) fn time_ago(millis: u64) -> String {
     if millis == 0 {
         return String::new();
     }

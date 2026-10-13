@@ -1,6 +1,8 @@
 /* mudra console panel (wasm edition) — full port of frontend/ui/src/styles.css.
    The class grammar is the shared contract with crates/tag-forest (capsule /
-   chip / rank) and the tree views in lib.rs; keep both sides in sync. */
+   chip / rank) and the views in crates/mudra-panel/src (lib.rs = the page tree
+   + shell, events.rs / hooks.rs = the two operator surfaces); keep both sides
+   in sync. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
   --bg: #14161f; --panel: #1b1e2b; --fg: #c9cde0;
@@ -68,3 +70,31 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 /* ---- window screenshot hover preview ---- */
 .shot { position: fixed; z-index: 30; border: 1px solid var(--sel); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,.6); pointer-events: none; }
 .shot img { display: block; max-width: 320px; max-height: 200px; background: #fff; }
+
+/* ---- surface switch (pages / events / hooks) ---- */
+.hdr-row.views { gap: 6px; }
+.b.v { color: var(--muted); }
+.b.v.on { background: var(--sel); border-color: var(--sel); color: #12131c; font-weight: 600; }
+
+/* ---- view header (count + filter chips) + error line ---- */
+.vhdr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 12px 4px; border-bottom: 1px solid var(--line); }
+.err { color: var(--red); font-size: 12px; padding: 6px 12px; }
+
+/* ---- event log rows (one line per event, newest first) ---- */
+.ev { display: flex; align-items: baseline; gap: 10px; padding: 3px 12px; border-bottom: 1px solid var(--line); }
+.ev:hover { background: var(--panel); }
+.ev-id { color: var(--muted); font-size: 11px; width: 52px; flex-shrink: 0; }
+.ev-kind { color: var(--sel); font-size: 12px; flex-shrink: 0; }
+.ev-args { font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- hook rows + editor ---- */
+.hk .row1 { align-items: center; }
+.spacer { flex: 1; }
+.b.hk-on { color: var(--green); border-color: var(--green); }
+.hk-name { color: var(--fg); font-weight: 600; }
+.hk-match { color: var(--muted); font-size: 11px; }
+.hk-code { color: var(--muted); font-family: monospace; font-size: 11px; padding-left: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hk-edit { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.hk-f { display: flex; align-items: center; gap: 6px; }
+.hk-in { flex: 1; background: var(--chip); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-family: inherit; font-size: 12px; }
+.hk-code-in { background: var(--chip); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-height: 120px; font-family: monospace; font-size: 12px; resize: vertical; }
