@@ -90,10 +90,10 @@ hole per the no-reuse rule (ADR-0002).
     same keys as the sqlite `state` table.
   - `epoch: u64` — invalidation counter (see below). Not part of any
     page/tag payload; it is transport-layer state.
-  - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id`
-    — per-table auto-increment counters (u64). okm ships no built-in
-    sequence; under the single-writer model a State counter row has no
-    contention, so counters win over a `HighWater` reduce.
+  - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id` /
+    `event_id` / `hook_id` — per-table auto-increment counters (u64). okm
+    ships no built-in sequence; under the single-writer model a State counter
+    row has no contention, so counters win over a `HighWater` reduce.
 
 ### History (ns 7)
 
@@ -139,6 +139,34 @@ hole per the no-reuse rule (ADR-0002).
   window; the consumer owns its checkpoint, the daemon never advances
   it. Live stdio fan-out joins this when the extension host lands
   (pull is complete on its own: at-least-once, crash = don't advance).
+
+### Hook (ns 9) — registered at implementation start, per the schema-finalization rule
+
+- key: `id: u64` (auto-increment via the `hook_id` counter).
+- payload: `name` (free literal string — the human handle AND the upsert
+  identity), `match` (comma-separated URL substrings; empty = every page),
+  `code` (the JS source, injected verbatim), `enabled` (u8 0/1 — okm's
+  derive has no bool), `updated_at` (u64 wall-clock millis, caller-supplied).
+- access method: `by_name` func index on `name` — `hook_set` is an upsert
+  keyed on it (the `create_tag` (parent,name) idempotency rule); reads are
+  full scans (hooks are a handful, no other secondary need).
+- semantics: the **light-weight rule path** of ADR-extension-protocol §5 —
+  page-side JS as *data*: no process, no pipe. Governance is the 8899 verb
+  surface (`/hook_set`, `/hook_list`, `/hook_delete`); execution is the
+  existing CDP injection bridge (the `INJECT_JS` pipe): the daemon injects one
+  `Page.addScriptToEvaluateOnNewDocument` source per enabled hook, guarded by
+  a literal substring test, and runs that same source once in already-loaded
+  pages (`Runtime.evaluate`). One source per hook on purpose: a syntax error
+  kills that hook alone instead of the page's whole injection. The code is
+  embedded literally — no `eval` / `new Function`, which strict-site CSP
+  forbids (the injected source itself is not subject to it). Writing a hook
+  does NOT bump the epoch (panel-invisible, same discipline as History and
+  Event); the effect path is a best-effort re-inject into the live pages of
+  running instances, so a hook takes effect without a reload.
+- boundary: hooks are the "no process" half. Logic that needs state, compute
+  or network belongs in an extension (a hosted subprocess), which reaches the
+  same injection point through `host:invoke` — the Hook collection is not an
+  extension-storage substitute.
 
 ## Epoch invalidation signal
 

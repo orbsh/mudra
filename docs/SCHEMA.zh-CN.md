@@ -82,7 +82,7 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
   - `epoch: u64`——失效计数器（见下节）。不属于任何页/tag payload，
     它是传输层状态。
   - `page_id` / `tag_id` / `instance_id` / `site_width_id` / `history_id`
-    / `event_id`——每表自增计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行
+    / `event_id` / `hook_id`——每表自增计数器（u64）。okm 无内置序列；单写者模型下 State 计数器行
     无竞争，故计数器胜出，不用 `HighWater` reduce。
 
 ### History（ns 7）
@@ -121,6 +121,30 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
 - 消费面：`POST /events {cursor, limit}`——只读回放窗口；checkpoint
   归消费方，daemon 从不推进它。扩展宿主落地后 stdio 实时扇出加入这条
   管线（pull 路径自身已完整：at-least-once，崩溃=不推进、重读）。
+
+### Hook（ns 9）——按 schema 定稿纪律在实现启动时登记
+
+- key：`id: u64`（自增，走 `hook_id` 计数器）。
+- payload：`name`（自由字面字符串——人的手柄，也是 upsert 身份）、`match`
+  （逗号分隔的 URL 子串；空=所有页面）、`code`（JS 源码，逐字注入）、
+  `enabled`（u8 0/1——okm derive 无 bool）、`updated_at`（u64 墙钟毫秒，
+  调用方供给）。
+- 访问方法：`name` 上的 `by_name` func 索引——`hook_set` 以它为键做 upsert
+  （`create_tag` 的 (parent,name) 幂等规则）；读取走全扫（钩子就一小把，
+  没有别的二级需求）。
+- 语义：ADR-extension-protocol §5 的**轻量规则路径**——页面侧 JS 作为
+  **数据**：不起进程、不走管道。治理面=8899 动词（`/hook_set`、
+  `/hook_list`、`/hook_delete`）；执行落点=既有 CDP 注入桥（`INJECT_JS`
+  同一根管子）：daemon 为每个 enabled 钩子注入一份
+  `Page.addScriptToEvaluateOnNewDocument` 源码，带字面子串守卫，并对已加载
+  页面 `Runtime.evaluate` 跑一遍同一份源码。**刻意一钩子一份源码**：语法错
+  只杀掉那一个钩子，不会连带废掉整页注入。code 逐字内联——不用 `eval` /
+  `new Function`（严格站点的 CSP 禁动态代码，而注入源码本身不受它管）。
+  写钩子不 bump epoch（面板不可见，与 History / Event 同纪律）；效应面是
+  对运行中实例活页面的一次 best-effort 重注入——装上即生效，无需 reload。
+- 边界：钩子 = “不起进程”的那一半。需要状态/算力/网络的逻辑归扩展（宿主管
+  托的子进程），它经 `host:invoke` 抵达同一个注入点——Hook collection 不是
+  扩展存储的替代品。
 
 ## epoch 失效信号
 
