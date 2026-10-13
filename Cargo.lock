@@ -1128,6 +1128,7 @@ dependencies = [
 [[package]]
 name = "induction-host"
 version = "0.1.0"
+source = "git+https://github.com/orbsh/induction?branch=main#f2e98f3da5e34386b7ddc1239fd22c44abb95628"
 dependencies = [
  "induction-protocol",
  "libc",
@@ -1138,6 +1139,7 @@ dependencies = [
 [[package]]
 name = "induction-protocol"
 version = "0.1.0"
+source = "git+https://github.com/orbsh/induction?branch=main#f2e98f3da5e34386b7ddc1239fd22c44abb95628"
 dependencies = [
  "ciborium",
  "serde",

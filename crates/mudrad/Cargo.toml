@@ -18,11 +18,11 @@ futures-util.workspace = true
 serde_json.workspace = true
 kdl.workspace = true
 libc.workspace = true
-# the extension wire protocol + host half (frames, session I/O, PDEATHSIG
-# spawn) — path form matches aura-booth; mudra owns the event model and
-# the verb surface, the crates own the pipe
-induction-protocol = { path = "../../../induction/crates/induction-protocol" }
-induction-host = { path = "../../../induction/crates/induction-host" }
+# the extension wire protocol + host half — git source, declared at the
+# workspace level like okm; mudra owns the event model and the verb surface,
+# the crates own the pipe
+induction-protocol.workspace = true
+induction-host.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -16,6 +16,13 @@ okm-core = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-wire = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-ngram = { git = "https://github.com/orbsh/okm", branch = "main" }
+# induction: the extension wire protocol + its host half (frames, budgeted
+# session I/O, PDEATHSIG spawn). Same git-source form as okm — a *pushed*
+# library is fetched by cargo, while a path form forced CI to fabricate the
+# sibling directory and left the edge unpinnable (Cargo.lock records path
+# deps by name+version only, no rev).
+induction-protocol = { git = "https://github.com/orbsh/induction", branch = "main" }
+induction-host = { git = "https://github.com/orbsh/induction", branch = "main" }
 fjall = "3"
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal", "process"] }
