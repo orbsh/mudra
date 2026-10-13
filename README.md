@@ -23,8 +23,10 @@ instance is chosen by the current `situation` leaf) is implemented: the **wasm
 web console** (`mudra ui`) is the management surface, and all lifecycle ops go
 through the **mudrad control API** (open/add/close/ctx switch + WebSocket push).
 The **extension plane** is live too: page lifecycle lands in an append-only event
-log (`POST /events` replays it from a cursor) and resident subprocess extensions
-are hosted over stdio on the Induction contract
+log (`POST /events` replays it from a cursor), resident subprocess extensions are
+hosted over stdio on the Induction contract, and a guest declaring
+`mudra:before_navigate` gets a pre-navigation **verdict** (allow / deny / redirect)
+on `/open` and `/nav goto` under a fail-open budget
 (`docs/ADR-extension-protocol.md`). See `PLAN.md` §11, `docs/PANEL.md`, and below.
 
 ---
@@ -255,10 +257,10 @@ and writes the store; the panel talks to the same API over WebSocket.
 
 **Verified**: `--app` w/o chrome, CDP lists/attaches `--app`, niri
 move/focus/column-width, `--load-extension`, walker multi-char prefixes + `argument_delimiter`.
-**Pending/⏳**: the extension *intercept* plane (Hot + deadline on
-`mudra:before_navigate`) and the Hook collection that governs injected page scripts; the
-refinement pipeline of §10 (html→md + full-text search, naive-Bayes scoring, RSS capture,
-LLM summarization); CDP navigation on error pages; a hyprland `WmExt` backend.
+**Pending/⏳**: the Hook collection that governs injected page scripts (the
+Tampermonkey-style scenario); the refinement pipeline of §10 (html→md + full-text
+search, naive-Bayes scoring, RSS capture, LLM summarization); CDP navigation on error
+pages; a hyprland `WmExt` backend.
 
 **Known issue (deferred)**: passwords aren't saved in `--app` (Linux keyring absent) —
 candidates: `gnome-keyring` or `--password-store=basic`.
@@ -272,4 +274,4 @@ See `PLAN.md` — P4/P5 done (proxy+extensions, column memory), P6 done (new-win
 interception), P7a done (WmExt interface + niri backend); P7b (walker launcher menus) was
 dropped 2026-09 — the console is the whole management surface. §9 tag-forest architecture
 and §11 Rust full-stack rewrite both landed (2026-09-05 / 2026-09-28–29). Next: the
-refinement phases of §10 (P8–P12) and the extension intercept/Hook surface.
+refinement phases of §10 (P8–P12) and the Hook collection (page hooks).

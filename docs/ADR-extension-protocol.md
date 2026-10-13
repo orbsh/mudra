@@ -12,7 +12,9 @@ the standalone `induction-protocol` / `induction-host` crates (2026-10-13:
 the frames, the budgeted session I/O, the PDEATHSIG spawn AND the arm
 dispatcher are the library's — mudra drives the shared `route_frame` core
 effector's process carrier also runs; the event pull and the verb surface
-stay mudra's).
+stay mudra's). The intercept (`Hot`) face landed 2026-10-13 (§4 below):
+`mudra:before_navigate` verdicts (allow / deny / redirect), host-assigned
+call ids, a fail-open budget, gated at `/open` and `/nav goto`.
 
 **Supersedes**: [ADR-aura-probe-federation](ADR-aura-probe-federation.md)
 (v3, proposal) — the prism transport leg and the effector-invoke leg are both
@@ -117,6 +119,22 @@ static, never guessed at runtime (ADR-0035 Update):
 
 A handler is one shape or the other; there is no frame kind that is
 simultaneously fire-and-forget and request-response.
+
+**Implemented (mudra's side, 2026-10-13).** The call rides
+`mudra:before_navigate` with args `{url, ctx}`; the answer is
+`{"verdict":"allow"|"deny"|"redirect", "url"?}`. mudra assigns the call id from
+a space disjoint from the event-log row ids (a guest answering a delivered
+event can never be mis-correlated), waits a host-side budget (200 ms — the
+per-handler `Tier`/deadline slot in the hello schema is reserved but carried by
+nobody yet), and takes the first non-`allow` verdict in registration order
+(name order). A `deny` answers the caller
+`{"blocked":true,"by":<extension>,"url":…}` and does not execute the verb; a
+`redirect` rewrites the request's url. The gate sits on the two navigation
+ENTRIES of 8899 — `/open` (link-click beacon, console, CLI) and `/nav` with
+`cmd: goto` — and deliberately NOT on `run_verb`, so a guest's own
+`host:invoke` cannot be gated by the verdict it is carrying out. Every failure
+mode (no declaring session, expired budget, dropped channel, stalled queue,
+unparsable answer) fails open.
 
 ### 5. Effects execute in mudra, never in the extension
 

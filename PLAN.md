@@ -400,14 +400,17 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   按键 shell 的环境。
 
 ### 开放项（未定，方向记录）
-- **扩展协议（实现已落地 2026-10-10，`243fca4`）**：mudra 以 stdio 承载常驻子进程扩
+- **扩展协议（事件日志/宿主 2026-10-10，`243fca4`；拦截面 2026-10-13）**：mudra 以 stdio 承载常驻子进程扩
   展，**线契约采用 Induction**（aura BGI 词汇抽取的独立协议，ADR-0035 §3 +
   其 2026-10-01 应答契约
   Update），自造帧词汇表与 LSP 类比已撤回。config.kdl `[extensions]` 只
   管 name→path；事件订阅声明在脚本 interface_schema、由 hello 携带（不进
   配置、不是协商）；投递=声明的 `Tier`——Hot+deadline=拦截（超时=failure
   value，mudra 策略映射 fail-open）、Cold=观察（不泊产生方，事件落只追加
-  Event collection、扩展自持 cursor 回放）；效应经 `host:invoke` 帧落回
+  Event collection、扩展自持 cursor 回放）；**拦截面已落地（2026-10-13）**：
+  `mudra:before_navigate` 判决 allow/deny/redirect、宿主分配调用 id、宿主侧
+  200ms 预算，闸门挂 `/open` 与 `/nav` 的 goto，一切失败面放行；效应经
+  `host:invoke` 帧落回
   动词面（不碰 CDP）；`store` 臂不实现（扩展状态归扩展自己）；扩展间只
   共享事件日志。可移植性=重点：同一 guest 两边通吃（mudrad / aura
   effector），mudra 零 aura crate 依赖。k10r 集成=一个扩展示例，mudra 不

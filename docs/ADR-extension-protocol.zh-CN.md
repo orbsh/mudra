@@ -10,7 +10,9 @@
 立在独立的 `induction-protocol` / `induction-host` crates 上：帧、带预算的
 会话 I/O、PDEATHSIG spawn 与臂分派器都归库——mudra 直接驱动共享的
 `route_frame` 核（effector 的进程载体跑同一个核）；事件拉取与动词面留在
-mudra。
+mudra。拦截（`Hot`）面已于 2026-10-13 落地（见 §4）：`mudra:before_navigate`
+判决（allow / deny / redirect）、宿主分配调用 id、超时放行预算，闸门挂
+`/open` 与 `/nav` 的 `goto`。
 
 **取代**：[ADR-aura-probe-federation](ADR-aura-probe-federation.md)（v3，
 proposal）——prism 运输腿与 effector-invoke 腿整体撤回。k10r 集成降级为
@@ -94,6 +96,18 @@ guest 把 schema 作为会话数据带出来——注册时刻在管道上的表
 
 一个 handler 二选一——同时是 fire-and-forget 又是 request-response 的帧
 kind 不存在。
+
+**已实现（mudra 侧，2026-10-13）。** 调用帧走 `mudra:before_navigate`，
+args = `{url, ctx}`；应答 = `{"verdict":"allow"|"deny"|"redirect","url"?}`。
+调用 id 由宿主分配，取自与事件日志行 id **不相交**的空间（guest 应答一个
+已投递事件，永远不会被误配成判决）；等待有宿主侧预算（200 ms——hello
+schema 里 `Tier`/deadline 的位置是预留，但还没有任何一方携带它）；多个声明
+扩展按注册序（名字序）取**第一个非 allow**。`deny` 以
+`{"blocked":true,"by":扩展名,"url":…}` 回复调用方且不执行动词；`redirect`
+改写请求的 url。闸门挂在 8899 的两个导航**入口**——`/open`（链接点击
+beacon、控制台、CLI）与 `/nav` 的 `cmd: goto`——刻意**不挂** `run_verb`：
+guest 自己的 `host:invoke` 不能被它正在执行的那个判决拦住。所有失败面
+（无声明会话、预算到期、通道断、队列满、应答不可解析）一律放行。
 
 ### 5. 效应在 mudra 执行，永不在扩展内
 
