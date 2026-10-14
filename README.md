@@ -193,7 +193,7 @@ and writes the store; the panel talks to the same API over WebSocket.
 | `mudra ctx [LEAF]` | show / switch the current context (situation leaf) |
 | `mudra ls [LEAF] [-f FILTER]` | list contexts / pages of one ctx (URL/title filter) |
 | `mudra targets` | list live page targets (CDP) |
-| `mudra focus <query> [--ctx LEAF]` | find a page by url/title and bring it forward |
+| `mudra focus <query> [--ctx LEAF]` | ranked recall over the addressing text (url+title, tokens + BM25, any length), first live hit in that ctx |
 | `mudra goto/back/forward/reload` | navigation |
 | `mudra page move-here\|swap\|close <url>` | page-mode actions on the selected page |
 | `mudra move <workspace>` | move the context's windows to a workspace (niri) |

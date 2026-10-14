@@ -44,9 +44,24 @@ Namespaces are assigned in declaration order.
   - `by_parent { fields(parent_id) }` — subtree sorting query.
   - `by_target` func index on `target_id` — reverse lookup for
     `/open {tabId}` and `focus_page`; the URL fallback stays a fallback.
-  - URL reverse lookup: n-gram index (`okm-ngram` recipe — multi-value
-    func index, n-gram → entries, caller-side rerank). Replaces the
-    earlier full-scan-plus-predicate plan.
+  - addressing-text lookup (`pages_by_fragment`): the ranked law the caller
+    used to own, one home now. The addressing text is the scheme-stripped
+    lowercased address plus the lowercase title; recall is substring
+    CONTAINMENT of the query's tokens with no length floor (a two-letter
+    fragment is a token like any other), and the score is BM25 over the
+    corpus's own statistics — exact, because the scan that does the recall
+    is also the census. Consumer: `/focus {query}`, which ranks this
+    context's open live pages instead of taking whichever live target
+    happened to come first. No index is declared for this text (the
+    `by_text` gram index is gone): recall is containment, so posting lists
+    had nothing left to prune, and a gram window has a floor a fragment can
+    be shorter than. Layout note: the dropped index's entries stay in their
+    slot as dead bytes that nothing reads — an existing store keeps working
+    with no rebuild. Slots ARE declaration order (okm ADR-0005), so nothing
+    may be declared in this position again without keeping the old index as
+    `#[ok_index(…, deprecated)]` (slot reserved, writes stopped,
+    `prune_deprecated_slots()` reclaims it); dropping and re-seeding the
+    store (the prototype policy) reclaims the space too, and can wait.
 - (instance, target) uniqueness: the sqlite tree guarded it with a
   UNIQUE index against multi-daemon races. Rust mudrad needs no DB-layer
   constraint — fjall's file lock makes a second writer impossible to
@@ -100,18 +115,47 @@ hole per the no-reuse rule (ADR-0002).
 - key: `id: u64` (auto-increment via the `history_id` counter).
 - payload: `url`, `title`, `visits` (u64), `last_at`.
 - access method: `by_url` func index over the full url (variable length,
-  never key materialized — the fixed-width discipline; the write path
-  finds the row to bump by exact url without a full scan).
+  never key materialized — the fixed-width discipline): the WRITE path
+  finds the row to bump by exact url without a full scan. The ranked read
+  declares no index and cannot have one — see below.
 - semantics: one row per opened address. `/open` and `/add` bump visits +
   last_at; the title label is refreshed at open time from the watcher-
   synced page rows. Nothing outside the open verbs ever writes History —
   visits are theirs alone. Writing history does NOT bump the epoch:
   History is panel-invisible; the open verb's own notification already
   rides along.
-- consumption: `POST /history {query, limit}` — address-bar completion.
-  Ranking is a pure function in mudra-store: subsequence similarity
-  (`sim_score`) x visits, fused via RRF (k=60); the count ranks directly
-  (no log — rank position is already a monotone statistic).
+- consumption: `POST /history {query, limit}` → `MudraStore::history_search`,
+  the address bar's four-leg ranking fused with RRF (equal weight, k=60):
+  1. the addressing text's BM25 — the query's tokens contained in the
+     scheme-stripped address or the title. The URL's noise is controlled
+     HERE, in scoring, not by holding the URL out of recall: idf gives what
+     every address shares (a scheme, a common host) almost no weight, and
+     the scheme is not part of the addressing text at all;
+  2. subsequence similarity (`sim_score`) over the same two halves — the
+     query whose letters are in an address but not contiguous ("ghb" →
+     github);
+  3. visits and 4. recency. These two order the recalled set; they never
+     put a row into it.
+  Recall is a scan of the log, and that scan is also the census: N, df and
+  avgdl are the corpus's own numbers, not a counter stand-in or an average
+  over the recalled set. Leg 2 is what forces the scan — a subsequence is
+  not a substring of anything, so no index can answer "ghb", and the one
+  index that could (a character set) answers by recalling most of the log,
+  which is the same scan with worse locality. The two read indexes this
+  replaced are gone for that reason: `by_addr` (the head-anchored prefix
+  leg — the least useful half of "the URL as text" once the whole address
+  is text again) and `by_title` (the title-only lexical leg) had nothing
+  left to prune once the scan became the recall. Layout note: the retired
+  slots keep their entries as dead bytes that nothing reads, so an existing
+  store keeps working with no rebuild; since slots are declaration order
+  (okm ADR-0005), nothing may be declared in those positions again without
+  keeping the retired indexes as `deprecated` placeholders (slot reserved,
+  writes stopped, `prune_deprecated_slots()` reclaims the entries).
+  If the log ever grows enough to hurt, an index comes back in front of the
+  scan as a pruner — never as the definition of recall.
+  A row absent from a leg collects nothing from it, so an address matching
+  neither recall leg never appears for a non-empty query however often it
+  was opened. The empty query keeps the old rule: every row, visits order.
 
 ### Event (ns 8)
 
