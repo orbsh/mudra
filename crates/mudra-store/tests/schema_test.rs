@@ -110,23 +110,46 @@ fn page_children_subtree() {
     assert_eq!(kids[0].1.url, "https://c.test");
 }
 
-// ================= Page: n-gram URL recall =================
+// ================= Page: ranked recall over the addressing text =================
 
 #[test]
-fn url_search_recalls_by_trigrams() {
-    // Contract: okm-ngram recipe — one row fans into N gram entries;
-    // url_search recalls (dedup by id), substring-precise filtering is
-    // the caller's rerank job. A query shorter than n falls back to the
-    // whole-text token (ngrams rule), so short queries still recall.
+fn pages_by_fragment_recalls_and_ranks_the_addressing_text() {
+    // Contract: the addressing text (url + title, scheme stripped) is
+    // recalled by substring containment — the query's tokens, floor-free —
+    // and ranked by BM25, in one home. Soft-deleted rows are filtered and
+    // contribute to no statistic.
     let (_d, mut s) = open_tmp();
-    s.pages.put(&PageKey { id: 1 }, &Page { url: "https://news.ycombinator.com/item?id=1".into(), ..Default::default() });
-    s.pages.put(&PageKey { id: 2 }, &Page { url: "https://rust-lang.org".into(), ..Default::default() });
-    s.pages.put(&PageKey { id: 3 }, &Page { url: "https://news.ycombinator.com/item?id=2".into(), deleted_at: 9, ..Default::default() });
+    s.pages.put(&PageKey { id: 1 }, &Page { url: "https://news.ycombinator.com/item?id=1".into(), title: "Hacker News".into(), ..Default::default() });
+    s.pages.put(&PageKey { id: 2 }, &Page { url: "https://rust-lang.org".into(), title: "Rust".into(), ..Default::default() });
+    s.pages.put(&PageKey { id: 3 }, &Page { url: "https://news.ycombinator.com/item?id=2".into(), title: "Hacker News".into(), deleted_at: 9, ..Default::default() });
+    s.pages.put(&PageKey { id: 4 }, &Page { url: "https://example.com/hacker".into(), title: "Hacker".into(), ..Default::default() });
 
-    let hits = s.url_search("ycombinat");
-    assert_eq!(hits.len(), 1); // page 1 only; soft-deleted page 3 filtered
+    // a fragment of the address, anywhere in it, drags in nothing else —
+    // the soft-deleted row 3 (same addressing text as row 1) stays out
+    let hits = s.pages_by_fragment("ycombinat");
+    let got: Vec<u64> = hits.iter().map(|(k, _)| k.id).collect();
+    assert_eq!(got, vec![1], "{got:?}");
     assert_eq!(hits[0].1.url, "https://news.ycombinator.com/item?id=1");
-    assert!(s.url_search("zzzz").is_empty());
+    assert!(s.pages_by_fragment("zzzz").is_empty());
+
+    // the title is part of the addressing text, case-insensitively
+    let ids: Vec<u64> = s.pages_by_fragment("HACKER").iter().map(|(k, _)| k.id).collect();
+    assert!(ids.contains(&1) && ids.contains(&4), "{ids:?}");
+    assert!(!ids.contains(&3), "the soft-deleted row stays out");
+
+    // ranking: the row containing both tokens leads the one containing one
+    let hits = s.pages_by_fragment("hacker news");
+    assert_eq!(hits[0].0.id, 1, "1 matches both words, 4 only the first");
+
+    // no floor: a two-letter fragment is a token like any other. The old
+    // sub-three-gram query was an honest empty — a page the caller cannot
+    // reach however it types it.
+    let ids: Vec<u64> = s.pages_by_fragment("ne").iter().map(|(k, _)| k.id).collect();
+    assert_eq!(ids, vec![1], "only row 1's address/title contains \"ne\"");
+
+    // the scheme is not part of the addressing text: it is the one part of
+    // a URL that says nothing about which page it is
+    assert!(s.pages_by_fragment("https").is_empty());
 }
 
 #[test]
@@ -291,10 +314,6 @@ fn history_bump_creates_then_accumulates() {
     assert_eq!(s.history_all()[0].title, "Alpha Two");
 }
 
-fn row(url: &str, title: &str, visits: u64, last_at: u64) -> History {
-    History { url: url.into(), title: title.into(), visits, last_at }
-}
-
 #[test]
 fn sim_score_subsequence_and_run_bias() {
     // exact prefix beats a scattered subsequence; non-subsequence is 0.
@@ -310,30 +329,54 @@ fn sim_score_subsequence_and_run_bias() {
 }
 
 #[test]
-fn history_candidates_fuses_sim_and_visits() {
-    let rows = vec![
-        row("https://news.ycombinator.com", "Hacker News", 100, 9),
-        row("https://github.com/orbsh", "orbsh GitHub", 3, 8),
-        row("https://gitea.orb.sh", "Gitea", 50, 7),
-    ];
-    // "git": gitea leads both axes — its bare title "Gitea" matches the
-    // prefix head-to-head while "orbsh GitHub" scatters it; visits 50 > 3.
-    let c = history_candidates(&rows, "git", 10);
-    assert!(!c.iter().any(|h| h.url.contains("ycombinator")));
-    assert_eq!(c.len(), 2);
-    assert_eq!(c[0].url, "https://gitea.orb.sh");
-    assert_eq!(c[1].url, "https://github.com/orbsh");
-    // "gith" flips the sim order (github keeps it contiguous, gitea's h
-    // lives in the url tail); visits flip the other rank — RRF ties and
-    // the stable sort keeps the sim winner first.
-    let c2 = history_candidates(&rows, "gith", 10);
-    assert_eq!(c2[0].url, "https://github.com/orbsh");
-    assert_eq!(c2.len(), 2);
-    // empty query = visits order (no sim filter)
-    let all = history_candidates(&rows, "", 10);
-    assert_eq!(all[0].url, "https://news.ycombinator.com"); // 100 visits
-    // limit respected
-    assert_eq!(history_candidates(&rows, "", 2).len(), 2);
+fn history_search_ranks_text_fuzzy_visits_and_recency() {
+    // Contract: the address bar's four legs, fused with RRF. Recall is the
+    // addressing text (url + title, scheme stripped): the query's tokens
+    // contained in it, or the query's letters in order — which is how
+    // "ycombinat" reaches the ycombinator address and "ghb" reaches
+    // github. Visits and recency rank whatever recall found; a row
+    // recalled by both recall legs leads; an address matching neither
+    // stays out however often it was opened; and the empty query is the
+    // pure visits order (the bar's first state).
+    let (_d, mut s) = open_tmp();
+    s.history_bump("https://news.ycombinator.com", "Hacker News", 100);
+    for _ in 0..4 {
+        s.history_bump("https://news.ycombinator.com", "", 101); // opened a lot
+    }
+    s.history_bump("https://github.com/orbsh", "orbsh GitHub", 130);
+    s.history_bump("https://rust-lang.org", "Rust", 200); // both legs for "rust"
+    s.history_bump("https://example.com/x", "Rust Notes", 110); // title only
+    s.history_bump("https://rustup.rs", "Home", 120); // address only
+
+    let hits = s.history_search("rust", 10);
+    assert_eq!(hits[0].url, "https://rust-lang.org", "both recall legs lead");
+    assert_eq!(hits.len(), 3);
+    assert!(
+        !hits.iter().any(|h| h.url.contains("ycombinator")),
+        "five opens do not recall an address that matches neither leg"
+    );
+
+    // a fragment of the address ANYWHERE in it, the middle of a host
+    // included: the address is text, not merely a prefix key
+    let hits = s.history_search("ycombinat", 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].url, "https://news.ycombinator.com");
+
+    // the query's letters in order but not contiguous: the fuzzy leg
+    let hits = s.history_search("ghb", 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].url, "https://github.com/orbsh");
+
+    // case-insensitive on both sides (query folds; title and address fold)
+    assert_eq!(s.history_search("RUSTUP", 10)[0].url, "https://rustup.rs");
+    let notes = s.history_search("NOTES", 10);
+    assert_eq!(notes.len(), 1, "only the row whose TITLE matches");
+    assert_eq!(notes[0].url, "https://example.com/x");
+
+    // empty query = visits order (no recall legs at all), limit respected
+    let all = s.history_search("", 10);
+    assert_eq!(all[0].url, "https://news.ycombinator.com"); // 5 opens
+    assert_eq!(s.history_search("", 2).len(), 2);
 }
 
 // ================= Event (ns 8): append-only log & cursor replay =================

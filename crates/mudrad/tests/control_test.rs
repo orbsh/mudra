@@ -663,22 +663,55 @@ fn targets_passthroughs_cdp_rows_and_refuses_dead_ctx() {
 
 #[test]
 fn focus_finds_by_query_and_acts_on_both_planes() {
-    // ops.focus_ctx_query port contract: fuzzy CDP match -> stored row ->
-    // the exact /focus_page path (activate + niri window).
+    // Contract: ranked recall over the addressing text -> the first hit
+    // that is open in this ctx and still live in CDP -> the exact
+    // /focus_page path (activate + niri window). The ranking, not the
+    // target list order, decides.
     let mut h = Harness::new();
-    seeded(&mut h);
+    let k = seeded(&mut h);
     h.store.put_state_text(state::CURRENT_CONTEXT, "work");
-    h.rt.targets = vec![json!({"id": "T1", "title": "Alpha", "url": "https://a.test/page"})];
-    let r = h.verb("/focus", json!({"query": "alp"})).unwrap();
-    assert_eq!(r["focused"], 1);
+    // a second page in the same instance whose addressing text matches
+    // more of the query ("alpha two" vs "alpha")
+    h.store.sync_targets(
+        k.id,
+        &[mudra_store::TargetInfo {
+            target_id: "T2".into(),
+            url: "https://a.test/page?t=2".into(),
+            title: "Alpha two".into(),
+            opener_id: String::new(),
+        }],
+        1100,
+        false,
+    );
+    h.rt.live_targets.insert((9301, "T1".into()));
+    h.rt.live_targets.insert((9301, "T2".into()));
+    let r = h.verb("/focus", json!({"query": "alpha two"})).unwrap();
+    assert_eq!(r["label"], "Alpha two");
+    let calls = h.calls();
+    assert!(matches!(&calls[0], Call::Activate { port: 9301, target } if target == "T2"), "{calls:?}");
+    assert!(matches!(&calls[1], Call::FocusWindow { .. }));
+
+    // a dead target is skipped in ranked order: T2 down -> T1 is next
+    h.rt.live_targets.remove(&(9301, "T2".into()));
+    h.rt.take_calls();
+    let r = h.verb("/focus", json!({"query": "alpha"})).unwrap();
+    assert_eq!(r["label"], "Alpha");
     let calls = h.calls();
     assert!(matches!(&calls[0], Call::Activate { port: 9301, target } if target == "T1"), "{calls:?}");
-    assert!(matches!(&calls[1], Call::FocusWindow { .. }));
 
     h.rt.take_calls();
     let e = h.verb("/focus", json!({"query": "zzz"})).unwrap_err();
     assert!(e.contains("no page matching"), "{e}");
     assert!(h.calls().is_empty(), "a miss must not act");
+
+    // a two-letter fragment is a token like any other: there is no floor
+    // left to fall through, and the walk reaches T1 through it (the
+    // substring match this replaced reached it too — recall may never be
+    // narrower than what it replaced)
+    let r = h.verb("/focus", json!({"query": "al"})).unwrap();
+    assert_eq!(r["label"], "Alpha");
+    let calls = h.calls();
+    assert!(matches!(&calls[0], Call::Activate { port: 9301, target } if target == "T1"), "{calls:?}");
 }
 
 #[test]

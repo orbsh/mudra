@@ -115,14 +115,98 @@ pub struct Tag {
     pub note: String,
 }
 
-// ================= Page (ns 2) =================
+// ============ addressing text (shared by Page and History) ============
 
-/// URL n-gram fan-out (the `okm-ngram` recipe): one row into N gram
-/// entries via a multi-value func index. Recall lives here; BM25 rerank
-/// is the caller's.
-fn url_grams(page: &Page) -> Vec<String> {
-    okm_ngram::ngrams(&page.url, 3)
+/// The address as a human types it: the scheme and a leading `www.` come
+/// off; host, path and query stay ("github.com/orbsh", never
+/// "https://www.github.com/orbsh"). This is the url half of every row's
+/// addressing text. The scheme is the one part of a URL that says nothing
+/// about *which* page it is — it is the same on every row, so as text it
+/// can only add noise — and it is not something anyone types in the bar.
+pub fn typing_surface(url: &str) -> String {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    rest.strip_prefix("www.").unwrap_or(rest).to_lowercase()
 }
+
+/// One row's addressing text as the two halves the laws consume: the
+/// typing surface and the lowercased title. Containment and BM25 treat
+/// the pair as one text (the counts are all that matters); the
+/// subsequence leg keeps them apart, because a title match must keep the
+/// head-anchor bonus it would lose behind a long url prefix.
+fn addressing_parts(url: &str, title: &str) -> (String, String) {
+    (typing_surface(url), title.to_lowercase())
+}
+
+/// The query side of both ranked lookups: lowercased, whitespace-split.
+/// A token is whatever was typed, one character included — that is what
+/// keeps recall free of a length floor.
+fn query_tokens(query: &str) -> Vec<String> {
+    query.to_lowercase().split_whitespace().map(str::to_string).collect()
+}
+
+/// BM25 over the query's tokens, matched by substring containment in each
+/// row's addressing text (`addr` + `title`). One home for the law both
+/// ranked lookups call.
+///
+/// The statistics are EXACT, not an index's approximation of them: the
+/// caller's scan IS the corpus census, so `N`, `df` (rows containing the
+/// token) and `avgdl` (mean addressing-text length) come from the rows in
+/// hand — no counter stand-in, no average over the recalled set. Recall
+/// is exact and floor-free as well: a row qualifies iff it contains a
+/// token, so a query of any length is answerable, and the ranking is the
+/// usual BM25 shape — how rare the token is (idf), how often it occurs
+/// (tf), how long the text is.
+///
+/// `rows` is `(id, addr, title)`; the result is `(id, score)` ordered by
+/// score desc, id asc (an explicit tiebreak — a caller walking the
+/// ranking must not have its first hit depend on scan order), and rows
+/// containing no token are absent: a candidate no leg recalled
+/// contributes nothing to the fusion.
+fn token_bm25(rows: &[(u64, String, String)], tokens: &[String]) -> Vec<(u64, f64)> {
+    let n = rows.len() as f64;
+    let avgdl = if rows.is_empty() {
+        1.0
+    } else {
+        rows.iter()
+            .map(|(_, a, t)| (a.chars().count() + t.chars().count()) as f64)
+            .sum::<f64>()
+            / n
+    };
+    // one pass per token: tf is this row's occurrence count, df the corpus
+    let mut by_token: Vec<(f64, Vec<f64>)> = Vec::with_capacity(tokens.len());
+    for tok in tokens {
+        let mut counts = Vec::with_capacity(rows.len());
+        let mut df = 0.0;
+        for (_, addr, title) in rows {
+            let tf = (addr.matches(tok.as_str()).count() + title.matches(tok.as_str()).count()) as f64;
+            if tf > 0.0 {
+                df += 1.0;
+            }
+            counts.push(tf);
+        }
+        by_token.push((df, counts));
+    }
+    let mut scored: Vec<(u64, f64)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (id, addr, title))| {
+            let dl = (addr.chars().count() + title.chars().count()) as f64;
+            let mut score = 0.0;
+            for (df, counts) in &by_token {
+                if counts[i] > 0.0 {
+                    score += okm_ngram::bm25_score(counts[i], dl, avgdl, *df, n);
+                }
+            }
+            (score > 0.0).then_some((*id, score))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+    });
+    scored
+}
+
+// ================= Page (ns 2) =================
 
 /// Target reverse lookup is a func index over the CDP string id
 /// (`/open {tabId}` and `focus_page` resolve rows by it).
@@ -147,7 +231,6 @@ pub fn url_site(url: &str) -> String {
 #[ok_index(by_instance { fields(instance_id) })]
 #[ok_index(by_parent { fields(parent_id) })]
 #[ok_index(by_target { func(page_target) })]
-#[ok_index(by_url { func(url_grams) })]
 pub struct Page {
     pub instance_id: u32,
     pub target_id: String,
@@ -249,10 +332,12 @@ fn history_url(h: &History) -> String {
 }
 
 /// One open-history entry: an address-bar visit accumulator. `visits`
-/// counts open-verb calls (no log — RRF ranks on the count directly);
-/// `title` carries the last-known title for candidate labels. `url`
-/// stays a func index (variable length, never key materialized) so the
-/// write path finds the row to bump by exact url without a full scan.
+/// counts open-verb calls; `title` carries the last-known title for
+/// candidate labels. One access method: `by_url` (keyed, variable length,
+/// never key materialized) lets the write path find the row to bump by
+/// exact url without a scan. The ranked read (`history_search`) has no
+/// index on either half of its addressing text, and cannot have one — see
+/// there.
 #[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
 #[ok_ref(HistoryKey)]
 #[ok_ns(7)]
@@ -317,6 +402,11 @@ pub struct Hook {
 /// matches. Returns 0.0..=1.0; a query that is not a subsequence is 0.
 /// Pure function — the ranking lives here so mudrad, tests, and any
 /// future consumer share one definition.
+///
+/// This is the bar's fuzzy leg (`history_search`): it answers the query
+/// whose letters are in the address but not contiguous — no index can
+/// look that up (the letters are not a substring of anything), so this is
+/// the one leg that has to be paid for with a scan.
 pub fn sim_score(query: &str, target: &str) -> f64 {
     let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
     let t: Vec<char> = target.chars().flat_map(char::to_lowercase).collect();
@@ -358,58 +448,21 @@ pub fn sim_score(query: &str, target: &str) -> f64 {
     (score / max).min(1.0) * (q.len() as f64 / span).sqrt()
 }
 
-/// Reciprocal-rank fusion over two ranked lists (same items, rank 0 =
-/// best). k=60 is the standard smoothing constant.
-pub fn rrf(rank_a: usize, rank_b: usize, k: f64) -> f64 {
-    1.0 / (k + rank_a as f64 + 1.0) + 1.0 / (k + rank_b as f64 + 1.0)
+/// Reciprocal-rank fusion over whichever legs a candidate appears in
+/// (`None` = that leg did not recall it, which contributes nothing — the
+/// standard missing-list treatment). k=60 is the standard smoothing
+/// constant.
+pub fn rrf_legs(ranks: &[Option<usize>], k: f64) -> f64 {
+    ranks.iter().flatten().map(|r| 1.0 / (k + *r as f64 + 1.0)).sum()
 }
 
 /// RRF smoothing constant (standard paper value; also the panel default).
 pub const RRF_K: f64 = 60.0;
 
-/// Address-bar completion candidates: similarity x visits fused via RRF.
-/// Non-empty query keeps only subsequence hits (sim over url OR title,
-/// whichever is stronger); empty query falls back to pure visits order.
-/// Pure function over the row snapshot — the ranking law has one home.
-pub fn history_candidates(rows: &[History], query: &str, limit: usize) -> Vec<History> {
-    let q = query.trim();
-    if q.is_empty() {
-        let mut all: Vec<History> = rows.to_vec();
-        all.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_at.cmp(&a.last_at)));
-        all.truncate(limit);
-        return all;
-    }
-    let mut hits: Vec<(f64, History)> = rows
-        .iter()
-        .filter_map(|h| {
-            let sim = sim_score(q, &h.url).max(sim_score(q, &h.title));
-            (sim > 0.0).then(|| (sim, h.clone()))
-        })
-        .collect();
-    // sim order (ties: stable = row order); index in this vec IS rank_sim.
-    hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    // visits rank among the same candidate set.
-    let mut by_visits: Vec<usize> = (0..hits.len()).collect();
-    by_visits.sort_by(|&i, &j| {
-        hits[j]
-            .1
-            .visits
-            .cmp(&hits[i].1.visits)
-            .then(hits[j].1.last_at.cmp(&hits[i].1.last_at))
-    });
-    let mut visit_rank = vec![0usize; hits.len()];
-    for (r, &i) in by_visits.iter().enumerate() {
-        visit_rank[i] = r;
-    }
-    let mut scored: Vec<(f64, usize)> = hits
-        .iter()
-        .enumerate()
-        .map(|(i, _)| (rrf(i, visit_rank[i], RRF_K), i))
-        .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
-    scored.into_iter().map(|(_, i)| hits[i].1.clone()).collect()
-}
+// The two ranked laws (the address bar's `history_search`, the page
+// fragment's `pages_by_fragment`) live on the store because they read the
+// corpus. What stays free are the pieces they fuse: the fusion primitive
+// above, the text leg's `token_bm25`, and the fuzzy leg's `sim_score`.
 
 // ================= generated index markers =================
 
@@ -421,7 +474,6 @@ pub use __OkmIndex_Instance_by_profile as ByProfile;
 pub use __OkmIndex_Page_by_instance as ByInstance;
 pub use __OkmIndex_Page_by_parent as ByPageParent;
 pub use __OkmIndex_Page_by_target as ByTarget;
-pub use __OkmIndex_Page_by_url as ByUrl;
 pub use __OkmIndex_History_by_url as ByHistoryUrl;
 pub use __OkmIndex_SiteWidth_by_site as BySite;
 pub use __OkmIndex_Tag_by_name as ByTagName;
@@ -630,21 +682,46 @@ impl MudraStore {
             .max_by_key(|(_, p)| p.opened_at)
     }
 
-    /// n-gram URL recall. A page appears once per matching gram, so hits
-    /// dedup by id; the caller may rerank with `okm_ngram::bm25_score`.
-    pub fn url_search(&self, query: &str) -> Vec<(PageKey, Page)> {
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for gram in okm_ngram::ngrams(query, 3) {
-            for (pk, row) in self.pages.scan::<ByUrl>(gram.as_bytes()) {
-                if let Some(p) = row.filter(|p| p.deleted_at == 0)
-                    && seen.insert(pk.decoded.id)
-                {
-                    out.push((pk.decoded, p));
-                }
-            }
+    /// Ranked page recall by a fragment of the addressing text (url or
+    /// title) — the rerank `url_search` used to leave to the caller, done
+    /// here so the law has one home (the `token_bm25` it shares with the
+    /// address bar).
+    ///
+    /// Recall is substring containment and has no floor: a fragment
+    /// shorter than any gram window is still a token, and the page a
+    /// caller is about to look for is not less real for having been typed
+    /// with two letters. Soft-deleted rows are filtered and are not part
+    /// of the corpus statistics; liveness and context filters belong to
+    /// the caller, which applies them in ranked order.
+    ///
+    /// No `limit`, deliberately: the ranking must not be cut before the
+    /// caller's filters run — the row a context is looking for can sit
+    /// below any fixed depth — so the caller's own walk bounds the work.
+    pub fn pages_by_fragment(&self, query: &str) -> Vec<(PageKey, Page)> {
+        let tokens = query_tokens(query);
+        if tokens.is_empty() {
+            return Vec::new();
         }
-        out
+        let rows: Vec<(PageKey, Page)> = self
+            .pages
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.pages.get(&k).map(|p| (k, p)))
+            .filter(|(_, p)| p.deleted_at == 0)
+            .collect();
+        let texts: Vec<(u64, String, String)> = rows
+            .iter()
+            .map(|(k, p)| {
+                let (addr, title) = addressing_parts(&p.url, &p.title);
+                (k.id, addr, title)
+            })
+            .collect();
+        let at: std::collections::HashMap<u64, usize> =
+            rows.iter().enumerate().map(|(i, (k, _))| (k.id, i)).collect();
+        token_bm25(&texts, &tokens)
+            .into_iter()
+            .map(|(id, _)| rows[at[&id]].clone())
+            .collect()
     }
 
     /// Instance rows for a situation leaf name.
@@ -733,6 +810,124 @@ impl MudraStore {
             .into_iter()
             .filter_map(|k| self.history.get(&k))
             .collect()
+    }
+
+    /// The address bar's ranking over the History log. Four legs, fused
+    /// with RRF (equal weight, k=60):
+    ///   1. the addressing text's BM25 — the query's tokens contained in
+    ///      the scheme-stripped address or the title, weighted by how rare
+    ///      each token is in the log (idf is what keeps a URL's noise from
+    ///      scoring: what every address shares weighs nothing);
+    ///   2. subsequence similarity (`sim_score`) over the same two halves
+    ///      — the query whose letters are in an address but not
+    ///      contiguous ("ghb" → github);
+    ///   3. how often the address was opened, and 4. how recently — the
+    ///      two signals every browser's bar has always ranked on.
+    ///
+    /// A row absent from a leg collects nothing from it: that is what puts
+    /// a row recalled by BOTH recall legs ahead of a row recalled by one,
+    /// and what keeps a heavily visited but unmatched address out of a
+    /// non-empty query's list.
+    ///
+    /// Why the scan, when History grows without bound: the fuzzy leg is
+    /// what forces it. A subsequence is not a substring of anything, so no
+    /// index can answer "ghb" — a character-set index answers it by
+    /// recalling most of the log, which is the scan with worse locality —
+    /// and once the rows are in hand the text leg's statistics (N, df,
+    /// avgdl) are the corpus census instead of an estimate. The two read
+    /// indexes this replaces (`by_addr`, `by_title`) are gone for the same
+    /// reason: with the scan being the recall, there was nothing left for
+    /// them to prune. If the log ever grows enough to hurt, an index comes
+    /// back in front of this as a pruner — never as the definition of what
+    /// recall means.
+    ///
+    /// The empty query keeps the old rule: every row, in visits order —
+    /// the bar's first state wants the most-opened addresses.
+    pub fn history_search(&self, query: &str, limit: usize) -> Vec<History> {
+        let q = query.trim().to_lowercase();
+        // one census per query: the scan is the recall, so the rows, their
+        // keys and the corpus statistics all come from this pass
+        let rows: Vec<(HistoryKey, History)> = self
+            .history
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.history.get(&k).map(|h| (k, h)))
+            .collect();
+        if q.is_empty() {
+            let mut all: Vec<History> = rows.into_iter().map(|(_, h)| h).collect();
+            all.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_at.cmp(&a.last_at)));
+            all.truncate(limit);
+            return all;
+        }
+        let texts: Vec<(u64, String, String)> = rows
+            .iter()
+            .map(|(k, h)| {
+                let (addr, title) = addressing_parts(&h.url, &h.title);
+                (k.id, addr, title)
+            })
+            .collect();
+        // ---- leg 1: the addressing text (tokens, BM25) ----
+        let text_rank: std::collections::HashMap<u64, usize> = token_bm25(&texts, &query_tokens(&q))
+            .into_iter()
+            .enumerate()
+            .map(|(r, (id, _))| (id, r))
+            .collect();
+        // ---- leg 2: the fuzzy leg (subsequence over address or title) ----
+        let mut fuzzy: Vec<(u64, f64)> = texts
+            .iter()
+            .filter_map(|(id, addr, title)| {
+                let s = sim_score(&q, addr).max(sim_score(&q, title));
+                (s > 0.0).then_some((*id, s))
+            })
+            .collect();
+        fuzzy.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+        });
+        let fuzzy_rank: std::collections::HashMap<u64, usize> =
+            fuzzy.iter().enumerate().map(|(r, (id, _))| (*id, r)).collect();
+        // the candidates are what the recall legs found — nothing else is
+        // ranked (visits and recency order the recalled set, they do not
+        // put rows into it)
+        let at: std::collections::HashMap<u64, usize> =
+            rows.iter().enumerate().map(|(i, (k, _))| (k.id, i)).collect();
+        let mut cands: std::collections::HashMap<u64, History> =
+            std::collections::HashMap::new();
+        for id in text_rank.keys().chain(fuzzy_rank.keys()) {
+            cands.entry(*id).or_insert_with(|| rows[at[id]].1.clone());
+        }
+        if cands.is_empty() {
+            return Vec::new();
+        }
+        // ---- per-leg orders (rank 0 = best), stable tiebreaks ----
+        let mut visits_order: Vec<u64> = cands.keys().copied().collect();
+        visits_order.sort_by_cached_key(|id| {
+            (std::cmp::Reverse(cands[id].visits), std::cmp::Reverse(cands[id].last_at), *id)
+        });
+        let mut recency_order: Vec<u64> = cands.keys().copied().collect();
+        recency_order.sort_by_cached_key(|id| {
+            (std::cmp::Reverse(cands[id].last_at), std::cmp::Reverse(cands[id].visits), *id)
+        });
+        let rank_of = |order: &[u64]| -> std::collections::HashMap<u64, usize> {
+            order.iter().enumerate().map(|(r, id)| (*id, r)).collect()
+        };
+        let (visits_rank, recency_rank) = (rank_of(&visits_order), rank_of(&recency_order));
+        let mut scored: Vec<(f64, u64)> = cands
+            .keys()
+            .map(|id| {
+                let legs = [
+                    text_rank.get(id).copied(),
+                    fuzzy_rank.get(id).copied(),
+                    visits_rank.get(id).copied(),
+                    recency_rank.get(id).copied(),
+                ];
+                (rrf_legs(&legs, RRF_K), *id)
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+        });
+        scored.truncate(limit);
+        scored.iter().map(|(_, id)| cands[id].clone()).collect()
     }
 
     /// Append one event to the log; returns the assigned id (the live

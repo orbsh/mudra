@@ -20,6 +20,13 @@ use crate::spawn;
 /// (backend decides, the frontend never guesses — Python rule).
 pub const PANEL_PORT: u16 = 9299;
 
+/// How many live-eligible candidates `/focus` probes in ranked order
+/// before giving up: every probe is a CDP round trip, so the walk is
+/// bounded by probes. The store's ranking is not cut to this depth — the
+/// row a context is looking for can sit below any fixed rank — and rows
+/// the caller's filters drop cost nothing.
+const FOCUS_PROBES: usize = 32;
+
 pub struct Controller<'a, R: Runtime> {
     pub store: &'a mut MudraStore,
     pub rt: &'a mut R,
@@ -179,14 +186,14 @@ impl<'a, R: Runtime> Controller<'a, R> {
         Ok(json!({"mode": "new", "port": port, "pid": pid, "ctx": ctx}))
     }
 
-    /// POST /history {query?, limit?} — address-bar completion candidates
-    /// (similarity x visits fused via RRF; see mudra_store::history_candidates).
+    /// POST /history {query?, limit?} — address-bar candidates: the store's
+    /// four-leg ranking over the history log (addressing-text BM25 x
+    /// subsequence similarity x visits x recency, fused with RRF).
     /// Read-only: no epoch, no runtime call.
     pub fn history(&self, body: &Value) -> Result<Value, String> {
         let query = body.get("query").and_then(Value::as_str).unwrap_or_default();
         let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
-        let rows = self.store.history_all();
-        let cands = mudra_store::history_candidates(&rows, query, limit);
+        let cands = self.store.history_search(query, limit);
         Ok(json!({"candidates": cands
             .iter()
             .map(|h| json!({"url": h.url, "title": h.title, "visits": h.visits}))
@@ -851,9 +858,10 @@ impl<'a, R: Runtime> Controller<'a, R> {
     }
 
     /// POST /focus {query, ctx?} — the CLI focus verb (ops.focus_ctx_query
-    /// port): fuzzy-match live CDP pages in the ctx, map the hit's
-    /// targetId to a stored row, then run the exact same path as
-    /// /focus_page (CDP activate + niri bring-forward).
+    /// port): ranked recall over the addressing text (url + title, one law
+    /// in the store), then the first hit that is open in this ctx AND
+    /// still live in CDP, then the exact same path as /focus_page (CDP
+    /// activate + niri bring-forward).
     pub fn focus(&mut self, body: &Value) -> Result<Value, String> {
         let query = body.get("query").and_then(Value::as_str).unwrap_or_default();
         if query.is_empty() {
@@ -861,26 +869,37 @@ impl<'a, R: Runtime> Controller<'a, R> {
         }
         let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
         let (ik, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
-        let q = query.to_lowercase();
-        let hit = self
-            .rt
-            .list_targets(inst.port as u16)?
-            .into_iter()
-            .find(|t| {
-                let hay = format!("{} {}", t["url"].as_str().unwrap_or_default(), t["title"].as_str().unwrap_or_default()).to_lowercase();
-                hay.contains(&q)
-            })
-            .ok_or(format!("no page matching {query:?}"))?;
-        let target = hit["id"].as_str().unwrap_or_default();
-        let (pk, page) = self
-            .store
-            .page_by_target(target)
-            .filter(|(_, p)| p.instance_id == ik.id)
-            .ok_or("page not recorded (sync pending?)")?;
-        self.focus_page(&json!({"page_id": pk.id}))?;
+        let port = inst.port as u16;
+        // the two filters the caller owns sit on top of the ranking: this
+        // ctx's open rows, and targets that are still live. The ranking
+        // decides among them — the old match was whichever live target
+        // happened to come first, which is an ordering accident. Only
+        // eligible rows cost a probe, so the walk may look past any fixed
+        // depth: the budget is on probes, not on the ranking.
+        let mut hit = None;
+        let mut probes = 0;
+        for (pk, p) in self.store.pages_by_fragment(query) {
+            if p.instance_id != ik.id
+                || p.closed_at != 0
+                || p.deleted_at != 0
+                || p.target_id.is_empty()
+            {
+                continue;
+            }
+            if probes >= FOCUS_PROBES {
+                break;
+            }
+            probes += 1;
+            if self.rt.target_exists(port, &p.target_id) {
+                hit = Some((pk, p));
+                break;
+            }
+        }
+        let hit = hit.ok_or(format!("no page matching {query:?}"))?;
+        self.focus_page(&json!({ "page_id": hit.0.id }))?;
         // the label mirrors Python's print: title, falling back to url
-        let label = if page.title.is_empty() { page.url.clone() } else { page.title.clone() };
-        Ok(json!({"focused": pk.id, "label": label}))
+        let label = if hit.1.title.is_empty() { hit.1.url.clone() } else { hit.1.title.clone() };
+        Ok(json!({ "focused": hit.0.id, "label": label }))
     }
 
     /// POST /nav {cmd, ctx?, url?} — Page-domain navigation on the ctx's
