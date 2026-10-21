@@ -278,5 +278,6 @@ candidates: `gnome-keyring` or `--password-store=basic`.
 See `PLAN.md` — P4/P5 done (proxy+extensions, column memory), P6 done (new-window
 interception), P7a done (WmExt interface + niri backend); P7b (walker launcher menus) was
 dropped 2026-09 — the console is the whole management surface. §9 tag-forest architecture
-and §11 Rust full-stack rewrite both landed (2026-09-05 / 2026-09-28–29). Next: the
-refinement phases of §10 (P8–P12) and the Hook collection (page hooks).
+and §11 Rust full-stack rewrite both landed (2026-09-05 / 2026-09-28–29); the extension
+plane (event log, stdio host, intercept verdicts, Hook collection, console views) landed
+2026-10-13. Next: the refinement phases of §10 (P8–P12).
