@@ -272,6 +272,28 @@ async fn http_response(sock: &mut TcpStream, status: u16, body: &[u8], ctype: &s
     sock.flush().await
 }
 
+/// Where the repo-shipped default `config.kdl` lives: beside the
+/// `frontend/` directory the daemon already resolves. The NixOS install
+/// points `MUDRA_FRONTEND_DIR` into the config dir
+/// (`~/.config/mudra`, a developMode symlink into the repo tree), so the
+/// default layer follows it to `~/.config/mudra/config.kdl`.
+/// `MUDRA_HOME` is the runtime data dir (store, profiles, lock) and never
+/// ships a config — deriving from it looked for a file that cannot exist,
+/// which is how the deployed daemon ended up with `GET /config` failing
+/// and the extension gate refusing every extension. Without the env var
+/// `frontend` is `MUDRA_HOME/frontend`, so the derivation degrades to the
+/// Python-era `<home>/config.kdl`; a path with no parent (`/`) also falls
+/// back there.
+pub fn config_default_path(
+    frontend_dir: &std::path::Path,
+    home: &std::path::Path,
+) -> std::path::PathBuf {
+    frontend_dir
+        .parent()
+        .map(|p| p.join("config.kdl"))
+        .unwrap_or_else(|| home.join("config.kdl"))
+}
+
 /// The GET /config response: (status, json body). Two layers re-read
 /// per request (Python parity: a config.kdl edit needs only a
 /// panel/extension reload, not a daemon restart). A broken file is a
@@ -617,6 +639,9 @@ pub async fn run() -> Result<(), String> {
     let panel_root = std::env::var_os("MUDRA_PANEL_DIST")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| home.join("crates/mudra-panel/dist"));
+    // the default config layer ships beside `frontend/` (see
+    // `config_default_path`): the data dir holds no config.kdl
+    let config_default = config_default_path(&frontend, &home);
     let real = crate::runtime::Real {
         profiles_dir: home.join("profiles"),
         default_extensions: vec![frontend.display().to_string()],
@@ -641,7 +666,7 @@ pub async fn run() -> Result<(), String> {
         host: Arc::new(crate::host::Registry::default()),
         frontend_dir: frontend,
         panel_root,
-        config_default: home.join("config.kdl"),
+        config_default,
         nest,
     });
 

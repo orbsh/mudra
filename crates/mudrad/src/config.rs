@@ -1,9 +1,11 @@
 //! KDL config loader — port of `mudralib/config.py` (behavioral spec).
 //!
-//! Two layers: the repo-shipped default `config.kdl` (lives under
-//! `mudra_home()`, which the NixOS install symlinks to the repo tree —
-//! same file Python resolves via `__file__`'s parent) and the user layer
-//! `~/.config/mudra/config.kdl`. User layer overrides per key; the
+//! Two layers: the repo-shipped default `config.kdl` (ships beside the
+//! `frontend/` dir — `MUDRA_FRONTEND_DIR`'s parent, see
+//! `daemon::config_default_path`; the NixOS install symlinks the config
+//! dir into the repo tree, so it is the same file Python resolves via
+//! `__file__`'s parent) and the user layer `~/.config/mudra/config.kdl`.
+//! User layer overrides per key; the
 //! `keys` group merges PER-KEY (a flat dict.update would replace the
 //! whole keymap — the bug the Python side caught in testing). Unknown
 //! groups/keys are ignored (forward compatibility).

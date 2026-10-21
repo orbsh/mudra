@@ -4,7 +4,7 @@
 //! through these same handlers where the logic is testable.
 //! Run: `cargo test -p mudrad --test daemon_test`.
 
-use mudrad::daemon::{acquire_lock, resolve_static_path, startup_env_gaps, WS_PORT, PANEL_PORT, CONTROL_PORT};
+use mudrad::daemon::{acquire_lock, config_default_path, resolve_static_path, startup_env_gaps, WS_PORT, PANEL_PORT, CONTROL_PORT};
 
 // ================= flock singleton =================
 
@@ -113,6 +113,31 @@ fn config_endpoint_surfaces_broken_file_as_500() {
     assert_eq!(v["ok"], serde_json::json!(false));
     let err = v["err"].as_str().unwrap();
     assert!(err.starts_with("config: "), "{err}");
+}
+
+#[test]
+fn default_config_follows_the_frontend_dir_not_the_data_dir() {
+    // Regression: deriving the default layer from MUDRA_HOME looked for
+    // `<data>/config.kdl`, which the deployment never ships — GET /config
+    // answered 500 and the extension gate (host::supervise) refused every
+    // extension. The default config ships beside `frontend/`, and the NixOS
+    // install points MUDRA_FRONTEND_DIR into the config dir.
+    let home = std::path::Path::new("/home/u/.local/share/mudra");
+    assert_eq!(
+        config_default_path(std::path::Path::new("/home/u/.config/mudra/frontend"), home),
+        std::path::PathBuf::from("/home/u/.config/mudra/config.kdl")
+    );
+    // dev fallback (no MUDRA_FRONTEND_DIR): frontend = <home>/frontend, so
+    // the derivation degrades to the Python-era <home>/config.kdl
+    assert_eq!(
+        config_default_path(&home.join("frontend"), home),
+        home.join("config.kdl")
+    );
+    // a path with no parent carries no sibling: fall back instead of panicking
+    assert_eq!(
+        config_default_path(std::path::Path::new("/"), home),
+        home.join("config.kdl")
+    );
 }
 
 // ================= session env gate =================
