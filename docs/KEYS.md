@@ -13,6 +13,10 @@
 - **insert** — `i` 聚焦输入框；页内多个输入框时先进 hint 选择；Esc 失焦回 normal。
 - **command** — `:` 触发；输入框在状态栏底部占满全宽，候选浮层在上方（最多
   `maxCandidates` 条），Tab 补全命令名，↑↓ 选择，Enter 执行，Esc 退出。
+  **Tab 在参数型命令上不吞输入**：`:open` 上按 Tab 不是把行填成命令名，而是把行
+  交给地址补全（活页 + 打开历史，prompt 变 `:open `），已键入的参数作为初筛查询；
+  在该 picker 里 Tab 填选中的 URL、Enter 打开。`:set` 这类无 picker 的参数命令按
+  Tab 保留已键入的参数，只规范化命令名与分隔空格。
 
 ## 默认键位（均可被 keybindings 覆盖）
 
