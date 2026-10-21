@@ -136,7 +136,11 @@
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
     open:    { defaultKey: "o", desc: "open url / filter pages + history",
-               run: (arg) => openWithHistory(arg) },
+               run: (arg) => openWithHistory(arg),
+               // Tab drill-down: the command IS a picker, so the line hands
+               // over to it (live pages + history) instead of collapsing to
+               // the bare name with the typed argument thrown away
+               tab: (arg) => openWithHistory(arg) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
@@ -241,9 +245,29 @@
     // Commands that need a refresh (scroll etc.) call it internally already.
   }
 
+  // Tab in the command palette: `open` hands the line over to its own picker
+  // (live pages + history, prompt ":open ") with whatever argument was already
+  // typed as the initial query. Other argument-taking commands keep the line
+  // and only normalise the name + separating space — the old default filled
+  // the bare name, which silently ate a typed argument (":open fer" → ":open").
+  const tabCmd = (cand, api) => {
+    const def = COMMANDS[cand.value];
+    const arg = (api.value() || "").replace(/^:/, "").split(/\s+/).slice(1).join(" ");
+    if (def && def.tab) {
+      api.close();
+      cmdApi = null;
+      def.tab(arg);
+      return;
+    }
+    // `run` is declared with one parameter where the command takes an argument
+    // (the same Function.length contract pickCmd enforces)
+    if (def && def.run.length === 1) api.setValue(arg ? `${cand.value} ${arg}` : `${cand.value} `);
+    else api.setValue(cand.value);
+  };
+
   const enterCommand = async () => {
     setMode("command");
-    cmdApi = await MudraBar.openCommand(filterCmd, pickCmd);
+    cmdApi = await MudraBar.openCommand(filterCmd, pickCmd, tabCmd);
     filterCmd(":");
   };
 

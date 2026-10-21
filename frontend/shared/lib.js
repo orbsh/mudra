@@ -271,6 +271,15 @@ const MudraBar = {
     const api = {
       setItems(next) { items = next; sel = Math.min(sel, Math.max(0, items.length - 1)); renderList(); },
       value: () => input.value,
+      // The one place that fills the line: value in, selection reset, host
+      // refilter, focus kept. Hosts' Tab hooks use this instead of touching
+      // the input node, so no hook can leave the list and the line disagreeing.
+      setValue(next) {
+        input.value = next;
+        sel = 0;
+        onInput(next, api);
+        input.focus();
+      },
       close,
     };
 
@@ -285,7 +294,7 @@ const MudraBar = {
         if (!items[sel]) return;
         // Drill-down hosts take over Tab entirely; default is fill the selected value and refilter
         if (onTab) onTab(items[sel], api);
-        else { input.value = items[sel].value; sel = 0; onInput(input.value, api); input.focus(); }
+        else api.setValue(items[sel].value);
       }
       else if (e.key === "Backspace" && input.value === "" && onBackspace) {
         // Layer-up hook: only fires on an empty input, so normal text editing is unaffected
