@@ -395,6 +395,10 @@ page_tag(page_id, tag_id)      -- 树间多行 = 多选；树内单选为 app �
   模式；daemon 的 env 闸门缺一即硬拒，systemd user 环境不保证齐全），并
   显式设 `MUDRA_FRONTEND_DIR`/`MUDRA_PANEL_DIST` 指 `~/.config/mudra/` 侧
   路径（daemon 默认拼 MUDRA_HOME 子路径，部署形态下资源在配置目录侧）。
+  **默认 `config.kdl` 层跟 `MUDRA_FRONTEND_DIR` 的父目录走**（仓根布局：
+  config.kdl 与 frontend/ 同级），不拼 MUDRA_HOME——数据目录（store/
+  profiles/lock）从不放配置，按数据目录解析会得到恒缺失的路径
+  （2026-10-21 修：`GET /config` 恒 500、扩展闸门拒装一切扩展）。
   CLI 无会话环境要求（纯 8899 转发），panel 窗口由 daemon spawn、继承其
   环境——niri `Mod+Q` 绑 `mudra ui` 经 systemd 常驻的 daemon 打开，不依赖
   按键 shell 的环境。
