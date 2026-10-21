@@ -106,7 +106,8 @@ walker 的 provider 是 **编译进二进制的**（apps/files/windows…），�
 launcher 侧如需 tag 过滤，用 `p` 模式的过滤参数即可，无需多选。
 
 需 mudra 侧补的数据能力（草案依赖）：
-- **星级 / 收藏**：mudra 目前无 bookmark — 需新建（`site_stars` 或并入 state）。
+- **星级 / 收藏**：**不新建**。收藏夹是评分轴（importance ★ / quality ♥ /
+  urgency 🔥）的一位粗粒度投影，见 `docs/ADR-no-favorites.md`（2026-10-21）。
 - **排序偏好**：存 `state` 表（`mudra use`/`mudra mode` 已有写入机制），tabs/sessions 脚本按它排序。
 - **当前聚焦 tab 识别**：`pid→instance→title 匹配 target`（同 `mudra col remember`，机制已通）。
 
@@ -141,7 +142,8 @@ declaration in the niri config (until then `move` takes an index/name ref). The 
 items that used to head this list (elephant menus, the `p` hot path, star/bookmark data)
 are void: the launcher layer was dropped 2026-09, the rating axes are tag-forest trees
 (`importance` / `urgency` / `quality` seeded in the store), and sort preference is a
-`state` slot.
+`state` slot. A favorites list is **decided against** — `docs/ADR-no-favorites.md`
+(2026-10-21): the membership bit is a coarse projection of those axes.
 
 ### 重构影响（tag 森林 → PLAN §9 / wiki `tag-forest.md`）
 LauncherExt 从 session/page 视角向 **tag 森林** 演进：`p` 模式按 tag 维度过滤

@@ -83,6 +83,12 @@ trees → plain multi-tag; all tags on one tree → classic taxonomy).
   later *suggest* rules from your manual scores.
 - **`topic`** trees (plain, multi-select): `project:x / news / tech`.
 
+**No favorites list**: a bookmark is the same collapse at one bit — the axes above
+already say *why* a page is kept, at five levels each, and the read path is the
+tag→page edge. Decided (and the retired launcher-draft alternative closed) in
+`docs/ADR-no-favorites.md`; a genuinely new dimension becomes a new rank axis, not
+a membership flag.
+
 **Isolated instance**: a tag with `isolated=true` runs its content in an independent
 instance — own profile/cookie/process (login/privacy isolation). Currently the four
 `situation` leaves are isolated; a page matching several isolated tags lands on the

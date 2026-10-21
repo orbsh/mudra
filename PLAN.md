@@ -242,6 +242,10 @@ wiki），故先只做 chromium=CDP，等哪个引擎协议长成熟再补新 ba
 - **P10 NB 评分实现**：importance/urgency 5 级有序 NB（特征=域名/URL token/title+正文+标题党一致性；sqlite `nb_class`/`nb_feat` 增量+预测，见 §10 NB 数据模型）。
 - **P11 RSS 捕获**：订阅源 → inbox，幂等去重（材料在 wiki `infoflow-refinement.md`）。
 - **P12 LLM 总结 / 聚合摘要 → 态势感知**：高价值页单页/聚合摘要，作为更大监督系统输入侧。
+- **P13 `:open` 的第三候选源（星级页，无存储改动）**：不做收藏夹——星级=rank 轴上的
+  tag，`page_tag` junction 的 tag→page 方向即可反查（裁决见 `docs/ADR-no-favorites.md`）。
+  缺的只是读取面：在「活页 + 打开历史」之外给 picker 一个「带高 rank tag 的页」候选源；
+  用哪条轴、哪一档当阈值到接线时定。
 
 Each phase ends with a working, verifiable slice (per 迭代闭环). Cross-cutting: verify niri/CDP APIs against reality before wiring each phase (the "fabricated API" rule).
 
