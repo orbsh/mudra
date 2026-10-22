@@ -493,9 +493,12 @@ pub fn App() -> impl IntoView {
         </nav>
     };
 
+    // the filter row belongs to the tree; the other two surfaces carry
+    // their own header inside their view, so an empty strip here would be
+    // a border with nothing under it
     let hdr = view! {
-        <header class="hdr">
-            <Show when=move || view.get() == "pages" fallback=|| ()>
+        <Show when=move || view.get() == "pages" fallback=|| ()>
+            <header class="hdr">
                 {
                     // the tree's controls need the panel-state handle by
                     // value in their own closures; Show's children are
@@ -568,8 +571,8 @@ pub fn App() -> impl IntoView {
                         </div>
                     }
                 }
-            </Show>
-        </header>
+            </header>
+        </Show>
     };
 
     // main: one surface at a time. The tree's `For` keeps the Arc

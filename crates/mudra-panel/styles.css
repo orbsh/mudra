@@ -99,7 +99,11 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 .b.v.on { background: var(--sel); border-color: var(--sel); color: var(--on-sel); font-weight: 600; }
 
 /* ---- view header (count + filter chips) + error line ---- */
-.vhdr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 12px 4px; border-bottom: 1px solid var(--line); }
+/* each log surface's own controls: it is the first child of the scrolling
+   area, so it sticks to the top edge instead of scrolling away with the rows */
+.vhdr { position: sticky; top: 0; z-index: 2; background: var(--bg);
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        padding: 6px 12px 4px; border-bottom: 1px solid var(--line); }
 .err { color: var(--red); font-size: 12px; padding: 6px 12px; }
 
 /* ---- event log rows (one line per event, newest first) ---- */
