@@ -61,58 +61,84 @@
     }
   };
 
+  // ---- the two opening verbs ----
+  // open = navigate THIS page in place (Enter in the address picker, hints `f`);
+  // new  = a separate page/window (hints `F`). The daemon resolves the address
+  // for both (`/visit`, `/open` share spawn::normalize_url), so "bing" means
+  // bing.com whichever verb carries it.
+  async function openCurrent(url) {
+    const text = (url || "").trim();
+    if (!text) return flashBar("usage: :open <url>");
+    // The console page is the UI: it never navigates itself away.
+    if (role === "console") {
+      const r = await send({ type: "new", url: text });
+      return flashBar(r.ok === false ? r.err || "open failed" : "open ok");
+    }
+    // /visit resolves the input and writes the History row — an in-place
+    // navigation only refreshes the existing page row, so the watcher never
+    // sees a new visit.
+    const r = await send({ type: "visit", url: text });
+    const target = (r && r.url) || (/^[a-z]+:\/\//i.test(text) ? text : `https://${text}`);
+    location.href = target;
+  }
+
   // ---- open: address-bar completion in both roles ----
   // candidates = live pages (console role only, jump targets) merged
   // ahead of ranked open-history rows; Enter on no candidate opens the
-  // raw input as a URL.
-  function openOnPage(arg) {
-    if (!arg) return flashBar("usage: :open <url>");
-    return send({ type: "open", url: arg }).then((r) =>
-      flashBar(r.ok === false ? r.err || "open failed" : "open ok"));
-  }
+  // typed text with the `open` verb (in place, in this page).
   async function openWithHistory(initial) {
     // The cmdline opens FIRST (setMode + input focus before any await):
     // loading `pages` up front used to swallow the user's first keystrokes
     // in normal mode while the round trip was in flight.
     let pages = [];
-    let lastQ = "";
+    let shown = [];   // candidates currently on screen
+    let query = "";   // the text the current list was ranked for
+    let newest = 0;   // filters await the SW; only the newest answer may land
     const filter = async (q, api) => {
-      lastQ = q || "";
-      const s = lastQ.toLowerCase();
+      const text = q || "";
+      // Tab completion installs a candidate's value verbatim. Re-ranking that
+      // whole URL matches nothing and would wipe the list right after the
+      // keystroke the user meant to read — keep what is on screen instead.
+      if (shown.some((c) => c.value === text)) return;
+      query = text;
+      const mine = ++newest;
+      const s = text.toLowerCase();
       const pageC = pages
         .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
         .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }));
-      const hr = await send({ type: "history", query: lastQ, limit: 10 });
-      if (hr.ok === false) { api.setItems(pageC); return; }
-      const histC = (hr.candidates || [])
+      const hr = await send({ type: "history", query: text, limit: 10 });
+      if (mine !== newest) return; // a newer keystroke already asked
+      const histC = hr.ok === false ? [] : (hr.candidates || [])
         .filter((h) => !pages.some((p) => p.url === h.url))
         .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "history" }));
-      api.setItems([...pageC, ...histC]);
+      shown = [...pageC, ...histC];
+      api.setItems(shown);
     };
-    const pick = async (cand, raw, api) => {
+    const pick = async (cand, raw, api, reason) => {
       cmdApi = null; await setMode("normal");
+      if (reason === "cancel") return; // Esc dismisses: it never opens the typed text
       const q = (raw || "").trim();
       if (cand && cand.kind === "page") {
         // a selected candidate -> jump to the page (via Tab completion or arrow selection)
         const res = await send({ type: "focus_page", page_id: cand.value });
         return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
       }
-      if (cand && cand.kind === "history") return openOnPage(cand.value);
-      // no matching candidate -> open as a URL
-      if (q) return openOnPage(q);
+      if (cand && cand.kind === "history") return openCurrent(cand.value);
+      // no candidate on screen -> open the typed text
+      if (q) return openCurrent(q);
     };
     setMode("command");
     cmdApi = await MudraBar.openCommand(filter, pick, null, null, { prompt: ":open " });
-    filter(initial || "", cmdApi);
     if (initial) {
       const input = document.getElementById("mudra-cmdinput");
       if (input) input.value = initial;
     }
+    filter(initial || "", cmdApi);
     // pages ride in the background; refresh the list when they land
     send({ type: "pages" }).then((r) => {
       if (r.ok !== false && cmdApi) {
         pages = role === "console" ? r.pages || [] : [];
-        filter(lastQ, cmdApi);
+        filter(query, cmdApi);
       }
     }).catch(() => {});
   }
@@ -120,8 +146,8 @@
   // ---- commands ----
   // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
   const COMMANDS = {
-    hint:    { defaultKey: "f", desc: "link hints", run: (_a, o) => startHints(false, o) },
-    hintNew: { defaultKey: "F", desc: "link hints (open in new window)", run: (_a, o) => startHints(true, o) },
+    hint:    { defaultKey: "f", desc: "link hints — open (this page)", run: (_a, o) => startHints(false, o) },
+    hintNew: { defaultKey: "F", desc: "link hints — new (another page)", run: (_a, o) => startHints(true, o) },
     back:    { defaultKey: "a", desc: "history back", run: () => history.go(-1) },
     forward: { defaultKey: "d", desc: "history forward", run: () => history.go(1) },
     insert:  { defaultKey: "i", desc: "insert mode (focus input)", run: () => startInsert() },
@@ -376,10 +402,14 @@
     hideHints();
     const a = el.closest("a");
     const href = a?.href;
-    if (!newWindow && href && a.hash && a.pathname === location.pathname && a.search === location.search) {
-      location.hash = a.hash; // same-page anchor jump in place, no new window
+    const samePageAnchor = !!href && !!a.hash &&
+      a.pathname === location.pathname && a.search === location.search;
+    if (samePageAnchor && !newWindow) {
+      location.hash = a.hash; // same-page anchor jump in place, no new page
     } else if (href && /^https?:/.test(href)) {
-      send({ type: "open", url: href }); // mudrad pulls up a new --app window
+      // f = open (this page navigates in place), F = new (a separate --app window)
+      if (newWindow) send({ type: "new", url: href });
+      else openCurrent(href);
     } else {
       el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     }

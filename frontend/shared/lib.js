@@ -182,8 +182,11 @@ const MudraBar = {
   // description never blur into one run of text.
   // Optional host hooks for non-command pickers: onTab(candidate, api) replaces the default
   // fill-and-refilter (drill-down semantics), onBackspace(api) fires when Backspace is pressed
-  // on an empty input (layer-up semantics). opts.prompt replaces the leading ":" marker
-  // (a host entered by a key binding shows what that key would have typed, e.g. ":open ").
+  // on an empty input (layer-up semantics). onPick also gets a 4th argument, reason:
+  // "enter" when Enter committed the line, "cancel" when Esc dismissed it — hosts that treat
+  // "no candidate" as "use the typed text" must not fire that on Esc.
+  // opts.prompt replaces the leading ":" marker (a host entered by a key binding shows what
+  // that key would have typed, e.g. ":open ").
   async openCommand(onInput, onPick, onTab, onBackspace, opts) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
@@ -271,12 +274,17 @@ const MudraBar = {
     const api = {
       setItems(next) { items = next; sel = Math.min(sel, Math.max(0, items.length - 1)); renderList(); },
       value: () => input.value,
-      // The one place that fills the line: value in, selection reset, host
-      // refilter, focus kept. Hosts' Tab hooks use this instead of touching
-      // the input node, so no hook can leave the list and the line disagreeing.
+      // The one place that fills the line: value in, selection follows it,
+      // host refilter, focus kept. Hosts' Tab hooks use this instead of
+      // touching the input node, so no hook can leave the list and the line
+      // disagreeing. Selection follows the installed value because Enter
+      // takes items[sel]: a completed row must stay the Enter target (it used
+      // to reset to row 0, so Enter could open a different candidate than the
+      // line showed).
       setValue(next) {
         input.value = next;
-        sel = 0;
+        const hit = items.findIndex((it) => it.value === next);
+        sel = hit >= 0 ? hit : 0;
         onInput(next, api);
         input.focus();
       },
@@ -286,7 +294,7 @@ const MudraBar = {
     input.addEventListener("input", () => { sel = 0; onInput(input.value, api); });
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Escape") { e.preventDefault(); close(); onPick(null, input.value, api); }
+      if (e.key === "Escape") { e.preventDefault(); close(); onPick(null, input.value, api, "cancel"); }
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
@@ -300,7 +308,7 @@ const MudraBar = {
         // Layer-up hook: only fires on an empty input, so normal text editing is unaffected
         e.preventDefault(); onBackspace(api);
       }
-      else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, input.value, api); }
+      else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, input.value, api, "enter"); }
     });
     return api;
   },

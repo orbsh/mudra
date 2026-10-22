@@ -21,10 +21,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg.type) {
-        case "open": {
-          // hints / link activation: mudrad resolves ctx from sender tab id
+        case "new": {
+          // hints `F` / the console page's open: a separate --app window in
+          // the sender's ctx (mudrad resolves ctx from the tab id)
           const out = await post("/open", { url: msg.url, tabId: tabIdOf(sender) });
           sendResponse({ ok: true, ...out });
+          break;
+        }
+        case "visit": {
+          // the `open` verb: resolve the address and record the visit; the
+          // content script navigates itself to the returned url
+          const out = await post("/visit", { url: msg.url });
+          sendResponse(out); // {url}
           break;
         }
         case "status": {
