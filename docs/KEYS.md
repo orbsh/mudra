@@ -54,8 +54,15 @@
 存储在 `chrome.storage.local`（默认值见 `shared/lib.js` 的 `MudraConfig.defaults`）：
 
 `hintChars`（字母池，顺序即分配顺序）、`hintFontSize`、`statusHeight/Font/Fg/Bg`、
-`insertFg/Bg`、`hintFg/Bg`、`keybindings`、`scrollStepLines`（默认 3）、
+`insertFg/Bg`、`hintFg/Bg`、`statusBlur`（默认 12）、`keybindings`、`scrollStepLines`（默认 3）、
 `pageOverlapLines`（默认 5）、`maxCandidates`（默认 10）。
+
+**状态栏外观**：底色默认半透明（`bg "rgba(0,0,0,.55)"`、`insertBg "rgba(232,232,232,.62)"`、
+hint 模式的深蓝 `rgba(32,64,128,.62)` 同理），配 `statusBlur`（毛玻璃/backdrop-filter 半径，
+`0` = 只留半透明）。命令输入行与候选浮层是同一处外观，一起毛玻璃。
+文字色默认 `"auto"`：按背景色算 WCAG 相对亮度，取黑/白里对比度高的那个（alpha 不参与判色——
+半透明下真实底色是网页内容，静态算不出来，所以按配置的色相判）；写死颜色（`fg "#ffffff"`）
+即锁死。hint 标签（`f` 的小方块）保持不透明：它要压在页面文字上。
 
 cmd 模式就地修改（写入 storage，立即生效，重启实例保留）：
 
