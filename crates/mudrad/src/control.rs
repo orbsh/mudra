@@ -589,17 +589,43 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// to url, tag_ids ride along so rank/capsule state needs no extra
     /// round trip.
     pub fn ctx_pages(&self, body: &Value) -> Result<Value, String> {
-        let ctx = body
-            .get("ctx")
+        // The panel shows every context at once (there is no ctx switch), so
+        // an ABSENT ctx means "all running instances"; the CLI and the
+        // extension still pass one and get the old single-context answer.
+        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string);
+        // `q` is the database search behind the panel's Enter: the store's
+        // page recall (the matcher /focus and the bar's history filter use).
+        // Every keystroke before that is filtered on the client.
+        let q = body
+            .get("q")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| self.current_ctx());
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let keep: Option<std::collections::HashSet<u64>> = if q.is_empty() {
+            None
+        } else {
+            Some(
+                self.store
+                    .pages_by_fragment(&q)
+                    .into_iter()
+                    .map(|(k, _)| k.id)
+                    .collect(),
+            )
+        };
+        let insts = match &ctx {
+            Some(c) => self.store.instance_by_profile(c),
+            None => self.running_instances(),
+        };
         let mut out = Vec::new();
-        for (ik, inst) in self.store.instance_by_profile(&ctx) {
+        for (ik, inst) in insts {
             let mut pages: Vec<(mudra_store::PageKey, mudra_store::Page)> =
                 self.store.pages_of_instance(ik.id, false);
             pages.sort_by_key(|(_, p)| p.position);
             for (pk, p) in pages {
+                if keep.as_ref().is_some_and(|k| !k.contains(&pk.id)) {
+                    continue;
+                }
                 let tag_ids: Vec<u32> = self
                     .store
                     .tags_of_page(&pk)
@@ -617,6 +643,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                     "opened_at": p.opened_at,
                     "closed": p.closed_at != 0,
                     "port": inst.port,
+                    "ctx": inst.profile,
                 }));
             }
         }

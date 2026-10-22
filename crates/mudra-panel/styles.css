@@ -28,7 +28,11 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 /* ---- header: the filter row, on top of the tree it filters ---- */
 .hdr { border-bottom: 1px solid var(--line); padding: 8px 12px; }
 .hdr-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.hdr select { background: var(--chip); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+/* the box is the whole filter the operator types into: Enter widens it from
+   the loaded rows to the store's recall, Escape clears both */
+.hdr .q { background: var(--chip); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+          padding: 4px 8px; font-size: 12px; width: 22em; min-width: 10em; flex: 0 1 22em; }
+.hdr .q:focus { outline: none; border-color: var(--sel); }
 .count { color: var(--muted); }
 .b { background: var(--chip); border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .b:hover { border-color: var(--sel); }

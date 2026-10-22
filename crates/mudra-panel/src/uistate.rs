@@ -1,5 +1,8 @@
 //! Panel-local UI state on the browser's localStorage (ADR-0028's
-//! consumer half): `sort_new` / `filters` / `collapsed` survive reload.
+//! consumer half): `filters` / `collapsed` survive reload. The sort
+//! toggle is gone with the panel's sort button (the tree is always
+//! newest-first) and the text filter is deliberately not persisted —
+//! a filter you cannot see is a view you cannot explain.
 //!
 //! Deliberately the RAW byte API, not a typed `Collection`: this is the
 //! documented UI-state role — no indexes, no epoch, no schema on the
@@ -17,7 +20,6 @@
 use okm_core::localstorage_backend::LocalStorageStore;
 use okm_core::VirtualStorage;
 
-const K_SORT: &[u8] = b"ui/sort_new";
 const K_FILTERS: &[u8] = b"ui/filters";
 const K_COLLAPSED: &[u8] = b"ui/collapsed";
 
@@ -50,14 +52,6 @@ impl UiState {
 
     // ---- loads (defaults when absent/garbage: cache never breaks the view) ----
 
-    pub fn sort_new(&self) -> bool {
-        match self.get(K_SORT).as_deref() {
-            Some([1]) => true,
-            Some([0]) => false, // absent or malformed: the JS default is newest-first
-            _ => true,
-        }
-    }
-
     pub fn filters(&self) -> Vec<u32> {
         self.fixed(self.get(K_FILTERS), 4, |c| {
             u32::from_be_bytes([c[0], c[1], c[2], c[3]])
@@ -81,10 +75,6 @@ impl UiState {
     }
 
     // ---- saves (each write site persists its own new value) ----
-
-    pub fn save_sort(&self, newest_first: bool) {
-        self.put(K_SORT, vec![newest_first as u8]);
-    }
 
     pub fn save_filters(&self, ids: &[u32]) {
         let mut v = Vec::with_capacity(ids.len() * 4);
@@ -113,13 +103,11 @@ mod tests {
     #[test]
     fn stateless_builds_read_defaults() {
         let ui = UiState::open();
-        assert!(ui.sort_new());
         assert!(ui.filters().is_empty());
         assert!(ui.collapsed().is_empty());
-        ui.save_sort(false); // must not panic without a store
         ui.save_filters(&[1, 2]);
         ui.save_collapsed(&[9]);
-        assert!(ui.sort_new()); // writes dropped: defaults hold
+        assert!(ui.filters().is_empty()); // writes dropped: defaults hold
     }
 
     #[test]

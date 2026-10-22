@@ -123,14 +123,18 @@ pub fn App() -> impl IntoView {
     // thumbnails read (cache never breaks the view).
     let ui = uistate::UiState::open();
 
-    let (contexts, set_contexts) = signal(Arc::new(Vec::<String>::new()));
-    let (ctx, set_ctx) = signal(String::new());
+    // Text filter, two copies on purpose: `qtext` is what the box holds and
+    // is applied on the client on every keystroke (no round trip), `qrun` is
+    // what Enter committed to the daemon (the store's page recall). Typing
+    // never changes which rows the server sent; Enter replaces them.
+    let (qtext, set_qtext) = signal(String::new());
+    let (qrun, set_qrun) = signal(String::new());
     let (roots, set_roots) = signal(Roots::default());
     let (by_id, set_by_id) = signal(IdMap::default());
     let (leaves, set_leaves) = signal(Leaves::default());
     let (axes, set_axes) = signal(Axes::default());
     let (pages, set_pages) = signal(Pages::default());
-    let (sort_new, set_sort_new) = signal(ui.sort_new());
+
     let (filters, set_filters) = signal(Arc::new(ui.filters()));
     let (collapsed, set_collapsed) = signal(Arc::new(ui.collapsed()));
     let (menu, set_menu) = signal(None::<Menu>);
@@ -155,8 +159,7 @@ pub fn App() -> impl IntoView {
     // derived indexes (JS indexTagTree's byId/allLeaves/rankRoots
     // triple) rebuild in the same pass.
     let do_forest = {
-        let (set_roots, set_contexts, set_ctx, ctx) =
-            (set_roots, set_contexts, set_ctx, ctx);
+        let set_roots = set_roots;
         move |_: ()| {
             spawn_local(async move {
                 match http::forest().await {
@@ -203,31 +206,16 @@ pub fn App() -> impl IntoView {
                         set_by_id.update(|m| *m = Arc::new(map));
                         set_leaves.update(|l| *l = Arc::new(plain));
                         set_axes.update(|a| *a = Arc::new(axs));
-                        set_contexts.update(|c| *c = Arc::new(f.contexts.clone()));
-                        // JS load() rule, ported exactly:
-                        // `if (!ctx() && r.current) setCtx(r.current);
-                        //  else if (!ctx() && r.contexts.length) setCtx(r.contexts[0]);`
-                        // current wins unconditionally — an empty
-                        // contexts list (fresh store: situation tree not
-                        // built yet, no seed rows on either side) must
-                        // still adopt the daemon's current context, or
-                        // pages never load.
-                        if ctx.get_untracked().is_empty() {
-                            if !f.current.is_empty() {
-                                set_ctx.set(f.current.clone());
-                            } else if let Some(first) = f.contexts.first() {
-                                set_ctx.set(first.clone());
-                            }
-                        }
                     }
                     Err(e) => web_sys::console::warn_1(&format!("forest: {e}").into()),
                 }
             });
         }
     };
-    let do_pages = move |c: String| {
+    let do_pages = move || {
+        let q = qrun.get_untracked();
         spawn_local(async move {
-            match http::ctx_pages(&c).await {
+            match http::pages(&q).await {
                 Ok(r) => set_pages.update(|p| {
                     *p = Arc::new(r.pages.into_iter().map(Arc::new).collect())
                 }),
@@ -237,23 +225,16 @@ pub fn App() -> impl IntoView {
     };
     do_forest(());
 
-    // ctx -> pages (JS createEffect port)
+    // the first pull, and every Enter afterwards: the effect watches the
+    // COMMITTED query (`qrun`), not the box's text — typing must stay local
     {
-        // zero-param effect + captured RefCell for the previous ctx:
-        // `Effect::new` unifies T with the RETURN type, so threading the
-        // old value through the Option<T> parameter would force
-        // T = Option<String> against a String parameter — this shape
-        // side-steps the unification entirely
-        let last = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let last = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
         Effect::new(move || {
-            let c = ctx.get();
-            if *last.borrow() != c {
-                *last.borrow_mut() = c.clone();
-                if c.is_empty() {
-                    set_pages.update(|p| *p = Pages::default());
-                } else {
-                    do_pages(c);
-                }
+            let q = qrun.get();
+            let mut l = last.borrow_mut();
+            if l.as_deref() != Some(q.as_str()) {
+                *l = Some(q);
+                do_pages();
             }
         });
     }
@@ -265,10 +246,7 @@ pub fn App() -> impl IntoView {
     link.on_epoch({
         move |_: u64| {
             do_forest(());
-            let c = ctx.get_untracked();
-            if !c.is_empty() {
-                do_pages(c);
-            }
+            do_pages();
             // the log and hook views read the hint as a counter (their
             // collections never bump the epoch themselves)
             set_tick.update(|t| *t += 1);
@@ -291,52 +269,54 @@ pub fn App() -> impl IntoView {
         set_indent.set(ui.indent);
     });
 
-    // ---- derived page tree (port of the JS `pageTree` memo) ----
+    // ---- derived page tree ----
     let (tree, set_tree) = signal(Vec::<Node>::new());
+    // how many rows survive the filters (the count in the bar shows this
+    // against the loaded total, so a filter that hides everything says so)
+    let (shown, set_shown) = signal(0usize);
     {
-        let (pages, filters, sort_new, collapsed) =
-            (pages, filters, sort_new, collapsed);
+        let (pages, filters, collapsed, qtext) = (pages, filters, collapsed, qtext);
         Effect::new(move || {
             let list = pages.get();
             let fl = filters.get();
             let coll = collapsed.get();
-            let sort = sort_new.get();
-            let ids: Vec<u64> = list.iter().map(|p| p.id).collect();
-            fn build(
-                pid: u64,
-                list: &Pages,
-                ids: &[u64],
-                fl: &[u32],
-                coll: &[u64],
-                sort: bool,
-            ) -> Vec<Node> {
+            let text = qtext.get().trim().to_lowercase();
+            // one visibility rule, applied to tags AND text; the text reads
+            // the same three fields the bar's `:open` filter matches on
+            let hit = |p: &PageInfo| {
+                (fl.is_empty() || fl.iter().all(|t| p.tag_ids.contains(t)))
+                    && (text.is_empty()
+                        || format!("{} {} {}", p.title, p.url, p.ctx)
+                            .to_lowercase()
+                            .contains(&text))
+            };
+            let visible: Vec<u64> = list.iter().filter(|p| hit(p)).map(|p| p.id).collect();
+            fn build(pid: u64, list: &Pages, vis: &[u64], coll: &[u64]) -> Vec<Node> {
                 let mut rows: Vec<Arc<PageInfo>> = list
                     .iter()
+                    .filter(|p| vis.contains(&p.id))
                     .filter(|p| {
                         let mut parent = p.parent_id;
-                        if parent == 0 || !ids.contains(&parent) {
+                        if parent == 0 || !vis.contains(&parent) {
+                            // a filtered-out ancestor must not take its match
+                            // with it: the surviving row becomes a root
                             parent = 0;
                         }
                         parent == pid
-                            && (fl.is_empty() || fl.iter().all(|t| p.tag_ids.contains(t)))
                     })
                     .cloned()
                     .collect();
-                rows.sort_by(|a, b| {
-                    if sort {
-                        b.opened_at.cmp(&a.opened_at)
-                    } else {
-                        a.opened_at.cmp(&b.opened_at)
-                    }
-                });
+                // newest first, always — the sort toggle is gone
+                rows.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
                 rows.into_iter()
                     .map(|p| {
-                        let kids = build(p.id, list, ids, fl, coll, sort);
+                        let kids = build(p.id, list, vis, coll);
                         Node { open: !coll.contains(&p.id), p, kids }
                     })
                     .collect()
             }
-            set_tree.update(|t| *t = build(0, &list, &ids, &fl, &coll, sort));
+            set_shown.update(|n| *n = visible.len());
+            set_tree.update(|t| *t = build(0, &list, &visible, &coll));
         });
     }
 
@@ -441,14 +421,6 @@ pub fn App() -> impl IntoView {
             }));
         })
     };
-    let switch_ctx = move |name: String| {
-        spawn_local(async move {
-            set_ctx.set(name.clone());
-            if let Err(e) = http::verb("/ctx", serde_json::json!({"ctx": name})).await {
-                web_sys::console::warn_1(&format!("set_ctx: {e}").into());
-            }
-        });
-    };
 
     // ---- the shared hover-shot timer ----
     // one long-lived callback (leaked once by design — one page, one
@@ -532,42 +504,39 @@ pub fn App() -> impl IntoView {
                     let ui = ui.clone();
                     view! {
                         <div class="hdr-row filters">
-                        <select
-                            prop:value=move || ctx.get()
-                            on:change={
+                        <input
+                            class="q"
+                            type="text"
+                            placeholder="filter — Enter searches the store"
+                            prop:value=move || qtext.get()
+                            on:input={
                                 move |ev: leptos::ev::Event| {
-                                    if let Some(v) = ev
+                                    if let Some(t) = ev
                                         .target()
-                                        .and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned())
+                                        .and_then(|t| t.dyn_ref::<web_sys::HtmlInputElement>().cloned())
                                     {
-                                        switch_ctx(v.value());
+                                        set_qtext.set(t.value());
                                     }
                                 }
                             }
-                        >
-                            <For
-                                each=move || (*contexts.get()).clone()
-                                key=|c| c.clone()
-                                children=move |c: String| {
-                                    let v = c.clone();
-                                    view! { <option value=v>{c}</option> }
+                            on:keydown={
+                                move |ev: leptos::ev::KeyboardEvent| match ev.key().as_str() {
+                                    // Enter commits the text to the daemon: the store's
+                                    // recall rebuilds the rows (typing above only
+                                    // filtered what was already loaded)
+                                    "Enter" => set_qrun.set(qtext.get_untracked()),
+                                    // Escape drops the filter on both sides
+                                    "Escape" => {
+                                        set_qtext.set(String::new());
+                                        set_qrun.set(String::new());
+                                    }
+                                    _ => {}
                                 }
-                            />
-                        </select>
-                        <button class="b" on:click={
-                            let ui2 = ui.clone();
-                            move |_| {
-                                let mut s = false;
-                                set_sort_new.update(|x| {
-                                    *x = !*x;
-                                    s = *x;
-                                });
-                                ui2.save_sort(s);
                             }
-                        }>
-                            {move || if sort_new.get() { "new->old" } else { "old->new" }}
-                        </button>
-                        <span class="count">{move || format!("{} pages", pages.get().len())}</span>
+                        />
+                        <span class="count">
+                            {move || format!("{} / {} pages", shown.get(), pages.get().len())}
+                        </span>
                         <div class="filts">
                             <For
                                 each=move || (*leaves.get()).clone()

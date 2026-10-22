@@ -143,6 +143,10 @@ pub struct PageInfo {
     pub opened_at: u64,
     #[serde(default)]
     pub closed: bool,
+    /// the instance's profile — the panel shows every context at once, so
+    /// this is the only place a row says where it came from
+    #[serde(default)]
+    pub ctx: String,
 }
 
 #[derive(serde::Deserialize, Clone, Debug)]
@@ -154,8 +158,12 @@ pub async fn forest() -> Result<Forest, String> {
     call_json("/forest", Value::Null).await
 }
 
-pub async fn ctx_pages(ctx: &str) -> Result<Pages, String> {
-    call_json("/ctx_pages", serde_json::json!({ "ctx": ctx })).await
+/// `/ctx_pages` with no ctx: every running instance's pages. `q` non-empty
+/// makes the daemon answer with the store's page recall for it (the Enter
+/// path); an empty `q` returns the whole set (the every-keystroke path
+/// filters that on the client, so typing never costs a round trip).
+pub async fn pages(q: &str) -> Result<Pages, String> {
+    call_json("/ctx_pages", serde_json::json!({ "q": q })).await
 }
 
 #[derive(serde::Deserialize)]
