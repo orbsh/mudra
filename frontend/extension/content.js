@@ -6,10 +6,18 @@
   if (window.__mudraKeys) return;
   window.__mudraKeys = true;
 
+  // The service worker is the only bridge to mudrad, and a message it never
+  // answers resolves to `undefined` — which used to read as success (`r.ok`
+  // undefined is not false) and printed "opened in a new window" for a window
+  // that never existed. No answer is a failure, and it has to say so.
   const send = (msg) =>
     new Promise((res) => {
-      try { chrome.runtime.sendMessage(msg, (r) => res(r || {})); }
-      catch (e) { res({ ok: false, err: String(e) }); }
+      try {
+        chrome.runtime.sendMessage(msg, (r) => {
+          if (r) res(r.ok === undefined ? { ...r, ok: !r.err } : r);
+          else res({ ok: false, err: `no answer from the service worker (${msg.type})` });
+        });
+      } catch (e) { res({ ok: false, err: String(e) }); }
     });
 
   // ---- state ----

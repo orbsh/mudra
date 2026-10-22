@@ -17,9 +17,11 @@ async function post(path, body) {
 const tabIdOf = (sender) => (sender && sender.tab ? sender.tab.id : undefined);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  console.log("[mudra-keys] msg", msg.type, "tab", sender.tab && sender.tab.id);
   (async () => {
     try {
+      // inside the try on purpose: a throw up here happens before any
+      // sendResponse, and the sender would wait forever for an answer
+      console.log("[mudra-keys] msg", msg.type, "tab", sender.tab && sender.tab.id);
       switch (msg.type) {
         case "new": {
           // hints `F` / the console page's open: a separate --app window in
