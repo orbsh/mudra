@@ -30,6 +30,10 @@ const FOCUS_PROBES: usize = 32;
 pub struct Controller<'a, R: Runtime> {
     pub store: &'a mut MudraStore,
     pub rt: &'a mut R,
+    /// `/open`'s hand-offs to the watcher: a window this daemon spawned for a
+    /// page carries no CDP openerId, so the page-tree parent link travels
+    /// through this queue instead (see `watch::PendingParent`).
+    pub pending: &'a mut Vec<crate::watch::PendingParent>,
 }
 
 impl<'a, R: Runtime> Controller<'a, R> {
@@ -143,6 +147,20 @@ impl<'a, R: Runtime> Controller<'a, R> {
 
     // ================= verbs =================
 
+    /// Remember this window's parent for the watcher: `Some(page)` when the
+    /// request came from a live page (the extension's tabId), in which case the
+    /// page tree gets a link it could not learn from CDP.
+    fn hand_off_parent(&mut self, parent: Option<u64>, port: u16, url: &str) {
+        if let Some(parent) = parent {
+            self.pending.push(crate::watch::PendingParent {
+                port,
+                url: url.to_string(),
+                parent,
+                ts: crate::watch::now_ms(),
+            });
+        }
+    }
+
     /// POST /open {url, ctx?, tabId?, proxy?, extensions?}
     /// Instance alive -> join as --app; dead -> new instance (debug port,
     /// proxy/extensions reused from the old row).
@@ -161,6 +179,33 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .unwrap_or_else(|| self.current_ctx()),
         };
         let inst = self.store.instance_for_context(&ctx);
+        // who asked: the only place the parent link can come from — a window
+        // mudrad spawns has no CDP openerId. The extension sends its own url
+        // (`from`); the chrome tab id it also sends is NOT a CDP target id, so
+        // it only works for callers that speak CDP ids (the CLI does).
+        let parent = {
+            let from = body.get("from").and_then(Value::as_str).unwrap_or_default();
+            let by_tab = {
+                let tab = tab_text(body.get("tabId"));
+                if tab.is_empty() {
+                    None
+                } else {
+                    self.store.page_by_target(&tab).map(|(k, _)| k.id)
+                }
+            };
+            by_tab.or_else(|| {
+                let (k, _) = inst.as_ref()?;
+                if from.is_empty() {
+                    return None;
+                }
+                self.store
+                    .pages_of_instance(k.id, false)
+                    .into_iter()
+                    .filter(|(_, p)| p.closed_at == 0 && p.url == from)
+                    .max_by_key(|(pk, _)| pk.id)
+                    .map(|(pk, _)| pk.id)
+            })
+        };
         // alive? join. dead? new instance reusing the old row's config.
         let alive = inst.as_ref().filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid));
         if let Some((_, i)) = alive {
@@ -168,6 +213,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             self.rt.launch_join(&ctx, &url, proxy, ext).map_err(|e| e.to_string())?;
             let title = self.store.page_title_for_url(&url).unwrap_or_default();
             self.store.history_bump(&url, &title, crate::watch::now_ms());
+            self.hand_off_parent(parent, port, &url);
             return Ok(json!({"mode": "joined", "port": port, "ctx": ctx}));
         }
         // new instance: reuse the old row's config when present
@@ -184,6 +230,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             self.rt.apply_site_width(pid, sw.proportion.0);
         }
         self.store.history_bump(&url, "", crate::watch::now_ms());
+        self.hand_off_parent(parent, port, &url);
         Ok(json!({"mode": "new", "port": port, "pid": pid, "ctx": ctx}))
     }
 

@@ -23,8 +23,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       switch (msg.type) {
         case "new": {
           // hints `F` / the console page's open: a separate --app window in
-          // the sender's ctx (mudrad resolves ctx from the tab id)
-          const out = await post("/open", { url: msg.url, tabId: tabIdOf(sender) });
+          // the sender's ctx. `from` is the opener's own url — mudrad turns it
+          // into the page-tree parent link (chrome tab ids are not CDP target
+          // ids, so tabId alone cannot name the page that asked).
+          const out = await post("/open", { url: msg.url, tabId: tabIdOf(sender), from: msg.from });
           sendResponse({ ok: true, ...out });
           break;
         }

@@ -91,6 +91,10 @@ pub struct Daemon {
     /// Serve()-returned NestStorage: Send + Sync by construction
     /// (okm WS-CHANNEL); the WS adapter calls `apply` on shared handles.
     pub nest: Arc<okm_core::NestStorage<okm_core::FjallStore>>,
+    /// `/open` -> watcher hand-off for the page tree's parent links: a window
+    /// mudrad spawns carries no CDP openerId, so the sender's page travels
+    /// through here. In memory only — a lost entry costs one flat row.
+    pub pending_parent: std::sync::Arc<std::sync::Mutex<Vec<crate::watch::PendingParent>>>,
 }
 
 impl Daemon {
@@ -237,10 +241,14 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
 pub(crate) async fn run_verb(d: &Arc<Daemon>, path: &str, req: Value) -> Result<Value, String> {
     let mut store = d.store.lock().await;
     let mut rt = d.rt.lock().await;
+    let mut pending = d
+        .pending_parent
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let out = {
         // store derefs by coercion (concrete field type); rt is generic,
         // so the explicit deref is required there.
-        let mut c = Controller { store: &mut store, rt: &mut *rt };
+        let mut c = Controller { store: &mut store, rt: &mut *rt, pending: &mut pending };
         c.handle(path, &req)
     };
     if out.is_ok() {
@@ -442,6 +450,9 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
     };
 
     let mut session = WatchSession::new(instance_id, port, &ctx);
+    // /open's hand-offs: the only source of parent links for windows mudrad
+    // spawns itself (CDP gives those no openerId)
+    session.pending = Some(std::sync::Arc::clone(&d.pending_parent));
     let infos: Vec<TargetInfo> = match session.start(&conn).await {
         Ok(i) => i,
         Err(e) => {
@@ -668,6 +679,7 @@ pub async fn run() -> Result<(), String> {
         panel_root,
         config_default,
         nest,
+        pending_parent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_control(d2).await.expect("control server") }); }

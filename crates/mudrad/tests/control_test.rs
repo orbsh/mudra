@@ -152,7 +152,8 @@ impl Harness {
     /// built per call.
     fn verb(&mut self, path: &str, body: Value) -> Result<Value, String> {
         let Harness { store, rt, .. } = self;
-        let mut c = Controller { store, rt };
+        let mut pending = Vec::new();
+        let mut c = Controller { store, rt, pending: &mut pending };
         c.handle(path, &body)
     }
 

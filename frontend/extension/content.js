@@ -73,7 +73,7 @@
     if (!text) return flashBar("usage: :open <url>");
     // The console page is the UI: it never navigates itself away.
     if (role === "console") {
-      const r = await send({ type: "new", url: text });
+      const r = await send({ type: "new", url: text, from: location.href });
       return flashBar(r.ok === false ? r.err || "open failed" : "open ok");
     }
     // /visit resolves the input and writes the History row — an in-place
@@ -413,7 +413,7 @@
       location.hash = a.hash; // same-page anchor jump in place, no new page
     } else if (href && /^https?:/.test(href)) {
       // f = open (this page navigates in place), F = new (a separate --app window)
-      if (newWindow) send({ type: "new", url: href });
+      if (newWindow) send({ type: "new", url: href, from: location.href });
       else openCurrent(href);
     } else {
       el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

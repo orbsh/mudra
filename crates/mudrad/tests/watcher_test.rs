@@ -248,6 +248,65 @@ async fn events_drive_the_store_through_the_daemon_step_shape() {
     assert!(matches!(step, mudrad::watch::Step::Ignored));
 }
 
+// ================= parent links for mudrad-spawned windows =================
+
+#[tokio::test]
+async fn open_hand_off_links_the_new_window_to_the_page_that_asked() {
+    // A window mudrad spawns has no CDP openerId, so the only way the page
+    // tree learns its parent is /open's hand-off (port + url + parent id).
+    // A hand-off that does not match (wrong url) must leave the row flat
+    // rather than guess — a wrong parent is worse than no nesting.
+    let (_d, mut store) = mk_store();
+    let inst = store.launch_started(None, "work", 9211, 4242, None, None);
+    let addr = start_scripted_cdp(
+        vec![page_target("T1", "https://a.test", "A", None)],
+        vec![
+            json!({"method": "Target.targetCreated", "params": {"targetInfo": page_target("T2", "https://b.test", "B", None)}}),
+            json!({"method": "Target.targetCreated", "params": {"targetInfo": page_target("T3", "https://c.test", "C", None)}}),
+        ],
+        None,
+    )
+    .await;
+    let conn = mudrad::cdp::CdpConn::connect(&format!("ws://{addr}/")).await.unwrap();
+
+    let mut session = WatchSession::new(inst.id, addr.port(), "work");
+    let infos = session.start(&conn).await.expect("baseline");
+    let mut rec = Recorder::default();
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    let (parent, _) = store.page_by_target("T1").expect("parent row");
+
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(vec![
+        mudrad::watch::PendingParent {
+            port: addr.port(),
+            url: "https://b.test".into(),
+            parent: parent.id,
+            ts: mudrad::watch::now_ms(),
+        },
+        // stale (past the ttl): must never be claimed
+        mudrad::watch::PendingParent {
+            port: addr.port(),
+            url: "https://c.test".into(),
+            parent: parent.id,
+            ts: mudrad::watch::now_ms() - 60_000,
+        },
+    ]));
+    session.pending = Some(std::sync::Arc::clone(&queue));
+
+    for _ in 0..2 {
+        let ev = tokio::time::timeout(Duration::from_secs(5), conn.next_event())
+            .await
+            .expect("event arrives")
+            .expect("stream open");
+        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    }
+
+    let (_, b) = store.page_by_target("T2").expect("child row");
+    assert_eq!(b.parent_id, parent.id, "the hand-off lands as the parent link");
+    let (_, c) = store.page_by_target("T3").expect("stale row");
+    assert_eq!(c.parent_id, 0, "a stale hand-off must not be claimed");
+    assert!(queue.lock().unwrap().is_empty(), "stale entries are pruned");
+}
+
 // ================= teardown =================
 
 #[tokio::test]

@@ -52,6 +52,7 @@ async fn test_daemon(home: &std::path::Path) -> Arc<mudrad::daemon::Daemon> {
         panel_root: home.join("panel-dist"),
         config_default: home.join("config.kdl"),
         nest,
+        pending_parent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     })
 }
 

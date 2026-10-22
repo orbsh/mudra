@@ -29,11 +29,27 @@
 //!   data stays a pure KV read).
 
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mudra_store::{MudraStore, TargetInfo};
+use mudra_store::{MudraStore, TargetInfo, PageKey};
 
 use crate::cdp::{self, CdpConn};
+
+/// A window `/open` created on behalf of a page, waiting for its CDP target
+/// to appear. CDP reports no `openerId` for a window mudrad spawns itself, so
+/// the page tree's parent link can only come from here: `/open` knows who
+/// asked, the watcher is the one that sees the target land.
+pub struct PendingParent {
+    pub port: u16,
+    pub url: String,
+    pub parent: u64,
+    pub ts: u64,
+}
+
+/// How long a hand-off stays meaningful. A window slower than this simply
+/// lands flat — the pre-parent-link behaviour, never a wrong parent.
+const PENDING_TTL_MS: u64 = 10_000;
 
 /// Wall-clock millis — the daemon owns the clock; lifecycle ops take it
 /// as a parameter so the store stays pure.
@@ -90,6 +106,9 @@ pub struct WatchSession {
     pub instance_id: u32,
     pub port: u16,
     pub ctx: String,
+    /// `/open`'s hand-off queue (shared with the controller); a session
+    /// without it just never assigns parent links by url.
+    pub pending: Option<Arc<Mutex<Vec<PendingParent>>>>,
     discovery_enabled: bool,
 }
 
@@ -104,7 +123,7 @@ pub enum Step {
 
 impl WatchSession {
     pub fn new(instance_id: u32, port: u16, ctx: &str) -> Self {
-        WatchSession { instance_id, port, ctx: ctx.to_string(), discovery_enabled: false }
+        WatchSession { instance_id, port, ctx: ctx.to_string(), pending: None, discovery_enabled: false }
     }
 
     /// Phase 1 (awaits only, never touches the store): fetch the
@@ -163,6 +182,9 @@ impl WatchSession {
                     epochs.push(e);
                     notify(e);
                 }
+                // a window mudrad spawned for a page: CDP has no openerId for
+                // it, so take /open's hand-off (url + port) as the parent link
+                self.link_pending(store, &infos[0]);
             }
             Some("Target.targetDestroyed") => {
                 let target_id = ev
@@ -178,6 +200,32 @@ impl WatchSession {
             _ => return Step::Ignored,
         }
         Step::Handled { epochs }
+    }
+
+    /// Claim `/open`'s hand-off for a freshly created page: the window the
+    /// controller asked for (same port, same url, recent) becomes a child of
+    /// the page that asked for it.
+    ///
+    /// Only fires when CDP gave no openerId — a page opened by JS already has
+    /// its parent from `sync_targets`, and guessing there would overwrite
+    /// real knowledge with a url match. Never fatal: an unmatched or stale
+    /// hand-off just leaves the row flat, which is what it used to be.
+    fn link_pending(&self, store: &mut MudraStore, info: &TargetInfo) {
+        if !info.opener_id.is_empty() {
+            return;
+        }
+        let Some(queue) = &self.pending else { return };
+        let parent = {
+            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+            let now = now_ms();
+            q.retain(|p| now.saturating_sub(p.ts) < PENDING_TTL_MS);
+            q.iter()
+                .rposition(|p| p.port == self.port && p.url == info.url)
+                .map(|i| q.remove(i).parent)
+        };
+        let Some(parent) = parent else { return };
+        let Some((child, _)) = store.page_by_target(&info.target_id) else { return };
+        store.set_parent_once(&child, &PageKey { id: parent });
     }
 
     /// The unified teardown: instance down, all pages closed, one notify.
