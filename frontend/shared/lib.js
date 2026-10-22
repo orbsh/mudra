@@ -10,18 +10,58 @@ const MudraConfig = {
     hintFontSize: 12,                // px
     statusHeight: 16,                // px, one character tall
     statusFont: "12px monospace",
-    statusFg: "#ffffff",             // normal mode white text
-    statusBg: "#000000",             // normal mode black background
-    insertFg: "#000000",
-    insertBg: "#e8e8e8",
-    hintFg: "#000000",
-    hintBg: "#ffd76e",
+    statusFg: "auto",                // "auto" = black or white, whichever contrasts with the bg
+    statusBg: "rgba(0,0,0,.55)",     // normal mode: translucent, frosted by statusBlur
+    insertFg: "auto",
+    insertBg: "rgba(232,232,232,.62)",
+    hintFg: "auto",
+    hintBg: "#ffd76e",               // hint labels stay opaque: they sit on top of page text
+    statusBlur: 12,                  // px of frosted glass; 0 = translucency only
     keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
     scrollStepLines: 3,              // lines per j/k scroll
     pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
     maxCandidates: 10,               // max entries shown in the command-mode popup menu
   },
   storage: chrome.storage.local,
+
+  // A CSS colour as [r, g, b]. Alpha is dropped on purpose: a frosted bar's real
+  // backdrop is whatever page is behind it, so the tint the user configured is
+  // the only stable signal for choosing the text colour.
+  parseColor(c) {
+    const s = String(c || "").trim().toLowerCase();
+    const hex = s.match(/^#([0-9a-f]{3,8})$/);
+    if (hex) {
+      let h = hex[1];
+      if (h.length === 3 || h.length === 4) h = h.split("").map((x) => x + x).join("");
+      if (h.length < 6) return null;
+      return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+    }
+    const fn = s.match(/^rgba?\(([^)]+)\)$/);
+    if (fn) {
+      const parts = fn[1].split(/[,\s/]+/).filter(Boolean).map(parseFloat);
+      if (parts.length < 3 || parts.slice(0, 3).some(Number.isNaN)) return null;
+      return parts.slice(0, 3);
+    }
+    return null;
+  },
+
+  // Black or white, whichever has the higher WCAG contrast against `bg`.
+  readableFg(bg) {
+    const rgb = this.parseColor(bg);
+    if (!rgb) return "#ffffff";
+    const lin = rgb.map((v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    const L = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+    return 1.05 / (L + 0.05) >= (L + 0.05) / 0.05 ? "#ffffff" : "#000000";
+  },
+
+  // "auto" (or unset) derives the foreground from the background; anything else
+  // is a literal colour the user pinned (`fg "#ffffff"` locks white).
+  fgFor(bg, fg) {
+    return !fg || fg === "auto" ? this.readableFg(bg) : fg;
+  },
 
   async all() {
     const stored = await this.storage.get(null);
@@ -101,13 +141,27 @@ const MudraBar = {
     return this;
   },
 
+  // The bar's two colours for a mode. `fg` may be "auto": the tint then picks
+  // black or white (the frosted backdrop is page content, so the tint is the
+  // only stable signal).
   _colors(mode) {
     const cfg = this._cfg;
-    return {
-      normal: { fg: cfg.statusFg, bg: cfg.statusBg },
-      insert: { fg: cfg.insertFg, bg: cfg.insertBg },
-      hint:   { fg: cfg.statusFg, bg: "#204080" },
-    }[mode] || { fg: cfg.statusFg, bg: cfg.statusBg };
+    const [fg, bg] = {
+      normal: [cfg.statusFg, cfg.statusBg],
+      insert: [cfg.insertFg, cfg.insertBg],
+      hint:   [cfg.statusFg, "rgba(32,64,128,.62)"],
+    }[mode] || [cfg.statusFg, cfg.statusBg];
+    return { fg: MudraConfig.fgFor(bg, fg), bg };
+  },
+
+  // Frosted glass: the blur lives on every surface of this bar (the strip, the
+  // command line that replaces it, the candidate popup above it) so command
+  // mode does not snap back to an opaque strip.
+  _frost() {
+    const px = this._cfg.statusBlur;
+    if (!px) return [];
+    const f = `blur(${px}px) saturate(1.4)`;
+    return [`-webkit-backdrop-filter:${f}`, `backdrop-filter:${f}`];
   },
 
   // Rewrite the two slots from the stored state. Every dynamic value lives
@@ -121,7 +175,7 @@ const MudraBar = {
     this.bar.style.cssText = [
       "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${col.fg}`, `background:${col.bg}`,
+      `color:${col.fg}`, `background:${col.bg}`, ...this._frost(),
       "display:flex", "align-items:center", "justify-content:space-between",
       "padding:0 6px", "box-sizing:border-box", "user-select:none",
       "pointer-events:none", "white-space:nowrap", "overflow:hidden",
@@ -193,12 +247,15 @@ const MudraBar = {
 
     // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
     const rowH = cfg.statusHeight + 2;
+    const barFg = MudraConfig.fgFor(cfg.statusBg, cfg.statusFg);
+    const lineFg = MudraConfig.fgFor(cfg.insertBg, cfg.insertFg);
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
     box.style.cssText = [
       "position:fixed", "left:0", "right:0", `bottom:${cfg.statusHeight}px`,
       "z-index:2147483646", `max-height:${cfg.maxCandidates * rowH}px`,
-      "overflow-y:auto", "box-sizing:border-box", "background:" + cfg.statusBg,
+      "overflow-y:auto", "box-sizing:border-box", "background:" + cfg.statusBg, `color:${barFg}`,
+      ...this._frost(),
     ].join(";");
     const list = document.createElement("div");
     list.id = "mudra-cmdlist";
@@ -216,7 +273,7 @@ const MudraBar = {
     line.style.cssText = [
       "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${cfg.insertFg}`, `background:${cfg.insertBg}`,
+      `color:${lineFg}`, `background:${cfg.insertBg}`, ...this._frost(),
       "display:flex", "align-items:center", "padding:0 6px", "box-sizing:border-box",
     ].join(";");
     const promptEl = document.createElement("span");
@@ -226,7 +283,7 @@ const MudraBar = {
     input.id = "mudra-cmdinput";
     input.style.cssText = [
       "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
-      `color:${cfg.insertFg}`, `font:${cfg.statusFont}`, "padding:0",
+      `color:${lineFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
     line.appendChild(promptEl);
     line.appendChild(input);
@@ -258,7 +315,7 @@ const MudraBar = {
           `font:${cfg.statusFont}`, `height:${rowH}px`, "line-height:" + rowH + "px",
           "padding:0 6px", "white-space:pre", "box-sizing:border-box",
           "background:" + (i === sel ? "rgba(128,128,255,.35)" : "transparent"),
-          "color:" + (i === sel ? cfg.insertFg : cfg.statusFg),
+          "color:" + barFg,
         ].join(";");
         list.appendChild(row);
       });

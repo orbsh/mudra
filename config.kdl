@@ -6,12 +6,13 @@
 bar {
     font "12px monospace"      // status bar font
     height 16                  // status bar height px
-    fg "#ffffff"               // normal mode foreground
-    bg "#000000"               // normal mode background
-    insertFg "#000000"         // insert mode foreground
-    insertBg "#e8e8e8"         // insert mode background
-    hintFg "#000000"           // hint label foreground
-    hintBg "#ffd76e"           // hint label background
+    fg "auto"                  // "auto" = black or white, picked from bg's luminance
+    bg "rgba(0,0,0,.55)"       // normal mode: translucent, frosted by blur
+    insertFg "auto"
+    insertBg "rgba(232,232,232,.62)"
+    hintFg "auto"              // hint labels (opaque, they sit on page text)
+    hintBg "#ffd76e"
+    blur 12                    // frosted-glass radius px; 0 = translucency only
 }
 
 hint {

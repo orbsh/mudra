@@ -37,6 +37,7 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
             ("insertBg", "insertBg"),
             ("hintFg", "hintFg"),
             ("hintBg", "hintBg"),
+            ("blur", "statusBlur"),
         ],
     ),
     ("hint", &[("chars", "hintChars"), ("fontSize", "hintFontSize")]),
@@ -51,6 +52,7 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
 /// Flat keys that must land as JSON integers (the typed-read targets).
 const INT_KEYS: &[&str] = &[
     "statusHeight",
+    "statusBlur",
     "hintFontSize",
     "scrollStepLines",
     "pageOverlapLines",
@@ -313,6 +315,18 @@ command { maxCandidates 10 }
             assert!(v.is_i64(), "{key} must be a JSON integer, got {v}");
         }
         assert_eq!(cfg["hintFontSize"], json!(12));
+    }
+
+    #[test]
+    fn bar_blur_maps_to_status_blur_as_an_integer() {
+        // The bar's frosted-glass radius: `blur 12` in the file, an integer flat
+        // key (the extension reads it as a px number; 0 = translucency only).
+        let dir = tempfile::tempdir().unwrap();
+        let default = write(dir.path(), "default.kdl", "bar { blur 12 }\n");
+        let user = write(dir.path(), "user.kdl", "");
+        let cfg = load(&default, &user).unwrap();
+        assert_eq!(cfg["statusBlur"], json!(12));
+        assert!(cfg["statusBlur"].is_i64(), "a px count reads as an integer");
     }
 
     #[test]

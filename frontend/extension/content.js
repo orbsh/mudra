@@ -367,7 +367,7 @@
       d.setAttribute(HINT_ATTR, seqs[i]);
       d.style.cssText = [
         "position:fixed", `left:${Math.max(0, r.left)}px`, `top:${Math.max(0, r.top)}px`,
-        `font:${c.hintFontSize}px monospace`, `color:${c.hintFg}`, `background:${c.hintBg}`,
+        `font:${c.hintFontSize}px monospace`, `color:${MudraConfig.fgFor(c.hintBg, c.hintFg)}`, `background:${c.hintBg}`,
         "padding:0 2px", "border-radius:2px", "white-space:pre",
       ].join(";");
       overlay.appendChild(d);

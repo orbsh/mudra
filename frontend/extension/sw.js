@@ -89,6 +89,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // storage takes precedence over fetched values (runtime keys changed via :set are not clobbered):
 // only write keys that exist in defaults and were never locally changed via :set
 // (configSyncedAt marks whether the first round already ran).
+//
+// The shipped look changes between releases. Because syncConfig only fills keys
+// that are absent, a colour stored by an older release would pin the old bar
+// forever — so CONFIG_REV re-applies the look keys once per revision. A :set made
+// after that bump still wins, since this only runs when the stored rev is behind.
+const CONFIG_REV = 2;
+const LOOK_KEYS = ["statusFg", "statusBg", "insertFg", "insertBg", "hintFg", "hintBg", "statusBlur"];
+
 async function syncConfig() {
   try {
     const r = await fetch(MUDRAD + "/config");
@@ -99,6 +107,10 @@ async function syncConfig() {
     const patch = {};
     for (const [k, v] of Object.entries(config)) {
       if (!(k in stored) || stored[k] === undefined) patch[k] = v;
+    }
+    if ((stored.configRev || 1) < CONFIG_REV) {
+      for (const k of LOOK_KEYS) if (config[k] !== undefined) patch[k] = config[k];
+      patch.configRev = CONFIG_REV;
     }
     if (Object.keys(patch).length) await chrome.storage.local.set(patch);
     await chrome.storage.local.set({ configSyncedAt: Date.now() });
