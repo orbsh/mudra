@@ -65,7 +65,6 @@ type Axes = Arc<Vec<Axis>>;
 #[derive(Clone)]
 struct Node {
     p: std::sync::Arc<PageInfo>,
-    lvl: u32,
     kids: Vec<Node>,
     open: bool,
 }
@@ -137,6 +136,8 @@ pub fn App() -> impl IntoView {
     let (menu, set_menu) = signal(None::<Menu>);
     let (shot, set_shot) = signal(None::<(f64, f64, String)>);
     let (thumbnails, set_thumbnails) = signal(false);
+    // one nesting level of the page tree, em (config.kdl ui.indent)
+    let (indent, set_indent) = signal(1.4_f64);
     // shared hover-shot timer state (JS shotTimer port): `generation` bumps on
     // every movement so an already-armed timeout becomes a stale no-op;
     // `pending` carries (page_id, x, y, generation) for the one callback.
@@ -285,7 +286,9 @@ pub fn App() -> impl IntoView {
     // hover-screenshot toggle: one-shot read of config.kdl; any failure
     // reads as disabled (Python parity: no config, no shots)
     spawn_local(async move {
-        set_thumbnails.set(http::thumbnails().await);
+        let ui = http::ui().await;
+        set_thumbnails.set(ui.thumbnails);
+        set_indent.set(ui.indent);
     });
 
     // ---- derived page tree (port of the JS `pageTree` memo) ----
@@ -301,7 +304,6 @@ pub fn App() -> impl IntoView {
             let ids: Vec<u64> = list.iter().map(|p| p.id).collect();
             fn build(
                 pid: u64,
-                lvl: u32,
                 list: &Pages,
                 ids: &[u64],
                 fl: &[u32],
@@ -329,12 +331,12 @@ pub fn App() -> impl IntoView {
                 });
                 rows.into_iter()
                     .map(|p| {
-                        let kids = build(p.id, lvl + 1, list, ids, fl, coll, sort);
-                        Node { open: !coll.contains(&p.id), p, lvl, kids }
+                        let kids = build(p.id, list, ids, fl, coll, sort);
+                        Node { open: !coll.contains(&p.id), p, kids }
                     })
                     .collect()
             }
-            set_tree.update(|t| *t = build(0, 0, &list, &ids, &fl, &coll, sort));
+            set_tree.update(|t| *t = build(0, &list, &ids, &fl, &coll, sort));
         });
     }
 
@@ -503,16 +505,24 @@ pub fn App() -> impl IntoView {
         hover,
     };
 
-    // header: the surface switch is always there; the tree's own controls
-    // (context select, sort toggle, count, filter chips) belong to the
-    // tree, so they render only while it is the visible surface
+    // header: one row. The surface switch, the tree's own controls (context
+    // select, sort toggle, count) and the filter chips share the line — the
+    // chips used to get a row of their own, which is a whole line of a
+    // 16px-tall bar spent on nothing.
+    // The surface switch is a left sidebar: three words that never change, so
+    // they cost a column instead of a row of the working area. Their text runs
+    // bottom-to-top (`vertical-lr` turned 180°) — the direction a sheet fed
+    // into a printer reads, not the one a book spine does.
+    let side = view! {
+        <nav class="side">
+            <ViewTab name="pages" label="pages" view=view set_view=set_view />
+            <ViewTab name=events::VIEW label="events" view=view set_view=set_view />
+            <ViewTab name=hooks::VIEW label="hooks" view=view set_view=set_view />
+        </nav>
+    };
+
     let hdr = view! {
         <header class="hdr">
-            <div class="hdr-row views">
-                <ViewTab name="pages" label="pages" view=view set_view=set_view />
-                <ViewTab name=events::VIEW label="events" view=view set_view=set_view />
-                <ViewTab name=hooks::VIEW label="hooks" view=view set_view=set_view />
-            </div>
             <Show when=move || view.get() == "pages" fallback=|| ()>
                 {
                     // the tree's controls need the panel-state handle by
@@ -521,44 +531,43 @@ pub fn App() -> impl IntoView {
                     // fresh clone instead of moving the component's
                     let ui = ui.clone();
                     view! {
-                        <div class="hdr-row">
-                            <select
-                                prop:value=move || ctx.get()
-                                on:change={
-                                    move |ev: leptos::ev::Event| {
-                                        if let Some(v) = ev
-                                            .target()
-                                            .and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned())
-                                        {
-                                            switch_ctx(v.value());
-                                        }
+                        <div class="hdr-row filters">
+                        <select
+                            prop:value=move || ctx.get()
+                            on:change={
+                                move |ev: leptos::ev::Event| {
+                                    if let Some(v) = ev
+                                        .target()
+                                        .and_then(|t| t.dyn_ref::<web_sys::HtmlSelectElement>().cloned())
+                                    {
+                                        switch_ctx(v.value());
                                     }
                                 }
-                            >
-                                <For
-                                    each=move || (*contexts.get()).clone()
-                                    key=|c| c.clone()
-                                    children=move |c: String| {
-                                        let v = c.clone();
-                                        view! { <option value=v>{c}</option> }
-                                    }
-                                />
-                            </select>
-                            <button class="b" on:click={
-                                let ui2 = ui.clone();
-                                move |_| {
-                                    let mut s = false;
-                                    set_sort_new.update(|x| {
-                                        *x = !*x;
-                                        s = *x;
-                                    });
-                                    ui2.save_sort(s);
+                            }
+                        >
+                            <For
+                                each=move || (*contexts.get()).clone()
+                                key=|c| c.clone()
+                                children=move |c: String| {
+                                    let v = c.clone();
+                                    view! { <option value=v>{c}</option> }
                                 }
-                            }>
-                                {move || if sort_new.get() { "new->old" } else { "old->new" }}
-                            </button>
-                            <span class="count">{move || format!("{} pages", pages.get().len())}</span>
-                        </div>
+                            />
+                        </select>
+                        <button class="b" on:click={
+                            let ui2 = ui.clone();
+                            move |_| {
+                                let mut s = false;
+                                set_sort_new.update(|x| {
+                                    *x = !*x;
+                                    s = *x;
+                                });
+                                ui2.save_sort(s);
+                            }
+                        }>
+                            {move || if sort_new.get() { "new->old" } else { "old->new" }}
+                        </button>
+                        <span class="count">{move || format!("{} pages", pages.get().len())}</span>
                         <div class="filts">
                             <For
                                 each=move || (*leaves.get()).clone()
@@ -586,6 +595,7 @@ pub fn App() -> impl IntoView {
                                     tf::chip(path, on, onclick)
                                 }
                             />
+                        </div>
                         </div>
                     }
                 }
@@ -681,7 +691,9 @@ pub fn App() -> impl IntoView {
     };
 
     view! {
-        <div class="panel" on:click=move |_| {
+        <div class="panel"
+            style=move || format!("--indent:{}em", indent.get())
+            on:click=move |_| {
             // JS rule: a background click closes the segment menu; the
             // place-flagged add menu stays open until a pick
             set_menu.update(|m| {
@@ -690,8 +702,11 @@ pub fn App() -> impl IntoView {
                 }
             });
         }>
-            {hdr}
-            {main}
+            {side}
+            <div class="col">
+                {hdr}
+                {main}
+            </div>
             {popups}
         </div>
     }
@@ -720,7 +735,6 @@ fn ViewTab(
 fn page_node(nd: Node, cx: RowCtx) -> AnyView {
     let p = Arc::clone(&nd.p);
     let closed = p.closed;
-    let style = format!("margin-left: {}px", nd.lvl * 16);
     let page_id = p.id;
     let cur_tags = std::sync::Arc::new(p.tag_ids.clone());
     let page = (*p).clone();
@@ -811,7 +825,7 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
     let axes_row = cx.axes;
     let by_id_row = cx.by_id;
     let row2 = view! {
-        <div class="row2">
+        <div class="tags">
             <For
                 each=move || (*axes_row.get()).clone()
                 key=|a| a.name.clone()
@@ -956,20 +970,27 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
     };
 
     let kids = nd.kids.clone();
+    // One container per page, children nested inside it: a page's kids sit in
+    // their own `.kids` block, so the indent is the nesting itself (each level
+    // adds one `--indent`, config.kdl `ui.indent`, em) instead of a level
+    // number multiplied by a hardcoded pixel step.
     view! {
         <div class=node_cls>
-            <div class="ncard" style=style>
-                <div class="row1">{toggle}{del}{twbtn}{link}{meta}</div>
-                {row2}
+                <div class="ncard">
+                // the page's tags live on the link's own line: a page is one
+                // line (its `＋` under the title read as a second page)
+                <div class="row1">{toggle}{del}{twbtn}{link}{meta}{row2}</div>
             </div>
-            <For
-                each=move || kids.clone()
-                key=|n| Arc::as_ptr(&n.p) as usize
-                children={
-                    let cx = cx.clone();
-                    move |k: Node| page_node(k, cx.clone())
-                }
-            />
+            <div class="kids">
+                <For
+                    each=move || kids.clone()
+                    key=|n| Arc::as_ptr(&n.p) as usize
+                    children={
+                        let cx = cx.clone();
+                        move |k: Node| page_node(k, cx.clone())
+                    }
+                />
+            </div>
         </div>
     }
     .into_any()

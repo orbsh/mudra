@@ -52,4 +52,5 @@ server {
 
 ui {
     thumbnails false   // screenshot hover preview for panel link hover
+    indent 1.4         // page-tree indent per nesting level, in em
 }

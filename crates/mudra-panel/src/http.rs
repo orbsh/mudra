@@ -48,26 +48,48 @@ pub async fn verb(path: &str, body: Value) -> Result<(), String> {
     call_json::<Value>(path, body).await.map(|_| ())
 }
 
-/// GET /config — the flat two-layer-merged dict; the panel only consumes
-/// `ui.thumbnails` today, and failures read as disabled (Python parity:
-/// a missing/broken config never breaks the view).
-pub async fn thumbnails() -> bool {
+/// GET /config — the flat two-layer-merged dict. The panel reads exactly two
+/// keys today (`ui.thumbnails`, `ui.indent`); a failure reads as the defaults
+/// (Python parity: a missing/broken config never breaks the view).
+#[derive(Clone, Copy)]
+pub struct Ui {
+    /// hover screenshot preview on page links
+    pub thumbnails: bool,
+    /// one nesting level of the page tree, in em
+    pub indent: f64,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui { thumbnails: false, indent: 1.4 }
+    }
+}
+
+pub async fn ui() -> Ui {
     #[derive(serde::Deserialize)]
     struct Cfg {
         #[serde(default)]
         thumbnails: bool,
+        #[serde(default = "default_indent")]
+        indent: f64,
+    }
+    fn default_indent() -> f64 {
+        Ui::default().indent
     }
     #[derive(serde::Deserialize)]
     struct Wrap {
         config: Cfg,
     }
     let Ok(resp) = gloo_net::http::Request::get(&url("/config")).send().await else {
-        return false;
+        return Ui::default();
     };
     if !resp.ok() {
-        return false;
+        return Ui::default();
     }
-    resp.json::<Wrap>().await.map(|w| w.config.thumbnails).unwrap_or(false)
+    resp.json::<Wrap>()
+        .await
+        .map(|w| Ui { thumbnails: w.config.thumbnails, indent: w.config.indent })
+        .unwrap_or_default()
 }
 
 // ---- typed payloads for the shaped reads ----

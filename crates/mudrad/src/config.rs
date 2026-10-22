@@ -47,7 +47,7 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
         &[("stepLines", "scrollStepLines"), ("overlapLines", "pageOverlapLines")],
     ),
     ("command", &[("maxCandidates", "maxCandidates")]),
-    ("ui", &[("thumbnails", "thumbnails")]),
+    ("ui", &[("thumbnails", "thumbnails"), ("indent", "indent")]),
 ];
 
 /// Flat keys that must land as JSON integers (the typed-read targets).
@@ -392,6 +392,8 @@ command { maxCandidates 10 }
         assert_eq!(cfg["scrollStepLines"], json!(3));
         assert_eq!(cfg["maxCandidates"], json!(10));
         assert_eq!(cfg["thumbnails"], json!(false));
+        // em, and a float must stay a float (the panel multiplies it as one)
+        assert_eq!(cfg["indent"], json!(1.4));
         assert_eq!(cfg["keybindings"]["j"], json!("scrollDown"));
         assert_eq!(cfg["keybindings"].as_object().unwrap().len(), 11);
         assert!(cfg.get("port").is_none(), "server group must not leak");
