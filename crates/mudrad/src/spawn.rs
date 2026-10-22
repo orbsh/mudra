@@ -31,6 +31,17 @@ pub const EXTENSION_CACHE_POINTS: [&str; 5] = [
     "Default/Extension Rules",
 ];
 
+/// Script caches only — no HTTP cache. These are the ones that can hand a
+/// window the content script it loaded last time: chromium caches content
+/// scripts per profile, so a window opened before the extension sources changed
+/// keeps running the old code even after a reload.
+pub const EXTENSION_SCRIPT_CACHE_POINTS: [&str; 4] = [
+    "Default/Service Worker/ScriptCache",
+    "Default/Code Cache",
+    "Default/Extension Scripts",
+    "Default/Extension Rules",
+];
+
 /// Session env chromium needs on this desktop (niri/Wayland). Missing any
 /// of these is the known cause of zombie-on-launch.
 pub const SESSION_ENV: [&str; 4] = [
@@ -125,8 +136,22 @@ pub fn stale_singleton_lock(profile_dir: &Path) -> Option<u32> {
 /// Remove the extension cache points under a profile dir (dev_mode: source
 /// edits must be visible on the next cold start).
 pub fn clear_extension_caches(profile_dir: &Path) -> usize {
+    clear_caches_at(profile_dir, &EXTENSION_CACHE_POINTS)
+}
+
+/// The console panel's variant: the panel is a detached window that outlives
+/// daemon restarts, so it can easily be older than the extension sources on
+/// disk — and a stale console looks exactly like a broken key (the command
+/// simply does not exist there). Clearing the script caches on every panel
+/// spawn costs one extension parse and removes that whole class of confusion;
+/// the HTTP cache is left alone.
+pub fn clear_extension_script_caches(profile_dir: &Path) -> usize {
+    clear_caches_at(profile_dir, &EXTENSION_SCRIPT_CACHE_POINTS)
+}
+
+fn clear_caches_at(profile_dir: &Path, points: &[&str]) -> usize {
     let mut cleared = 0;
-    for sub in EXTENSION_CACHE_POINTS {
+    for sub in points {
         let p = profile_dir.join(sub);
         if p.exists() && std::fs::remove_dir_all(&p).is_ok() {
             cleared += 1;

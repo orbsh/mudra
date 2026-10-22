@@ -172,6 +172,27 @@ fn clear_extension_caches_removes_all_five_points() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn clear_extension_script_caches_spares_the_http_cache() {
+    // Contract: the console panel is a detached window that outlives daemon
+    // restarts, so every panel spawn re-reads the extension sources — but only
+    // the script caches. Wiping the HTTP cache would make the panel refetch
+    // what it already has.
+    let dir = std::env::temp_dir().join(format!("mudra-script-cache-{}", std::process::id()));
+    for sub in EXTENSION_CACHE_POINTS {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::write(dir.join(sub).join("blob"), b"cached").unwrap();
+    }
+
+    assert_eq!(clear_extension_script_caches(&dir), 4);
+    for sub in EXTENSION_SCRIPT_CACHE_POINTS {
+        assert!(!dir.join(sub).exists(), "{sub} must be gone");
+    }
+    assert!(dir.join("Default/Cache").exists(), "the HTTP cache stays");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ================= session env (WAYLAND lesson) =================
 
 #[test]

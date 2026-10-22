@@ -438,10 +438,10 @@ impl Runtime for Real {
         std::fs::create_dir_all(&dir).map_err(|e| format!("panel profile dir: {e}"))?;
         let url = format!("http://127.0.0.1:{}/", crate::control::PANEL_PORT);
         let exts = self.default_extensions.clone();
+        // Always: the panel outlives daemon restarts, so a stale script cache
+        // would keep handing it older extension code (see the fn's docs).
+        crate::spawn::clear_extension_script_caches(&dir);
         let mut cmd = crate::spawn::build_command(&url, &dir, None, None, Some(&exts), &exts);
-        if self.dev_mode {
-            crate::spawn::clear_extension_caches(&dir);
-        }
         crate::spawn::spawn_detached_session(&mut cmd).map_err(|e| format!("panel spawn: {e}"))
     }
 
