@@ -219,8 +219,18 @@ impl Real {
 
     fn launch(&self, ctx: &str, url: &str, port: Option<u16>, proxy: Option<&str>, extensions: Option<&str>) -> Result<u32, String> {
         let profile = self.profiles_dir.join(ctx);
-        if self.dev_mode {
-            crate::spawn::clear_extension_caches(&profile);
+        // The extension's script caches are per-profile, so a source edit
+        // silently half-lands: the page's content script is re-read while the
+        // service worker relaying its messages comes from the cache — which is
+        // what "the key does nothing" looks like (the send never happens).
+        // Clear them on a COLD start only (port == Some): on a join the
+        // browser is already running this profile, and deleting the script
+        // cache out from under a live service worker breaks it outright.
+        if port.is_some() {
+            crate::spawn::clear_extension_script_caches(&profile);
+            if self.dev_mode {
+                crate::spawn::clear_extension_caches(&profile);
+            }
         }
         // extensions=None uses the defaults; Some(csv) splits into paths.
         let ext_list: Vec<String> = match extensions {
