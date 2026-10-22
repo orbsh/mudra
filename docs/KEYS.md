@@ -13,24 +13,26 @@
   状态栏标 `hintnew`（否则两个键在按下之前完全无法区分）。
 - **insert** — `i` 聚焦输入框；页内多个输入框时先进 hint 选择；Esc 失焦回 normal。
 - **command** — `:` 触发；输入框在状态栏底部占满全宽，候选浮层在上方（最多
-  `maxCandidates` 条）。**Tab 只移动选中项**（循环，Shift+Tab 反向），不往行里填字：
-  行是用户敲的东西，高亮是 Enter 会取的东西——早先 Tab 填值会触发重过滤，列表在按键
-  底下消失，Enter 可能取走一行用户没看过的候选。Enter 执行，Esc 退出。
-  **Backspace 是逐层退**：输入为空时再按一次退回上一层（地址 picker → prompt 变成
-  `:open ` 的命令行 → 命令行空再按即退出 command 模式），所以永久卡在 `:open ` 那个
-  空格后面的死键没有了。
+  `maxCandidates` 条）。**Tab 在多个候选之间移动选中项**（循环，Shift+Tab 反向），
+  行不动：行是用户敲的东西，高亮是 Enter 会取的东西——多候选时填值会触发重过滤，列表
+  在按键底下消失，Enter 可能取走一行没看过的候选。**唯一候选时 Tab 反而补全到行里**
+  （没得选的时候，补全是这个键唯一的用处，否则 `:o` + Tab 看起来是死的）。Enter 执行，
+  Esc 退出。
+  **`open` / `new` 的行就是地址栏**：行里出现空格后，候选换成"活页（仅 console）+ 打开
+  历史"，Tab 走、Enter 取高亮的那条 URL；没有匹配的候选时 Enter 用敲进去的文本。空行
+  Backspace 退出命令模式（不再有第二层 picker）。
 
 ## 打开网页的两个动词
 
 | 动词 | 语义 | 触发 |
 |---|---|---|
-| `open` | 在**本页**就地导航（`location.href`），并记一次历史 | `f`（hints）、`o`、`:open` picker 的 Enter |
-| `new` | 另开一个 `--app` page 窗口（mudrad `/open`，归当前 ctx） | `F`（hints）、`O`、`:new` picker 的 Enter |
+| `open` | 在**本页**就地导航（`location.href`），并记一次历史 | `f`（hints）、`o`（≡ `:open `）、`:open <url>` 回车 |
+| `new` | 另开一个 `--app` page 窗口（mudrad `/open`，归当前 ctx） | `F`（hints）、`O`（≡ `:new `）、`:new <url>` 回车 |
 
-`o` / `O` 与 `:open` / `:new` 是同一件事：都落到同一个地址 picker，只是 prompt 与
-Enter 用的动词不同（`o` 的 prompt 就是 `:open `，`O` 是 `:new `，候选同样来自打开历史；
-`new` 不列活页——新窗口没有可跳转的目标）。**带参数则不再绕 picker**：`:open bing`、
-`:new bing` 回车即执行（参数在手，动词已经无歧义）；不带参数才打开 picker 挑历史。
+`o` / `O` 与 `:open` / `:new` 是同一件事：按 `o` 就是把 `open ` 打进命令行（`O` 打
+`new `），候选（活页 + 打开历史）列在同一行上方；Tab 走选中、Enter 取高亮的那条 URL，
+没有匹配的候选时 Enter 用敲进去的文本——所以带不带参数都只有一次回车。`new` 不列活页：
+新窗口没有可跳转的目标。
 
 两者的地址都经后端同一处 `spawn::normalize_url` 解析：缺 scheme 补 `https://`，
 **单标签裸词补 `.com`**（`bing` → `bing.com`；`localhost`、带端口、带 userinfo、
@@ -50,8 +52,8 @@ Enter 用的动词不同（`o` 的 prompt 就是 `:open `，`O` 是 `:new `，�
 | `g` / `G` | scrollTop / scrollBottom | 顶部 / 底部；`<N>g` 跳页面前 N% |
 | `r` | refresh | 重载 |
 | `t` | tag | 打 tag（弹 tag 输入） |
-| `o` | open | 地址 picker，Enter 在本页打开（`:open`） |
-| `O` | new | 地址 picker，Enter 另开窗口（`:new`） |
+| `o` | open | 命令行打 `open `（≡ `:open`），Enter 在本页打开 |
+| `O` | new | 命令行打 `new `（≡ `:new`），Enter 另开窗口 |
 | `P` | pages | 切页（mudrad） |
 | `:` | — | command 模式 |
 
@@ -68,15 +70,16 @@ worker 每次同步都跟上文件，改文件即改外观；`:set` 写过的键
 此后文件不再覆盖它。`:set <key> -` 把该键交还给文件（下一次 SW 同步时按文件值落地，其间用内置
 默认）。
 
-**状态栏外观**：底色默认半透明（`bg "rgba(0,0,0,.55)"`、`insertBg "rgba(232,232,232,.62)"`、
-hint 模式的深蓝 `rgba(32,64,128,.62)` 同理），配 `statusBlur`（毛玻璃/backdrop-filter 半径，
-`0` = 只留半透明）。**条本身的透明度单独一个旋钮**：`bar.opacity`（默认 0.1）——色相仍由
-`bg` 给，alpha 由它接管；命令输入行与候选浮层不用这个旋钮（它们是临时面板，要保证可读性，
-各用自己 `insertBg`/`bg` 的 alpha，毛玻璃照旧）。
-文字色默认灰 `#999999`；写 `"auto"` 则按背景色算 WCAG 相对亮度、取黑/白里对比度高的那个
-（alpha 不参与判色——半透明下真实底色是网页内容，静态算不出来，所以按配置的色相判）；写死
-别的颜色即锁死。候选浮层的字**不跟随**这个设置，永远按 `bg` 的亮度自动取黑/白（那里要读
-URL，不能是淡灰）。hint 标签（`f` 的小方块）保持不透明：它要压在页面文字上。
+**状态栏外观**：底色默认半透明（`bg "rgba(0,0,0,.55)"`、insert 模式另用
+`insertBg "rgba(232,232,232,.62)"`、hint 模式的深蓝 `rgba(32,64,128,.62)` 同理），配
+`statusBlur`（毛玻璃/backdrop-filter 半径，`0` = 只留半透明）。**条本身的透明度单独一个
+旋钮**：`bar.opacity`（默认 0.1）——色相仍由 `bg` 给，alpha 由它接管。
+**命令模式共用这一套主题**：`:` 展开的那一行（`#mudra-cmdline`）和它上方的候选浮层
+都用 `bg` 的色相 + `bar.opacity` + `statusBlur` + `fg` 的文字色——底条、命令行、弹出菜单
+是一个东西的三种状态，`insertBg`/`insertFg` 只影响 insert 模式下的条。
+文字色默认深灰 `#666666`；写 `"auto"` 则按背景色算 WCAG 相对亮度、取黑/白里对比度高的
+那个（alpha 不参与判色——半透明下真实底色是网页内容，静态算不出来，所以按配置的色相判）；
+写死别的颜色即锁死。hint 标签（`f` 的小方块）保持不透明：它要压在页面文字上。
 
 cmd 模式就地修改（写入 storage，立即生效，重启实例保留）：
 
