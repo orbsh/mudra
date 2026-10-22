@@ -393,11 +393,14 @@ const MudraBar = {
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
-        // Cycle the selection; the line stays as typed. (Filling the line on Tab
-        // made the candidate list refilter and vanish under the keystroke, and
-        // Enter could then take a row the user never looked at.)
+        // Several candidates: cycle the highlight and leave the line alone
+        // (filling it would refilter and hide the list under the keystroke,
+        // and Enter could then take a row nobody looked at). One candidate:
+        // there is nothing to cycle to, so Tab does the other half of its job
+        // and completes the line with it — otherwise the key reads as dead.
         e.preventDefault();
         if (!items.length) return;
+        if (items.length === 1) { api.setValue(items[0].value); return; }
         const step = e.shiftKey ? -1 : 1;
         sel = (sel + step + items.length) % items.length;
         renderList();

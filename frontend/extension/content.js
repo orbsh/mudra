@@ -92,80 +92,32 @@
     const r = await send({ type: "new", url: text });
     return flashBar(r.ok === false ? r.err || "open failed" : "opened in a new window");
   }
-  // ---- the address picker: one surface, two verbs ----
-  // `o` opens it as `:open` (this page), `O` as `:new` (another window) — the
-  // prompt says which verb Enter will fire. candidates = live pages (console
-  // role + `open` only: they are jump targets inside this instance) merged ahead
-  // of ranked history rows; Enter on no candidate opens the typed text.
-  async function addressPicker(verb, initial) {
-    const isNew = verb === "new";
-    // The cmdline opens FIRST (setMode + input focus before any await):
-    // loading `pages` up front used to swallow the user's first keystrokes
-    // in normal mode while the round trip was in flight.
-    let pages = [];
-    let shown = [];   // candidates currently on screen
-    let query = "";   // the text the current list was ranked for
-    let newest = 0;   // filters await the SW; only the newest answer may land
-    const filter = async (q, api) => {
-      const text = q || "";
-      // Tab completion installs a candidate's value verbatim. Re-ranking that
-      // whole URL matches nothing and would wipe the list right after the
-      // keystroke the user meant to read — keep what is on screen instead.
-      if (shown.some((c) => c.value === text)) return;
-      query = text;
-      const mine = ++newest;
-      const s = text.toLowerCase();
-      const pageC = pages
-        .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
-        .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }));
-      const hr = await send({ type: "history", query: text, limit: 10 });
-      if (mine !== newest) return; // a newer keystroke already asked
-      const histC = hr.ok === false ? [] : (hr.candidates || [])
-        .filter((h) => !pages.some((p) => p.url === h.url))
-        .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "history" }));
-      shown = [...pageC, ...histC];
-      api.setItems(shown);
-    };
-    const pick = async (cand, raw, api, reason) => {
-      cmdApi = null; await setMode("normal");
-      if (reason === "cancel") return; // Esc dismisses: it never opens the typed text
-      const q = (raw || "").trim();
-      if (cand && cand.kind === "page") {
-        // a selected candidate -> jump to the page (via Tab completion or arrow selection)
-        const res = await send({ type: "focus_page", page_id: cand.value });
-        return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
-      }
-      if (cand && cand.kind === "history") return isNew ? openNew(cand.value) : openCurrent(cand.value);
-      // no candidate on screen -> open the typed text with this picker's verb
-      if (q) return isNew ? openNew(q) : openCurrent(q);
-    };
-    setMode("command");
-    // Backspace on an empty line = one layer up: back to the command palette
-    // with the verb still typed, so the line keeps being editable past the
-    // space (":open " is a prompt, not a wall).
-    cmdApi = await MudraBar.openCommand(filter, pick, () => {
-      const api = cmdApi;
-      cmdApi = null;
-      api?.close();
-      enterCommand(`${verb} `);
-    }, { prompt: `:${verb} ` });
-    if (initial) {
-      const input = document.getElementById("mudra-cmdinput");
-      if (input) input.value = initial;
-    }
-    filter(initial || "", cmdApi);
-    // pages ride in the background; refresh the list when they land. `new`
-    // never lists them: a fresh window has nothing to jump to.
-    if (!isNew) send({ type: "pages" }).then((r) => {
-      if (r.ok !== false && cmdApi) {
-        pages = role === "console" ? r.pages || [] : [];
-        filter(query, cmdApi);
-      }
-    }).catch(() => {});
-  }
+  // ---- one surface for both verbs: the palette IS the address bar ----
+  // `o`/`O` only type `open `/`new ` into the command line, so there is no
+  // second picker with its own prompt to keep in sync. filterCmd sees the URL
+  // verb and lists live pages (console, `open` only) + history rows for the
+  // argument; Enter takes the highlighted row, or the typed text when nothing
+  // is highlighted. Tab moves the highlight (lib.js) — the list never vanishes
+  // under a keystroke, and the line stays one thing you can backspace through.
+  const URL_VERBS = new Set(["open", "new"]);
+  let livePages = [];   // console role: jump targets inside this instance
+  let historySeq = 0;   // filters await the SW; only the newest answer may land
 
-  const openWithHistory = (initial) => addressPicker("open", initial);
-  const newWithHistory = (initial) => addressPicker("new", initial);
+  async function filterAddress(verb, arg) {
+    const mine = ++historySeq;
+    const s = (arg || "").toLowerCase();
+    const pageC = verb === "open" && role === "console"
+      ? livePages
+          .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
+          .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }))
+      : [];
+    const hr = await send({ type: "history", query: arg || "", limit: 10 });
+    if (mine !== historySeq || !cmdApi) return; // a newer keystroke already asked
+    const hist = (hr.ok === false ? [] : hr.candidates || [])
+      .filter((h) => !livePages.some((p) => p.url === h.url)) // a live page wins over its history row
+      .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "url" }));
+    cmdApi.setItems([...pageC, ...hist]);
+  }
 
   // ---- commands ----
   // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
@@ -185,14 +137,13 @@
     scrollBottom:{ defaultKey: "G", desc: "scroll to bottom", run: () => scrollTo({ top: document.documentElement.scrollHeight }) },
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
+    // Both verbs have two entry points: the key types the verb into the line
+    // (`o` ≡ `:open `, which is why completion and the key share one surface),
+    // and pickCmd fires the verb once the line carries an address.
     open:    { defaultKey: "o", desc: "open url / filter pages + history",
-               // With an argument the verb is unambiguous — fire it. Without
-               // one the picker IS the surface (history + live pages); typing
-               // `:open bing` and having nothing happen until a second Enter
-               // reads as a broken command.
-               run: (arg) => (arg.trim() ? openCurrent(arg) : openWithHistory("")) },
+               run: (arg) => (arg.trim() ? openCurrent(arg) : enterCommand("open ")) },
     new:     { defaultKey: "O", desc: "open url in a new window",
-               run: (arg) => (arg.trim() ? openNew(arg) : newWithHistory("")) },
+               run: (arg) => (arg.trim() ? openNew(arg) : enterCommand("new ")) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
@@ -274,29 +225,42 @@
   // ---- command mode (enter with :; bar becomes an input, candidates expand upward and filter) ----
   function filterCmd(q) {
     if (!cmdApi) return;
-    q = (q || "").replace(/^:/, "");
-    const [name, ...rest] = q.split(/\s+/);
-    let items;
-    if (!q) {
-      items = Object.entries(COMMANDS).map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
-    } else {
-      items = Object.entries(COMMANDS)
-        .filter(([n]) => n.startsWith(name))
-        .map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
-    }
+    const text = (q || "").replace(/^:/, "");
+    const [name, ...rest] = text.split(/\s+/);
+    const arg = rest.join(" ");
+    // A URL verb with the separator typed is an address line: list the places
+    // it can take you, not command names.
+    if (URL_VERBS.has(name) && text.includes(" ")) return filterAddress(name, arg);
+    historySeq++; // an address filter may still be in flight; it must not repaint this list
+    const items = Object.entries(COMMANDS)
+      .filter(([n]) => !name || n.startsWith(name))
+      .map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
     cmdApi.setItems(items);
   }
 
-  async function pickCmd(cand, raw, api) {
-    cmdApi = null;
-    await setMode("normal");
-    if (!cand) return; // Esc / empty
+  async function pickCmd(cand, raw, api, reason) {
     const q = (raw || "").replace(/^:/, "").trim();
     const [name, ...rest] = q.split(/\s+/);
+    const arg = rest.join(" ");
+    cmdApi = null;
+    await setMode("normal");
+    if (reason === "cancel") return; // Esc never fires the typed text (that was a bug once)
+    if (cand && cand.kind === "page") {
+      const res = await send({ type: "focus_page", page_id: cand.value });
+      return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
+    }
+    if (URL_VERBS.has(name)) {
+      // The highlighted history row wins, else what was typed. A bare `:open`
+      // with no address arms the line (`:open `) instead of re-entering itself.
+      const url = cand && cand.kind === "url" ? cand.value : arg;
+      if (!url) return enterCommand(`${name} `);
+      return name === "new" ? openNew(url) : openCurrent(url);
+    }
+    if (!cand) return; // empty line, nothing highlighted
     const c = COMMANDS[cand.value] || COMMANDS[name];
     if (!c) return flashBar(`no such command: ${name}`);
     if (!c.run.length && rest.length) return flashBar(`:${cand.value} takes no argument`);
-    await c.run(rest.join(" "), {});
+    await c.run(cand.value === name ? arg : "", {});
     // No blanket refreshBar here: it would clobber the command's own flashBar message (e.g. the :set config echo).
     // Commands that need a refresh (scroll etc.) call it internally already.
   }
@@ -313,6 +277,14 @@
     });
     if (initial) cmdApi.setValue(initial);
     else filterCmd(":");
+    // Live pages are console-role jump targets for `open`; they ride in the
+    // background so the first keystrokes are never swallowed by a round trip.
+    if (role === "console") send({ type: "pages" }).then((r) => {
+      if (r.ok === false || !cmdApi) return;
+      livePages = r.pages || [];
+      const now = (cmdApi.value() || "").split(/\s+/)[0];
+      if (URL_VERBS.has(now)) filterCmd(cmdApi.value());
+    }).catch(() => {});
   };
 
   // ---- pages command: mudrad page list -> candidate filtering -> focus_page ----
