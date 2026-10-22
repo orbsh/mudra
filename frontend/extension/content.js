@@ -13,7 +13,8 @@
     });
 
   // ---- state ----
-  let mode = "normal"; // normal | hint | insert | command
+  let mode = "normal";      // state machine: normal / hint / insert / command
+  let modeLabel = "normal"; // what the bar prints (hint vs hintnew)
   let ctx = "";
   let role = "page";   // page | console (decided by mudrad, the frontend does not guess)
   let pageTags = [];   // tags on the current page (mudrad is authoritative; local is display cache only)
@@ -23,8 +24,9 @@
   let cmdApi = null;
   let numPrefix = "";       // numeric prefix (30g percent jump)
 
-  const setMode = async (m) => {
+  const setMode = async (m, label) => {
     mode = m;
+    modeLabel = label || m;
     // Mode switches must sync focus: blur when leaving insert so a lingering input focus does not swallow Esc
     if (m !== "insert" && document.activeElement && isEditable(document.activeElement))
       document.activeElement.blur();
@@ -39,7 +41,7 @@
 
   const refreshBar = async () => {
     await MudraBar.render({
-      ctx, mode, tags: pageTags, capsules: pageCapsules,
+      ctx, mode, modeLabel, tags: pageTags, capsules: pageCapsules,
       title: document.title.slice(0, 60),
       url: location.host + location.pathname,
       scroll: scrollPct(),
@@ -82,11 +84,21 @@
     location.href = target;
   }
 
-  // ---- open: address-bar completion in both roles ----
-  // candidates = live pages (console role only, jump targets) merged
-  // ahead of ranked open-history rows; Enter on no candidate opens the
-  // typed text with the `open` verb (in place, in this page).
-  async function openWithHistory(initial) {
+  // `new` never touches this page: mudrad spawns another --app window in the
+  // sender's ctx. The console role reaches this path through openCurrent.
+  async function openNew(url) {
+    const text = (url || "").trim();
+    if (!text) return flashBar("usage: :new <url>");
+    const r = await send({ type: "new", url: text });
+    return flashBar(r.ok === false ? r.err || "open failed" : "opened in a new window");
+  }
+  // ---- the address picker: one surface, two verbs ----
+  // `o` opens it as `:open` (this page), `O` as `:new` (another window) — the
+  // prompt says which verb Enter will fire. candidates = live pages (console
+  // role + `open` only: they are jump targets inside this instance) merged ahead
+  // of ranked history rows; Enter on no candidate opens the typed text.
+  async function addressPicker(verb, initial) {
+    const isNew = verb === "new";
     // The cmdline opens FIRST (setMode + input focus before any await):
     // loading `pages` up front used to swallow the user's first keystrokes
     // in normal mode while the round trip was in flight.
@@ -123,25 +135,37 @@
         const res = await send({ type: "focus_page", page_id: cand.value });
         return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
       }
-      if (cand && cand.kind === "history") return openCurrent(cand.value);
-      // no candidate on screen -> open the typed text
-      if (q) return openCurrent(q);
+      if (cand && cand.kind === "history") return isNew ? openNew(cand.value) : openCurrent(cand.value);
+      // no candidate on screen -> open the typed text with this picker's verb
+      if (q) return isNew ? openNew(q) : openCurrent(q);
     };
     setMode("command");
-    cmdApi = await MudraBar.openCommand(filter, pick, null, null, { prompt: ":open " });
+    // Backspace on an empty line = one layer up: back to the command palette
+    // with the verb still typed, so the line keeps being editable past the
+    // space (":open " is a prompt, not a wall).
+    cmdApi = await MudraBar.openCommand(filter, pick, () => {
+      const api = cmdApi;
+      cmdApi = null;
+      api?.close();
+      enterCommand(`${verb} `);
+    }, { prompt: `:${verb} ` });
     if (initial) {
       const input = document.getElementById("mudra-cmdinput");
       if (input) input.value = initial;
     }
     filter(initial || "", cmdApi);
-    // pages ride in the background; refresh the list when they land
-    send({ type: "pages" }).then((r) => {
+    // pages ride in the background; refresh the list when they land. `new`
+    // never lists them: a fresh window has nothing to jump to.
+    if (!isNew) send({ type: "pages" }).then((r) => {
       if (r.ok !== false && cmdApi) {
         pages = role === "console" ? r.pages || [] : [];
         filter(query, cmdApi);
       }
     }).catch(() => {});
   }
+
+  const openWithHistory = (initial) => addressPicker("open", initial);
+  const newWithHistory = (initial) => addressPicker("new", initial);
 
   // ---- commands ----
   // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
@@ -162,11 +186,13 @@
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
     open:    { defaultKey: "o", desc: "open url / filter pages + history",
-               run: (arg) => openWithHistory(arg),
-               // Tab drill-down: the command IS a picker, so the line hands
-               // over to it (live pages + history) instead of collapsing to
-               // the bare name with the typed argument thrown away
-               tab: (arg) => openWithHistory(arg) },
+               // With an argument the verb is unambiguous — fire it. Without
+               // one the picker IS the surface (history + live pages); typing
+               // `:open bing` and having nothing happen until a second Enter
+               // reads as a broken command.
+               run: (arg) => (arg.trim() ? openCurrent(arg) : openWithHistory("")) },
+    new:     { defaultKey: "O", desc: "open url in a new window",
+               run: (arg) => (arg.trim() ? openNew(arg) : newWithHistory("")) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
@@ -195,6 +221,10 @@
       return flashBar(`${k} -> ${kb[k] || "unbound"}`);
     }
     if (!(key in MudraConfig.defaults)) return flashBar(`unknown key: ${key}`);
+    if (raw === "-") {
+      await MudraConfig.unpin(key);
+      return flashBar(`${key} -> config file`);
+    }
     let val;
     try { val = JSON.parse(raw); } catch { val = raw; } // auto-type numbers/booleans/strings
     await MudraConfig.set({ [key]: val });
@@ -271,30 +301,18 @@
     // Commands that need a refresh (scroll etc.) call it internally already.
   }
 
-  // Tab in the command palette: `open` hands the line over to its own picker
-  // (live pages + history, prompt ":open ") with whatever argument was already
-  // typed as the initial query. Other argument-taking commands keep the line
-  // and only normalise the name + separating space — the old default filled
-  // the bare name, which silently ate a typed argument (":open fer" → ":open").
-  const tabCmd = (cand, api) => {
-    const def = COMMANDS[cand.value];
-    const arg = (api.value() || "").replace(/^:/, "").split(/\s+/).slice(1).join(" ");
-    if (def && def.tab) {
-      api.close();
-      cmdApi = null;
-      def.tab(arg);
-      return;
-    }
-    // `run` is declared with one parameter where the command takes an argument
-    // (the same Function.length contract pickCmd enforces)
-    if (def && def.run.length === 1) api.setValue(arg ? `${cand.value} ${arg}` : `${cand.value} `);
-    else api.setValue(cand.value);
-  };
-
-  const enterCommand = async () => {
+  const enterCommand = async (initial) => {
     setMode("command");
-    cmdApi = await MudraBar.openCommand(filterCmd, pickCmd, tabCmd);
-    filterCmd(":");
+    // Backspace on an empty line leaves command mode: without a hook the key
+    // was dead, and a dead Backspace reads as "the space won't delete".
+    cmdApi = await MudraBar.openCommand(filterCmd, pickCmd, () => {
+      const api = cmdApi;
+      cmdApi = null;
+      api?.close();
+      setMode("normal");
+    });
+    if (initial) cmdApi.setValue(initial);
+    else filterCmd(":");
   };
 
   // ---- pages command: mudrad page list -> candidate filtering -> focus_page ----
@@ -375,7 +393,9 @@
     });
     document.documentElement.appendChild(overlay);
     hintSession = { overlay, nodes, typed: "", newWindow: !!newWindow };
-    setMode("hint");
+    // `F` is the same hint state machine with a different verb; the bar must
+    // say so, otherwise the two keys are indistinguishable until you click.
+    setMode("hint", newWindow ? "hintnew" : "hint");
   }
 
   function hintFilter(key) {
@@ -506,6 +526,14 @@
     await flashBar(r.action ? `${cand.label} ${r.action}` : (r.err || "tag failed"));
     await syncStatus();
   }
+  async function tagDrill(cand, api) {
+    const kids = await send({ type: "tags", parent: cand.value });
+    if (!(kids.tags && kids.tags.length)) return false;
+    tagStack.push({ path: cand.label, name: cand.value });
+    cmdApi = api;
+    await tagRender();
+    return true;
+  }
   async function tagRender() {
     const api = cmdApi;
     tagLayerCache = await tagLayerItems();
@@ -522,17 +550,12 @@
     setMode("command");
     cmdApi = await MudraBar.openCommand(
       tagFilter,
-      // Enter: toggle the tag. Only meaningful on a leaf, but a toggle on a branch name is
-      // harmless at the API level — the tag exists either way, so just do it.
-      async (cand, _raw, _api) => { if (cand) await tagToggle(cand); },
-      // Tab: drill into the branch. A leaf has no children, so falling back to toggle keeps
-      // Tab = "go deeper if you can" without a separate probe round trip on render.
-      async (cand, api) => {
-        const kids = await send({ type: "tags", parent: cand.value });
-        if (kids.tags && kids.tags.length) {
-          tagStack.push({ path: cand.label, name: cand.value });
-          cmdApi = api; await tagRender();
-        } else await tagToggle(cand);
+      // Enter: drill into a branch, toggle a leaf. (Tab used to drill; it now
+      // moves the selection like everywhere else, so "choose" carries it.)
+      async (cand, _raw, api) => {
+        if (!cand) return;
+        if (await tagDrill(cand, api)) return;
+        await tagToggle(cand);
       },
       // Backspace on empty input: back up one layer
       async (_api) => {
@@ -544,7 +567,7 @@
     await tagRender();
   }
   async function flashBar(text) {
-    await MudraBar.render({ ctx, mode, tags: pageTags, capsules: pageCapsules, message: text });
+    await MudraBar.render({ ctx, mode, modeLabel, tags: pageTags, capsules: pageCapsules, message: text });
     setTimeout(refreshBar, 1500);
   }
 
