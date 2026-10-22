@@ -64,12 +64,33 @@ pub fn free_port(start: u16, span: u16) -> io::Result<u16> {
 }
 
 /// Add https:// when the scheme is missing (bare hosts/domains -> https;
-/// http/IP keeps requiring an explicit scheme).
+/// http/IP keeps requiring an explicit scheme). A single-label host gains
+/// `.com`: an address bar's "bing" means bing.com, not the dead host
+/// `https://bing` that used to be opened (and recorded) as a visit.
 pub fn normalize_url(url: &str) -> String {
     if url.contains("://") {
         url.to_string()
     } else {
-        format!("https://{url}")
+        format!("https://{}", expand_bare_host(url))
+    }
+}
+
+/// `.com` for a one-label host, everything else untouched: dotted hosts and
+/// IPs, a port, userinfo and `localhost` are already addresses the user can
+/// mean literally. The host is whatever precedes the first `/`, `?` or `#`
+/// (an address-bar input may carry a path).
+fn expand_bare_host(input: &str) -> String {
+    let head_len = input.find(['/', '?', '#']).unwrap_or(input.len());
+    let (head, tail) = input.split_at(head_len);
+    let bare = !head.is_empty()
+        && !head.contains('.')
+        && !head.contains('@')
+        && !head.contains(':')
+        && !head.eq_ignore_ascii_case("localhost");
+    if bare {
+        format!("{head}.com{tail}")
+    } else {
+        input.to_string()
     }
 }
 

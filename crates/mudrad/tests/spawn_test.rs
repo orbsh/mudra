@@ -200,6 +200,23 @@ fn normalize_url_adds_https_only_when_scheme_missing() {
 }
 
 #[test]
+fn normalize_url_expands_a_single_label_host_to_com() {
+    // An address-bar word is a domain, not a dead host: `:open bing` used to
+    // open https://bing and record that junk row in history.
+    assert_eq!(normalize_url("bing"), "https://bing.com");
+    assert_eq!(normalize_url("bing/"), "https://bing.com/");
+    assert_eq!(normalize_url("bing?q=1"), "https://bing.com?q=1");
+    assert_eq!(normalize_url("bing#top"), "https://bing.com#top");
+    assert_eq!(normalize_url("Bing"), "https://Bing.com");
+    // ...and these are already literal addresses, never expanded
+    assert_eq!(normalize_url("news.ycombinator.com"), "https://news.ycombinator.com");
+    assert_eq!(normalize_url("localhost"), "https://localhost");
+    assert_eq!(normalize_url("localhost:3000"), "https://localhost:3000");
+    assert_eq!(normalize_url("u@host"), "https://u@host");
+    assert_eq!(normalize_url("192.168.0.1"), "https://192.168.0.1");
+}
+
+#[test]
 fn free_port_probes_by_bind_and_errors_on_an_exhausted_span() {
     // Contract (prototype TOCTOU accepted, same as the Python probe-by-
     // bind): a port is returned because binding it just succeeded.

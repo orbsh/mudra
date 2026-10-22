@@ -36,6 +36,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn handle(&mut self, path: &str, body: &Value) -> Result<Value, String> {
         match path {
             "/open" => self.open(body),
+            "/visit" => self.visit(body),
             "/history" => self.history(body),
             "/events" => self.events(body),
             "/add" => self.add(body),
@@ -184,6 +185,24 @@ impl<'a, R: Runtime> Controller<'a, R> {
         }
         self.store.history_bump(&url, "", crate::watch::now_ms());
         Ok(json!({"mode": "new", "port": port, "pid": pid, "ctx": ctx}))
+    }
+
+    /// POST /visit {url} — the `open` verb's daemon half. `open` navigates the
+    /// calling page in place, so nobody else writes its History row: the
+    /// watcher only refreshes the existing page row on a URL change. This
+    /// resolves the input through the same `spawn::normalize_url` that `/open`
+    /// uses (one meaning for "bing" across both opening verbs) and records the
+    /// visit. No epoch bump: History is not panel-visible (same as `history_bump`
+    /// from `/open`).
+    pub fn visit(&mut self, body: &Value) -> Result<Value, String> {
+        let raw = body.get("url").and_then(Value::as_str).unwrap_or_default();
+        if raw.is_empty() {
+            return Err("need url".into());
+        }
+        let url = spawn::normalize_url(raw);
+        let title = self.store.page_title_for_url(&url).unwrap_or_default();
+        self.store.history_bump(&url, &title, crate::watch::now_ms());
+        Ok(json!({ "url": url }))
     }
 
     /// POST /history {query?, limit?} — address-bar candidates: the store's

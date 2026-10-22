@@ -928,6 +928,27 @@ fn open_history_carry_from_reopen_of_watched_page() {
 }
 
 #[test]
+fn visit_resolves_the_opening_verb_input_and_records_it() {
+    // The `open` verb navigates in place, so the content script cannot make
+    // the watcher write a History row (a URL change only refreshes the page
+    // row). /visit is that daemon half: same normalizer as /open, a real
+    // visit count, no epoch bump, no runtime call (nothing spawns).
+    let mut h = Harness::new();
+    let epoch_before = h.store.epoch();
+
+    let r = h.verb("/visit", json!({ "url": "bing" })).unwrap();
+    assert_eq!(r["url"], "https://bing.com", "a bare word means its .com");
+    h.verb("/visit", json!({ "url": "https://bing.com" })).unwrap();
+
+    let rows = h.store.history_all();
+    assert_eq!(rows.len(), 1, "one row per address, visits accumulate: {rows:?}");
+    assert_eq!(rows[0].visits, 2);
+    assert_eq!(h.store.epoch(), epoch_before, "history writes do not bump the epoch");
+    assert!(h.calls().is_empty(), "no window is spawned by a visit");
+    assert_eq!(h.verb("/visit", json!({})), Err("need url".into()));
+}
+
+#[test]
 fn history_verb_ranks_by_fused_score() {
     let mut h = Harness::new();
     let epoch_before = h.store.epoch();
