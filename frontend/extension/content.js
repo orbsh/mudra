@@ -89,8 +89,20 @@
   async function openNew(url) {
     const text = (url || "").trim();
     if (!text) return flashBar("usage: :new <url>");
-    const r = await send({ type: "new", url: text });
+    const r = await send({ type: "new", url: text, from: location.href });
     return flashBar(r.ok === false ? r.err || "open failed" : "opened in a new window");
+  }
+
+  // ---- :q — close this page ----
+  // The service worker closes the sender's own tab, which is exact: no URL
+  // matching (mudrad's /close_page takes a substring), and it works the same on
+  // the console, which is just another tab. mudrad's watcher sees
+  // Target.targetDestroyed and marks the page row closed, so the bookkeeping
+  // needs no cooperation from here.
+  async function closeSelf() {
+    const r = await send({ type: "close" });
+    if (r.ok === false) return flashBar(r.err || "close failed");
+    // Nothing to confirm: the page (and this bar) is on its way out.
   }
   // ---- one surface for both verbs: the palette IS the address bar ----
   // `o`/`O` only type `open `/`new ` into the command line, so there is no
@@ -145,6 +157,7 @@
     new:     { defaultKey: "O", desc: "open url in a new window",
                run: (arg) => (arg.trim() ? openNew(arg) : enterCommand("new ")) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
+    q:       { defaultKey: null, desc: "close this page", run: () => closeSelf() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
 

@@ -55,7 +55,13 @@
 | `o` | open | 命令行打 `open `（≡ `:open`），Enter 在本页打开 |
 | `O` | new | 命令行打 `new `（≡ `:new`），Enter 另开窗口 |
 | `P` | pages | 切页（mudrad） |
+| — | q | 关闭当前页（`:q`，无默认键） |
 | `:` | — | command 模式 |
+
+`:q` 关的是**说这句话的那个 tab**：service worker 直接 `chrome.tabs.remove(sender.tab.id)`，
+不做 URL 匹配（mudrad 的 `/close_page` 收的是子串，会认错页），所以控制台也能 `:q`（它只是
+另一个 tab）。mudrad 的 watcher 收到 `Target.targetDestroyed` 自己把 page 行标 closed，
+不需要扩展回报。
 
 ## 配置
 

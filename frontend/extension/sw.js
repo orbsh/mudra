@@ -75,6 +75,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(out);
           break;
         }
+        case "close": {
+          // `:q` — the sender's own tab, no URL matching. tabs.remove needs no
+          // permission; on an --app window (one tab) it closes the window.
+          const id = tabIdOf(sender);
+          if (id == null) return sendResponse({ ok: false, err: "no tab to close" });
+          await chrome.tabs.remove(id);
+          sendResponse({ ok: true });
+          break;
+        }
         default:
           sendResponse({ ok: false, err: `unknown type ${msg.type}` });
       }
