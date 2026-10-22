@@ -1,18 +1,19 @@
 // mudra example config (KDL v2). Copy to ~/.config/mudra/config.kdl to take effect.
 // Missing entries fall back to built-in defaults (frontend/shared/lib.js MudraConfig.defaults).
-// The extension fetches this via GET /config at startup; runtime changes from :set
-// (chrome.storage.local) take precedence over this file.
+// The extension fetches this via GET /config at startup and re-applies it on every
+// sync; only keys pinned with :set (chrome.storage.local) win over this file.
 
 bar {
     font "12px monospace"      // status bar font
     height 16                  // status bar height px
-    fg "auto"                  // "auto" = black or white, picked from bg's luminance
+    fg "#999999"               // gray by default; "auto" = black or white, picked from bg's luminance
     bg "rgba(0,0,0,.55)"       // normal mode: translucent, frosted by blur
     insertFg "auto"
     insertBg "rgba(232,232,232,.62)"
     hintFg "auto"              // hint labels (opaque, they sit on page text)
     hintBg "#ffd76e"
     blur 12                    // frosted-glass radius px; 0 = translucency only
+    opacity 0.1                // the strip's own alpha; the tint comes from bg
 }
 
 hint {

@@ -86,17 +86,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ---- config fetch: GET /config at extension startup -> chrome.storage.local ----
-// storage takes precedence over fetched values (runtime keys changed via :set are not clobbered):
-// only write keys that exist in defaults and were never locally changed via :set
-// (configSyncedAt marks whether the first round already ran).
-//
-// The shipped look changes between releases. Because syncConfig only fills keys
-// that are absent, a colour stored by an older release would pin the old bar
-// forever — so CONFIG_REV re-applies the look keys once per revision. A :set made
-// after that bump still wins, since this only runs when the stored rev is behind.
-const CONFIG_REV = 2;
-const LOOK_KEYS = ["statusFg", "statusBg", "insertFg", "insertBg", "hintFg", "hintBg", "statusBlur"];
-
+// The config file is the source of truth; a key the user pinned with :set is the
+// exception (storage had to be authoritative for runtime changes). So every key
+// the file carries is re-applied on each sync unless it is in `setKeys` — that
+// way editing ~/.config/mudra/config.kdl actually changes the bar instead of
+// being shadowed by a value some earlier sync wrote once.
 async function syncConfig() {
   try {
     const r = await fetch(MUDRAD + "/config");
@@ -104,13 +98,11 @@ async function syncConfig() {
     const { ok, config } = await r.json();
     if (!ok || !config) return;
     const stored = await chrome.storage.local.get(null);
+    const pinned = new Set(stored.setKeys || []);
     const patch = {};
     for (const [k, v] of Object.entries(config)) {
-      if (!(k in stored) || stored[k] === undefined) patch[k] = v;
-    }
-    if ((stored.configRev || 1) < CONFIG_REV) {
-      for (const k of LOOK_KEYS) if (config[k] !== undefined) patch[k] = config[k];
-      patch.configRev = CONFIG_REV;
+      if (pinned.has(k)) continue; // :set wins over the file
+      if (!(k in stored) || stored[k] !== v) patch[k] = v;
     }
     if (Object.keys(patch).length) await chrome.storage.local.set(patch);
     await chrome.storage.local.set({ configSyncedAt: Date.now() });

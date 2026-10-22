@@ -10,13 +10,14 @@ const MudraConfig = {
     hintFontSize: 12,                // px
     statusHeight: 16,                // px, one character tall
     statusFont: "12px monospace",
-    statusFg: "auto",                // "auto" = black or white, whichever contrasts with the bg
+    statusFg: "#999999",             // gray by default; "auto" = black or white, whichever contrasts with the bg
     statusBg: "rgba(0,0,0,.55)",     // normal mode: translucent, frosted by statusBlur
     insertFg: "auto",
     insertBg: "rgba(232,232,232,.62)",
     hintFg: "auto",
     hintBg: "#ffd76e",               // hint labels stay opaque: they sit on top of page text
     statusBlur: 12,                  // px of frosted glass; 0 = translucency only
+    statusOpacity: 0.1,              // the strip's own alpha (the tint still comes from statusBg)
     keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
     scrollStepLines: 3,              // lines per j/k scroll
     pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
@@ -63,13 +64,43 @@ const MudraConfig = {
     return !fg || fg === "auto" ? this.readableFg(bg) : fg;
   },
 
+  // `color` with its alpha replaced by the bar's own opacity knob. The knob
+  // exists because the frosted strip wants far less tint than the surfaces that
+  // must stay readable (command line, candidate popup keep their own alpha).
+  // Unknown colours pass through untouched.
+  withAlpha(color, a) {
+    const rgb = this.parseColor(color);
+    const n = parseFloat(a);
+    if (!rgb || Number.isNaN(n)) return color;
+    return `rgba(${rgb.join(",")},${Math.max(0, Math.min(1, n))})`;
+  },
+
   async all() {
     const stored = await this.storage.get(null);
     return { ...this.defaults, ...stored };
   },
 
   async set(patch) {
+    const keys = Object.keys(patch);
+    // Pinned keys: the service worker leaves them alone when it re-reads the
+    // config file, so a :set survives later file edits — and every key NOT
+    // pinned keeps tracking the file.
+    const stored = await this.storage.get("setKeys");
     await this.storage.set(patch);
+    const pinned = (stored && stored.setKeys) || [];
+    const next = [...new Set([...pinned, ...keys])];
+    if (next.length !== pinned.length) await this.storage.set({ setKeys: next });
+    return this.all();
+  },
+
+  // Hand a key back to the config file: drop the stored value and its pin, so
+  // the next sync restores what config.kdl says (until then the built-in
+  // default applies).
+  async unpin(key) {
+    const stored = await this.storage.get("setKeys");
+    await this.storage.remove(key);
+    const pinned = ((stored && stored.setKeys) || []).filter((k) => k !== key);
+    await this.storage.set({ setKeys: pinned });
     return this.all();
   },
 
@@ -175,7 +206,7 @@ const MudraBar = {
     this.bar.style.cssText = [
       "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${col.fg}`, `background:${col.bg}`, ...this._frost(),
+      `color:${col.fg}`, `background:${MudraConfig.withAlpha(col.bg, cfg.statusOpacity)}`, ...this._frost(),
       "display:flex", "align-items:center", "justify-content:space-between",
       "padding:0 6px", "box-sizing:border-box", "user-select:none",
       "pointer-events:none", "white-space:nowrap", "overflow:hidden",
@@ -194,7 +225,10 @@ const MudraBar = {
       return s;
     };
     this.left.textContent = "";
-    for (const part of [d.ctx, d.count, mode].filter(Boolean)) {
+    // d.modeLabel overrides the mode word: hint mode reached by `F` says
+    // "hintnew" — same state machine, other verb, and the pointer at the
+    // bottom is the only place that difference is visible before you click.
+    for (const part of [d.ctx, d.count, d.modeLabel || mode].filter(Boolean)) {
       this.left.appendChild(seg(part));
     }
     if (d.capsules != null) {
@@ -234,20 +268,24 @@ const MudraBar = {
   // candidate = {label, value, desc?}；Esc → onPick(null, ...)。A candidate with `desc` renders
   // as two columns (name padded to a shared width, description in dim gray) so name and
   // description never blur into one run of text.
-  // Optional host hooks for non-command pickers: onTab(candidate, api) replaces the default
-  // fill-and-refilter (drill-down semantics), onBackspace(api) fires when Backspace is pressed
-  // on an empty input (layer-up semantics). onPick also gets a 4th argument, reason:
+  // Optional host hooks for non-command pickers: onBackspace(api) fires when Backspace is
+  // pressed on an empty input (layer-up semantics). onPick also gets a 4th argument, reason:
   // "enter" when Enter committed the line, "cancel" when Esc dismissed it — hosts that treat
   // "no candidate" as "use the typed text" must not fire that on Esc.
+  // Tab moves the selection (wrapping, Shift+Tab backwards) and never edits the line: the
+  // line is what the user typed, the highlight is what Enter will take.
   // opts.prompt replaces the leading ":" marker (a host entered by a key binding shows what
   // that key would have typed, e.g. ":open ").
-  async openCommand(onInput, onPick, onTab, onBackspace, opts) {
+  async openCommand(onInput, onPick, onBackspace, opts) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
 
     // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
     const rowH = cfg.statusHeight + 2;
-    const barFg = MudraConfig.fgFor(cfg.statusBg, cfg.statusFg);
+    // The popup is a reading surface: it derives its foreground from the tint
+    // even when the strip's own text colour is pinned — a dim gray is fine for
+    // one line of status, but rows of URLs need contrast.
+    const barFg = MudraConfig.readableFg(cfg.statusBg);
     const lineFg = MudraConfig.fgFor(cfg.insertBg, cfg.insertFg);
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
@@ -355,11 +393,14 @@ const MudraBar = {
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
+        // Cycle the selection; the line stays as typed. (Filling the line on Tab
+        // made the candidate list refilter and vanish under the keystroke, and
+        // Enter could then take a row the user never looked at.)
         e.preventDefault();
-        if (!items[sel]) return;
-        // Drill-down hosts take over Tab entirely; default is fill the selected value and refilter
-        if (onTab) onTab(items[sel], api);
-        else api.setValue(items[sel].value);
+        if (!items.length) return;
+        const step = e.shiftKey ? -1 : 1;
+        sel = (sel + step + items.length) % items.length;
+        renderList();
       }
       else if (e.key === "Backspace" && input.value === "" && onBackspace) {
         // Layer-up hook: only fires on an empty input, so normal text editing is unaffected

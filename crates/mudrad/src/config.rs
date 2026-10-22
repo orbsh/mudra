@@ -38,6 +38,7 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
             ("hintFg", "hintFg"),
             ("hintBg", "hintBg"),
             ("blur", "statusBlur"),
+            ("opacity", "statusOpacity"),
         ],
     ),
     ("hint", &[("chars", "hintChars"), ("fontSize", "hintFontSize")]),
@@ -327,6 +328,18 @@ command { maxCandidates 10 }
         let cfg = load(&default, &user).unwrap();
         assert_eq!(cfg["statusBlur"], json!(12));
         assert!(cfg["statusBlur"].is_i64(), "a px count reads as an integer");
+    }
+
+    #[test]
+    fn bar_opacity_maps_to_a_float() {
+        // The strip's alpha is a fraction, so it must NOT be narrowed to an integer
+        // like the px counts (0.15 read as 0 would erase the bar).
+        let dir = tempfile::tempdir().unwrap();
+        let default = write(dir.path(), "default.kdl", "bar { opacity 0.15 }\n");
+        let user = write(dir.path(), "user.kdl", "");
+        let cfg = load(&default, &user).unwrap();
+        assert_eq!(cfg["statusOpacity"], json!(0.15));
+        assert!(cfg["statusOpacity"].is_f64(), "an alpha stays a float");
     }
 
     #[test]
