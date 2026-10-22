@@ -10,7 +10,7 @@ const MudraConfig = {
     hintFontSize: 12,                // px
     statusHeight: 16,                // px, one character tall
     statusFont: "12px monospace",
-    statusFg: "#999999",             // gray by default; "auto" = black or white, whichever contrasts with the bg
+    statusFg: "#666666",             // dark gray by default; "auto" = black or white, whichever contrasts with the bg
     statusBg: "rgba(0,0,0,.55)",     // normal mode: translucent, frosted by statusBlur
     insertFg: "auto",
     insertBg: "rgba(232,232,232,.62)",
@@ -282,17 +282,17 @@ const MudraBar = {
 
     // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
     const rowH = cfg.statusHeight + 2;
-    // The popup is a reading surface: it derives its foreground from the tint
-    // even when the strip's own text colour is pinned — a dim gray is fine for
-    // one line of status, but rows of URLs need contrast.
-    const barFg = MudraConfig.readableFg(cfg.statusBg);
-    const lineFg = MudraConfig.fgFor(cfg.insertBg, cfg.insertFg);
+    // One theme for the whole bottom strip — the bar, the command line that
+    // replaces it, and the candidate popup: same tint, same opacity, same
+    // foreground. Anything else makes command mode look like a separate app.
+    const barFg = MudraConfig.fgFor(cfg.statusBg, cfg.statusFg);
+    const stripBg = MudraConfig.withAlpha(cfg.statusBg, cfg.statusOpacity);
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
     box.style.cssText = [
       "position:fixed", "left:0", "right:0", `bottom:${cfg.statusHeight}px`,
       "z-index:2147483646", `max-height:${cfg.maxCandidates * rowH}px`,
-      "overflow-y:auto", "box-sizing:border-box", "background:" + cfg.statusBg, `color:${barFg}`,
+      "overflow-y:auto", "box-sizing:border-box", `background:${stripBg}`, `color:${barFg}`,
       ...this._frost(),
     ].join(";");
     const list = document.createElement("div");
@@ -311,7 +311,7 @@ const MudraBar = {
     line.style.cssText = [
       "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${lineFg}`, `background:${cfg.insertBg}`, ...this._frost(),
+      `color:${barFg}`, `background:${stripBg}`, ...this._frost(),
       "display:flex", "align-items:center", "padding:0 6px", "box-sizing:border-box",
     ].join(";");
     const promptEl = document.createElement("span");
@@ -321,7 +321,7 @@ const MudraBar = {
     input.id = "mudra-cmdinput";
     input.style.cssText = [
       "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
-      `color:${lineFg}`, `font:${cfg.statusFont}`, "padding:0",
+      `color:${barFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
     line.appendChild(promptEl);
     line.appendChild(input);
@@ -352,7 +352,7 @@ const MudraBar = {
         row.style.cssText = [
           `font:${cfg.statusFont}`, `height:${rowH}px`, "line-height:" + rowH + "px",
           "padding:0 6px", "white-space:pre", "box-sizing:border-box",
-          "background:" + (i === sel ? "rgba(128,128,255,.35)" : "transparent"),
+          "background:" + (i === sel ? "rgba(0,0,0,.18)" : "transparent"),
           "color:" + barFg,
         ].join(";");
         list.appendChild(row);
