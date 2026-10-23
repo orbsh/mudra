@@ -13,6 +13,9 @@
   --sel: #076678; --on: #d79921; --chip: #ebdbb2; --muted: #928374;
   --line: #d5c4a1; --green: #79740e; --red: #9d0006;
   --hover: #e6d8ab; --shadow: rgba(60, 56, 54, .22); --on-sel: #fbf1c7;
+  /* one height for every pill in a strip (page tag capsules, the rank axis,
+     the filter groups): a shared knob so neighbours cannot drift apart */
+  --cap-h: 18px;
   /* one page-tree nesting level; config.kdl `ui.indent` overwrites it inline */
   --indent: 1.4em;
 }
@@ -36,13 +39,21 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 .count { color: var(--muted); }
 .b { background: var(--chip); border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .b:hover { border-color: var(--sel); }
-.b.add { color: var(--green); font-weight: 700; border-radius: 50%; width: 22px; height: 22px; padding: 0; line-height: 1; }
+.b.add { color: var(--green); font-weight: 700; border-radius: 50%; width: var(--cap-h); height: var(--cap-h); padding: 0;
+         line-height: 1; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
 /* the tag filters sit inline with the rest of the filter row; when a surface
    has more tags than fit they scroll sideways rather than push a second line */
 .filts { display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0;
          overflow-x: auto; scrollbar-width: none; }
 .filts::-webkit-scrollbar { display: none; }
-.chip { background: var(--chip); border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; font-size: 11px; flex: 0 0 auto; white-space: nowrap; }
+/* One capsule per tag-tree prefix: the head names the tree (it is a label and
+   not a filter), the segments after it are the toggles. Geometry lives in the
+   shared `.capsule, .fgrp` rule below — this block only splits head/segments. */
+.fgrp .gp { background: var(--sel); color: var(--on-sel); font-weight: 600; }
+.fgrp .chip { border: none; border-left: 1px solid var(--line); border-radius: 0; background: transparent; padding: 0 7px; }
+.chip { display: inline-flex; align-items: center; height: var(--cap-h); background: var(--chip); border: 1px solid var(--line);
+        color: var(--fg); border-radius: 12px; padding: 0 7px; cursor: pointer; font-size: 11px; line-height: 1;
+        flex: 0 0 auto; white-space: nowrap; }
 .chip:hover { border-color: var(--sel); }
 .chip.on { background: var(--on); color: #3c3836; border-color: var(--on); font-weight: 600; }
 
@@ -69,16 +80,26 @@ body { background: var(--bg); color: var(--fg); font-family: "Noto Sans CJK SC",
 .meta { color: var(--muted); font-size: 11px; flex-shrink: 0; }
 
 /* ---- rank axis (emoji) ---- */
-.rank { display: inline-flex; gap: 1px; background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; }
-.rk { cursor: pointer; filter: grayscale(1); opacity: .5; font-size: 13px; }
+.rank { display: inline-flex; align-items: center; height: var(--cap-h); gap: 1px;
+        background: var(--chip); border: 1px solid var(--line); border-radius: 12px; padding: 0 6px; flex: 0 0 auto; }
+.rk { cursor: pointer; filter: grayscale(1); opacity: .5; font-size: 13px; line-height: 1; }
 .rk.on { filter: none; opacity: 1; }
 .rk:hover { transform: scale(1.15); }
 
 /* ---- capsule: multi-segment path ---- */
-.capsule { display: inline-flex; align-items: stretch; background: var(--chip); border: 1px solid var(--sel); border-radius: 12px; overflow: hidden; }
+/* One capsule style, two hosts: the tag path after a page title and the
+   tag-tree group in the filter row. The container stretches its children so
+   the dividers run the full height, and every child is itself a flex box, so
+   its glyph sits on the centre line instead of on the text baseline — the
+   height therefore stays `--cap-h` no matter which glyph is inside. */
+.capsule, .fgrp { display: inline-flex; align-items: stretch; flex: 0 0 auto;
+                  height: var(--cap-h); font-size: 11px; line-height: 1;
+                  background: var(--chip); border: 1px solid var(--line);
+                  border-radius: 12px; overflow: hidden; }
+.capsule > *, .fgrp > * { display: flex; align-items: center; height: auto; padding: 0 6px; white-space: nowrap; }
 .cp-x { background: none; border: none; color: var(--red); cursor: pointer; padding: 0 5px; font-size: 10px; opacity: .7; }
 .cp-x:hover { opacity: 1; }
-.seg { padding: 2px 7px; cursor: pointer; border-right: 1px solid var(--line); white-space: nowrap; }
+.seg { padding: 0 7px; cursor: pointer; border-right: 1px solid var(--line); }
 .seg:hover { background: var(--hover); }
 .seg.leaf { background: rgba(7, 102, 120, .12); }
 .cp-close { background: none; border: none; color: var(--green); cursor: pointer; padding: 0 5px; font-size: 11px; }

@@ -271,9 +271,6 @@ pub fn App() -> impl IntoView {
 
     // ---- derived page tree ----
     let (tree, set_tree) = signal(Vec::<Node>::new());
-    // how many rows survive the filters (the count in the bar shows this
-    // against the loaded total, so a filter that hides everything says so)
-    let (shown, set_shown) = signal(0usize);
     {
         let (pages, filters, collapsed, qtext) = (pages, filters, collapsed, qtext);
         Effect::new(move || {
@@ -315,7 +312,6 @@ pub fn App() -> impl IntoView {
                     })
                     .collect()
             }
-            set_shown.update(|n| *n = visible.len());
             set_tree.update(|t| *t = build(0, &list, &visible, &coll));
         });
     }
@@ -537,34 +533,50 @@ pub fn App() -> impl IntoView {
                                 }
                             }
                         />
-                        <span class="count">
-                            {move || format!("{} / {} pages", shown.get(), pages.get().len())}
-                        </span>
                         <div class="filts">
                             <For
-                                each=move || (*leaves.get()).clone()
-                                key=|(id, _)| *id
-                                children=move |(id, path): (u32, String)| {
-                                    let on = move || filters.get().contains(&id);
-                                    let onclick: tf::VoidCb = {
+                                each=move || group_leaves(&leaves.get())
+                                key=|g: &(String, Vec<(u32, String)>)| g.0.clone()
+                                children={
+                                    let ui = ui.clone();
+                                    move |(prefix, segs): (String, Vec<(u32, String)>)| {
                                         let ui = ui.clone();
-                                        Arc::new(move || {
-                                            let mut next: Vec<u32> = Vec::new();
-                                            set_filters.update(|f| {
-                                                let mut n: Vec<u32> = (**f).clone();
-                                                match n.iter().position(|t| *t == id) {
-                                                    Some(i) => {
-                                                        n.remove(i);
+                                        view! {
+                                            <span class="fgrp">
+                                                {(!prefix.is_empty())
+                                                    .then(|| view! { <span class="gp">{prefix.clone()}</span> })}
+                                                <For
+                                                    each=move || segs.clone()
+                                                    key=|(id, _): &(u32, String)| *id
+                                                    children={
+                                                        let ui = ui.clone();
+                                                        move |(id, label): (u32, String)| {
+                                                            let on = move || filters.get().contains(&id);
+                                                            let onclick: tf::VoidCb = {
+                                                                let ui = ui.clone();
+                                                                Arc::new(move || {
+                                                                    let mut next: Vec<u32> = Vec::new();
+                                                                    set_filters.update(|f| {
+                                                                        let mut n: Vec<u32> = (**f).clone();
+                                                                        match n.iter().position(|t| *t == id) {
+                                                                            Some(i) => {
+                                                                                n.remove(i);
+                                                                            }
+                                                                            None => n.push(id),
+                                                                        }
+                                                                        next = n.clone();
+                                                                        *f = Arc::new(n);
+                                                                    });
+                                                                    ui.save_filters(&next);
+                                                                })
+                                                            };
+                                                            tf::chip(label, on, onclick)
+                                                        }
                                                     }
-                                                    None => n.push(id),
-                                                }
-                                                next = n.clone();
-                                                *f = Arc::new(n);
-                                            });
-                                            ui.save_filters(&next);
-                                        })
-                                    };
-                                    tf::chip(path, on, onclick)
+                                                />
+                                            </span>
+                                        }
+                                    }
                                 }
                             />
                         </div>
@@ -966,6 +978,25 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
         </div>
     }
     .into_any()
+}
+
+/// The filter chips grouped by tag-tree prefix: `situation::inbox` and
+/// `situation::work` become one capsule whose head names the tree once,
+/// instead of the tree name being repeated in every chip. Order is first
+/// appearance in the forest walk, so a group does not jump between renders.
+fn group_leaves(list: &Leaves) -> Vec<(String, Vec<(u32, String)>)> {
+    let mut out: Vec<(String, Vec<(u32, String)>)> = Vec::new();
+    for (id, path) in list.iter() {
+        let (prefix, label) = match path.rsplit_once("::") {
+            Some((p, l)) => (p.to_string(), l.to_string()),
+            None => (String::new(), path.clone()),
+        };
+        match out.iter_mut().find(|(p, _)| *p == prefix) {
+            Some((_, segs)) => segs.push((*id, label)),
+            None => out.push((prefix, vec![(*id, label)])),
+        }
+    }
+    out
 }
 
 pub(crate) fn time_ago(millis: u64) -> String {
