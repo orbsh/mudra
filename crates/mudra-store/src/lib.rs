@@ -498,7 +498,10 @@ pub fn primary_header<R: okm_core::Document>() -> Vec<u8> {
 /// same assembly as `Collection::primary_key` (document.rs), no engine.
 pub fn primary_key<R: okm_core::Document>(key: &R::Key) -> Vec<u8> {
     let mut buf = primary_header::<R>();
-    buf.extend_from_slice(&okm_core::PRIMARY_SLOT.to_be_bytes());
+    // The slot carries its own width (ADR-0030: one byte for a fixed face, two
+    // for a counting family) — hand-rolling `to_be_bytes` drifts the moment the
+    // slot is a fixed face, which the primary face is.
+    okm_core::write_slot(&mut buf, okm_core::PRIMARY_SLOT);
     buf.extend_from_slice(&key.encode());
     buf
 }
@@ -1031,16 +1034,12 @@ impl MudraStore {
             .collect()
     }
 
-    /// Delete by name; `false` when there was nothing to delete. The
-    /// document comes from the same read that found the key (`delete`'s
-    /// sound-source contract — index entries and primary entry stay in
-    /// step).
+    /// Delete by name; `false` when there was nothing to delete. The row does
+    /// not have to be in hand: `purge` derives its removal set from the STORED
+    /// row, so the lookup is only the existence check and the name-to-key hop.
     pub fn hook_delete_by_name(&mut self, name: &str) -> bool {
         match self.hook_by_name(name) {
-            Some((k, h)) => {
-                self.hooks.delete(&k, &h);
-                true
-            }
+            Some((k, _)) => self.hooks.purge(&k),
             None => false,
         }
     }
