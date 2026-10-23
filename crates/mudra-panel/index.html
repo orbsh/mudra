@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8"/>
+    <!-- The console declares itself: the extension's `:open` must never
+         navigate this page away, even when a /ctx_status round trip fails
+         (the backend role is the primary source, this is the safety net). -->
+    <meta name="mudra-console" content="1"/>
     <title>mudra console</title>
     <link data-trunk rel="css" href="styles.css"/>
   </head>

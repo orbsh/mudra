@@ -81,15 +81,16 @@ struct Axis {
     children: Arc<Vec<(i32, u32)>>,
 }
 
-/// Capsule/popup menu payload (JS setPopup shapes). `place` marks the
-/// "add tag" variant: it shows the "Assign tag" title and a background
-/// click does NOT close it (the JS `place === undefined` rule).
+/// Capsule/popup menu payload. `title` is the heading (the add picker says
+/// "Assign tag"; the sibling menu has none). The callback owns what happens
+/// after a pick — assigning closes the menu, a drill level replaces it — so
+/// the view never closes it behind the callback's back.
 #[derive(Clone)]
 struct Menu {
     x: f64,
     y: f64,
+    title: Option<String>,
     items: Arc<Vec<(u32, String)>>,
-    place: bool,
     cb: Arc<dyn Fn(u32) + Send + Sync>,
 }
 
@@ -109,7 +110,7 @@ struct RowCtx {
     set_tags: Arc<dyn Fn(u64, Vec<u32>) + Send + Sync>,
     set_rank: Arc<dyn Fn(PageInfo, Arc<Axis>, i32) + Send + Sync>,
     open_seg: Arc<dyn Fn(PageInfo, TagNode, usize, f64, f64) + Send + Sync>,
-    add_tag: Arc<dyn Fn(u64, Vec<u32>) + Send + Sync>,
+    add_tag: Arc<dyn Fn(u64, Vec<u32>, f64, f64) + Send + Sync>,
     hover: Arc<dyn Fn(u64, f64, f64) + Send + Sync>,
 }
 
@@ -364,57 +365,92 @@ pub fn App() -> impl IntoView {
                 .split("::")
                 .map(str::to_string)
                 .collect();
-            let root = match roots.get().iter().find(|r| r.name == parts[0]) {
-                Some(r) => r.clone(),
-                None => return,
-            };
-            let mut cursor = root;
-            for seg in parts.iter().skip(1).take(depth) {
-                match cursor.children.iter().find(|c| &c.name == seg) {
-                    Some(c) => cursor = c.clone(),
+            // The menu offers the clicked segment's SIBLINGS, so step up to
+            // its parent first (the forest itself for the first segment):
+            // clicking `situation` lists the other roots, clicking `work`
+            // lists the other situation leaves. Labels are that level's own
+            // names — the whole list sits on one level, so repeating the
+            // parent path ("state::to-read") is noise.
+            let roots_now = roots.get();
+            let level: Vec<TagNode> = if depth == 0 {
+                (*roots_now).clone()
+            } else {
+                let mut cursor = match roots_now.iter().find(|r| r.name == parts[0]) {
+                    Some(r) => r.clone(),
                     None => return,
+                };
+                let mut found = true;
+                for seg in parts.iter().skip(1).take(depth - 1) {
+                    match cursor.children.iter().find(|c| &c.name == seg) {
+                        Some(c) => cursor = c.clone(),
+                        None => {
+                            found = false;
+                            break;
+                        }
+                    }
                 }
-            }
-            let siblings: Vec<(u32, String)> = cursor
-                .children
+                if !found {
+                    return;
+                }
+                cursor.children
+            };
+            let siblings: Vec<(u32, String)> = level
                 .iter()
-                .filter(|c| c.rank.is_none())
-                .filter_map(|c| c.path.clone().map(|pa| (c.id, pa)))
+                .filter(|c| plain_tag(c))
+                .map(|c| (c.id, c.name.clone()))
                 .collect();
+            // A level with nothing to switch to opens nothing — and closes
+            // whatever the previous segment opened: an empty popup drew a
+            // bare strip hanging under the segment.
+            if siblings.is_empty() {
+                set_menu.set(None);
+                return;
+            }
             let tag_id = node.id;
             let cur = p.tag_ids.clone();
             let page_id = p.id;
             set_menu.set(Some(Menu {
                 x,
                 y,
+                title: None,
                 items: Arc::new(siblings),
-                place: false,
                 cb: Arc::new(move |id: u32| {
                     let mut ids: Vec<u32> =
                         cur.iter().copied().filter(|t| *t != tag_id).collect();
                     ids.push(id);
                     set_tags(page_id, ids);
+                    set_menu.set(None);
                 }),
             }));
         })
     };
-    // ＋ on the row: add-tag popup over every plain leaf (JS addTagToPage)
-    let add_tag: Arc<dyn Fn(u64, Vec<u32>) + Send + Sync> = {
-        let (leaves, set_menu, set_tags) = (leaves, set_menu, Arc::clone(&set_tags));
-        Arc::new(move |page_id: u64, cur: Vec<u32>| {
-            let set_tags = Arc::clone(&set_tags);
-            let items = (*leaves.get()).clone();
-            set_menu.set(Some(Menu {
-                x: 0.0,
-                y: 0.0,
-                items: Arc::new(items),
-                place: true,
-                cb: Arc::new(move |id: u32| {
-                    let mut ids = cur.clone();
-                    ids.push(id);
-                    set_tags(page_id, ids);
-                }),
-            }));
+    // ＋ on the row: a drill-down picker over the tag forest. It opens at the
+    // pointer (it used to sit at 0,0 = the page's top-left corner) and walks
+    // one level per click — roots first, then their children — instead of
+    // dumping every leaf as a full path.
+    let add_tag: Arc<dyn Fn(u64, Vec<u32>, f64, f64) + Send + Sync> = {
+        let (roots, set_menu, set_tags) = (roots, set_menu, Arc::clone(&set_tags));
+        Arc::new(move |page_id: u64, cur: Vec<u32>, x: f64, y: f64| {
+            let forest = roots.get();
+            let items: Vec<(u32, String)> = forest
+                .iter()
+                .filter(|r| plain_tag(r) && !r.children.is_empty())
+                .map(|r| (r.id, r.name.clone()))
+                .collect();
+            if items.is_empty() {
+                set_menu.set(None);
+                return;
+            }
+            set_menu.set(Some(drill_menu(
+                x,
+                y,
+                page_id,
+                Arc::new(cur),
+                Arc::clone(&forest),
+                items,
+                Arc::clone(&set_tags),
+                set_menu,
+            )));
         })
     };
 
@@ -615,7 +651,9 @@ pub fn App() -> impl IntoView {
 
     // popups: segment/add menu + hover screenshot
     let popups = view! {
-        <Show when=move || menu.get().is_some() fallback=|| ()>
+        // An empty item list never renders: the popup used to show up as a
+        // bare strip when the clicked level had no children to offer.
+        <Show when=move || menu.get().is_some_and(|m| !m.items.is_empty()) fallback=|| ()>
             <div
                 class="menu"
                 style=move || {
@@ -626,10 +664,12 @@ pub fn App() -> impl IntoView {
                 on:click=|e: leptos::ev::MouseEvent| e.stop_propagation()
             >
                 <Show
-                    when=move || menu.get().is_some_and(|m| m.place)
+                    when=move || menu.get().is_some_and(|m| m.title.is_some())
                     fallback=|| ()
                 >
-                    <div class="menu-title">"Assign tag"</div>
+                    <div class="menu-title">
+                        {move || menu.get().and_then(|m| m.title).unwrap_or_default()}
+                    </div>
                 </Show>
                 <For
                     each=move || {
@@ -639,11 +679,12 @@ pub fn App() -> impl IntoView {
                     }
                     key=|(id, _)| *id
                     children=move |(id, label): (u32, String)| view! {
+                        // the callback decides whether the menu closes or
+                        // replaces itself with the next level
                         <button class="menu-item" on:click={move |_| {
                             if let Some(m) = menu.get_untracked() {
                                 (m.cb)(id);
                             }
-                            set_menu.set(None);
                         }}>{label}</button>
                     }
                 />
@@ -678,13 +719,9 @@ pub fn App() -> impl IntoView {
         <div class="panel"
             style=move || format!("--indent:{}em", indent.get())
             on:click=move |_| {
-            // JS rule: a background click closes the segment menu; the
-            // place-flagged add menu stays open until a pick
-            set_menu.update(|m| {
-                if m.as_ref().is_some_and(|m| !m.place) {
-                    *m = None;
-                }
-            });
+            // any background click dismisses the popup; a pick inside it is
+            // stopped by the menu's own handler
+            set_menu.set(None);
         }>
             {side}
             <div class="col">
@@ -947,7 +984,14 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
                 let cur_tags = Arc::clone(&cur_tags);
                 move |e: leptos::ev::MouseEvent| {
                     e.stop_propagation();
-                    (add_tag)(page_id, (*cur_tags).clone());
+                    // the picker opens at the pointer, not at the page's
+                    // top-left corner (0,0 was the old fixed spot)
+                    (add_tag)(
+                        page_id,
+                        (*cur_tags).clone(),
+                        e.client_x() as f64,
+                        e.client_y() as f64,
+                    );
                 }
             }>"＋"</button>
         </div>
@@ -978,6 +1022,72 @@ fn page_node(nd: Node, cx: RowCtx) -> AnyView {
         </div>
     }
     .into_any()
+}
+
+/// A tag a page can actually carry: not a rank pip, not a rank axis (those
+/// two are the pips' business). One rule for every menu that offers tags.
+fn plain_tag(n: &TagNode) -> bool {
+    n.rank.is_none() && n.rank_axis.is_none()
+}
+
+/// Depth-first lookup by id in a forest snapshot (the drill menus carry their
+/// own snapshot, so a re-pull cannot swap the tree under an open menu).
+fn find_tag<'a>(nodes: &'a [TagNode], id: u32) -> Option<&'a TagNode> {
+    for n in nodes {
+        if n.id == id {
+            return Some(n);
+        }
+        if let Some(hit) = find_tag(&n.children, id) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// One level of the add-tag drill. The popup shows the first level and walks
+/// down one click at a time: a pick with children replaces the menu with the
+/// next level, a leaf pick assigns and closes. Shared by every level, so no
+/// label ever has to spell a full path.
+#[allow(clippy::too_many_arguments)]
+fn drill_menu(
+    x: f64,
+    y: f64,
+    page_id: u64,
+    cur: Arc<Vec<u32>>,
+    forest: Arc<Vec<TagNode>>,
+    items: Vec<(u32, String)>,
+    set_tags: Arc<dyn Fn(u64, Vec<u32>) + Send + Sync>,
+    set_menu: WriteSignal<Option<Menu>>,
+) -> Menu {
+    let cb: Arc<dyn Fn(u32) + Send + Sync> = Arc::new(move |picked: u32| {
+        let kids: Vec<(u32, String)> = find_tag(&forest, picked)
+            .map(|n| {
+                n.children
+                    .iter()
+                    .filter(|c| plain_tag(c))
+                    .map(|c| (c.id, c.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if kids.is_empty() {
+            let mut next: Vec<u32> = (*cur).clone();
+            next.push(picked);
+            (set_tags)(page_id, next);
+            set_menu.set(None);
+        } else {
+            set_menu.set(Some(drill_menu(
+                x,
+                y,
+                page_id,
+                Arc::clone(&cur),
+                Arc::clone(&forest),
+                kids,
+                Arc::clone(&set_tags),
+                set_menu,
+            )));
+        }
+    });
+    Menu { x, y, title: Some("Assign tag".into()), items: Arc::new(items), cb }
 }
 
 /// The filter chips grouped by tag-tree prefix: `situation::inbox` and

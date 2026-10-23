@@ -530,6 +530,26 @@ fn ctx_pages_includes_closed_rows_with_tags() {
 }
 
 #[test]
+fn ctx_pages_lists_closed_rows_after_the_instance_stopped() {
+    // The unfiltered list is history, not live state: closing the last window
+    // stops the instance (running=0, pid gone), and the panel must keep the
+    // row — struck through and reopenable — instead of going blank.
+    let mut h = Harness::new();
+    let k = seeded(&mut h);
+    h.store.close_target(k.id, "T1", 2000);
+    let mut inst = h.store.instances.get(&k).unwrap();
+    inst.running = 0;
+    inst.pid = 0; // the window and its process are gone
+    h.store.instances.put(&k, &inst);
+
+    let r = h.verb("/ctx_pages", json!({})).unwrap();
+    let rows = r["pages"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "a stopped instance still owns its page: {rows:?}");
+    assert_eq!(rows[0]["closed"], true);
+    assert_eq!(rows[0]["ctx"], "work");
+}
+
+#[test]
 fn set_tags_replaces_whole_set_and_filters_deleted() {
     let mut h = Harness::new();
     seeded(&mut h);

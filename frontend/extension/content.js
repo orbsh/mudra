@@ -47,6 +47,13 @@
   };
   const pageUrl = () => location.origin + location.pathname + location.search;
 
+  // The console page is the UI: it never navigates itself away. `role` comes
+  // from mudrad's /ctx_status, but a failed status round trip must not turn the
+  // panel into an ordinary browsing page — the panel's own HTML declares it
+  // (`<meta name="mudra-console">`) and that declaration is enough.
+  const isConsolePage = () =>
+    role === "console" || !!document.querySelector('meta[name="mudra-console"]');
+
   const refreshBar = async () => {
     await MudraBar.render({
       ctx, mode, modeLabel, tags: pageTags, capsules: pageCapsules,
@@ -80,7 +87,7 @@
     const text = (url || "").trim();
     if (!text) return flashBar("usage: :open <url>");
     // The console page is the UI: it never navigates itself away.
-    if (role === "console") {
+    if (isConsolePage()) {
       const r = await send({ type: "new", url: text, from: location.href });
       return flashBar(r.ok === false ? r.err || "open failed" : "open ok");
     }

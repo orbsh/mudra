@@ -137,6 +137,20 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .collect()
     }
 
+    /// Every instance row, live or stopped. The panel's page list is history:
+    /// a closed page stays on it (struck through, reopenable) after its window
+    /// — and later its whole context — is gone, so liveness must not decide
+    /// what the list contains. Closing the last window stops the instance, and
+    /// a running-only scan made the list go blank exactly then.
+    fn all_instances(&self) -> Vec<(mudra_store::InstanceKey, mudra_store::Instance)> {
+        self.store
+            .instances
+            .scan_keys()
+            .into_iter()
+            .filter_map(|k| self.store.instances.get(&k).map(|i| (k, i)))
+            .collect()
+    }
+
     /// The live instance row for a context (running=1 AND pid actually
     /// alive — the join-path blood lesson: DB flags drift, /proc decides).
     fn alive_instance_for(&self, ctx: &str) -> Option<(mudra_store::InstanceKey, mudra_store::Instance)> {
@@ -590,8 +604,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// round trip.
     pub fn ctx_pages(&self, body: &Value) -> Result<Value, String> {
         // The panel shows every context at once (there is no ctx switch), so
-        // an ABSENT ctx means "all running instances"; the CLI and the
-        // extension still pass one and get the old single-context answer.
+        // an ABSENT ctx means "every instance, live or stopped": the list is
+        // history, and closing the last window stops the instance — a
+        // running-only scan blanked the panel at exactly that moment. The CLI
+        // and the extension still pass a ctx and get the old single-context
+        // answer.
         let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string);
         // `q` is the database search behind the panel's Enter: the store's
         // page recall (the matcher /focus and the bar's history filter use).
@@ -615,7 +632,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         };
         let insts = match &ctx {
             Some(c) => self.store.instance_by_profile(c),
-            None => self.running_instances(),
+            None => self.all_instances(),
         };
         let mut out = Vec::new();
         for (ik, inst) in insts {
