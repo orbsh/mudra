@@ -351,3 +351,36 @@ fn detached_child_dies_when_its_parent_thread_exits() {
     unsafe { libc::kill(grand as libc::pid_t, libc::SIGKILL) }; // cleanup on failure
     panic!("detached child survived its parent: PDEATHSIG not armed");
 }
+
+// ================= cmdline identification (the panel is a singleton) =========
+
+#[test]
+fn cmdline_has_matches_a_substring_of_an_argv_entry() {
+    // Contract: `cmdline_has` answers "does this process's cmdline contain
+    // the needle". The panel is found by `panel-profile`, which only ever
+    // appears INSIDE an argv entry (`--user-data-dir=…/panel-profile`) —
+    // whole-arg equality matched nothing, so /panel focus never saw the
+    // running console and Win+Q spawned a second one every time.
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", "while :; do sleep 1; done"]);
+    cmd.arg("--user-data-dir=/tmp/mudra-test/panel-profile");
+    let mut child = cmd.spawn().unwrap();
+    let pid = child.id() as u64;
+
+    // /proc can lag a beat behind spawn on a cold cache; poll instead of
+    // racing it (same reason pid_alive polls).
+    let mut hit = false;
+    for _ in 0..100 {
+        if cmdline_has(pid, "panel-profile") {
+            hit = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(hit, "substring of an argv entry must match");
+    assert!(!cmdline_has(std::process::id() as u64, "panel-profile-not-ours"));
+    assert!(!cmdline_has(1, ""), "an empty needle is not a match");
+}

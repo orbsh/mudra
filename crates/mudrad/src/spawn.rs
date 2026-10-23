@@ -230,9 +230,20 @@ pub fn spawn_detached(cmd: &mut std::process::Command) -> io::Result<u32> {
 
 /// True when the process's /proc cmdline contains `needle` (panel window
 /// identification by process identity, never title — the Python rule).
+/// Substring, not whole-arg: the panel is found by a flag that carries a
+/// path (`--user-data-dir=…/panel-profile`), which no argv entry ever
+/// equals — an equality test here made Win+Q open a second panel every
+/// time while the running one sat there unmatched.
 pub fn cmdline_has(pid: u64, needle: &str) -> bool {
+    let n = needle.as_bytes();
+    if n.is_empty() {
+        return false;
+    }
     std::fs::read(format!("/proc/{pid}/cmdline"))
-        .map(|raw| raw.split(|b| *b == 0).any(|arg| arg == needle.as_bytes()))
+        .map(|raw| {
+            raw.split(|b| *b == 0)
+                .any(|arg| arg.windows(n.len()).any(|w| w == n))
+        })
         .unwrap_or(false)
 }
 

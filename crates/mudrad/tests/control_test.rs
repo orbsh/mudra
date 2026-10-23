@@ -894,6 +894,48 @@ fn panel_focus_without_a_window_spawns_one() {
     assert!(matches!(h.calls()[0], Call::Panel));
 }
 
+#[test]
+fn panel_focus_raises_the_existing_window_instead_of_spawning() {
+    // The singleton rule: Win+Q (`mudra ui` -> /panel focus) must raise the
+    // console that is already up. The window is recognized by process
+    // cmdline, so this parks a real process whose argv carries
+    // `--user-data-dir=…/panel-profile` and hands its pid to the snapshot —
+    // the fake snapshot alone cannot satisfy a /proc probe, which is why
+    // this branch went untested and the equality-vs-substring bug shipped.
+    let mut h = Harness::new();
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "while :; do sleep 1; done"])
+        .arg("--user-data-dir=/tmp/mudra-test/panel-profile")
+        .spawn()
+        .unwrap();
+    h.rt.snapshot.windows = vec![json!({"id": 42, "pid": child.id(), "app_id": "chrome-x"})];
+
+    // /proc lags a beat behind spawn (and the suite runs tests in parallel):
+    // poll the verb instead of racing the child's argv to appear.
+    let mut running = false;
+    for _ in 0..100 {
+        if h.verb("/panel", json!({"action": "status"})).unwrap()["running"] == true {
+            running = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(running, "the panel window is up");
+
+    h.rt.take_calls();
+    let r = h.verb("/panel", json!({"action": "focus"})).unwrap();
+    let calls = h.calls();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert_eq!(r["focused"], 42, "focus the window, do not spawn: {r}");
+    assert!(!calls.contains(&Call::Panel), "a second panel was spawned: {calls:?}");
+    assert_eq!(
+        calls,
+        vec![Call::Niri(vec!["focus-window".into(), "--id".into(), "42".into()])]
+    );
+}
+
 // ================= history =================
 
 #[test]
