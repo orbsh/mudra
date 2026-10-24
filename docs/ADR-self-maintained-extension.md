@@ -32,10 +32,12 @@ tag 打标。这是浏览器内行为，只能由浏览器扩展承担。选择�
 - **MV3 + 零构建**：manifest 直接指向源码 JS；`--load-extension=<repo>/frontend`
   （扩展根 = `frontend/`：`manifest.json` 在根，`extension/` 放 content/SW，
   `shared/` 放与 panel 共用的库——manifest 以 `/shared/lib.js` 绝对路径引用跨子目录共享代码）。
-- **模式机与按键**（2026-09-05）：四模式 FSM（normal / hint / insert / command），
-  qutebrowser 式状态栏（左 ctx·count·mode·tags，右 title/url/scroll%）。键位与全部
-  行为参数（hintChars、scrollStepLines、pageOverlapLines、maxCandidates、keybindings
-  覆盖表）存 `chrome.storage.local`，cmd 模式 `:set` 就地修改（`:set scrollStepLines 5`、
+- **模式机与按键**（2026-09-05）：四模式 FSM（normal / hint / insert / command），状态提示
+  是右下角一枚单行 chip（title / url / 滚动百分比），命令模式另开居中浮动面板（位置与大小
+  全按视口比例，输入行不带 `:` 前缀）。页面顶部另有一条 2px 加载进度条（`progress.height`
+  可调、`progress.colors` 多段渐变），`document_start` 挂载、`load` 后淡出。键位与全部
+  行为参数（hintChars、scrollStepLines、pageOverlapLines、progressHeight、progressColors、
+  keybindings 覆盖表）存 `chrome.storage.local`，cmd 模式 `:set` 就地修改（`:set scrollStepLines 5`、
   `:set keybindings.u=pageUp`、裸 `:set` 列出全部）。
 - **SW 只做桥**：service worker 不含业务逻辑，content script 消息 →
   mudrad HTTP（`127.0.0.1:8899`）。开页、打标、页列表、跳页全部由 mudrad

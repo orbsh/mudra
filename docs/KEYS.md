@@ -13,8 +13,9 @@
   走 `open` 动词（本页就地导航）；`F` 同 hint，选中走 `new` 动词（另开一个 page 窗口）。
   两个键底色相同，条上不再写 `hintnew`——按下之后的区别只剩你选中元素时发生的事。
 - **insert** — `i` 聚焦输入框；页内多个输入框时先进 hint 选择；Esc 失焦回 normal。
-- **command** — `:` 触发；弹出**居中的浮动面板**（上沿在视口高度的 1/3 处，宽
-  `min(720px, 80vw)`）：输入行在面板顶部，候选列表向下展开（最多 `maxCandidates` 条）。
+- **command** — `:` 触发；弹出**居中的浮动面板**，位置和大小全按比例：水平居中、上沿在视口
+  高度的 1/3 处、最大高度也是 1/3（即到 2/3 处为止）、宽 `50vw`。输入行在面板顶部（不再有
+  `:` 前缀），候选列表占满余下空间并**在面板内滚动**——候选条数不设上限。
   **Tab 在多个候选之间移动选中项**（循环，Shift+Tab 反向），
   行不动：行是用户敲的东西，高亮是 Enter 会取的东西——多候选时填值会触发重过滤，列表
   在按键底下消失，Enter 可能取走一行没看过的候选。**唯一候选时 Tab 反而补全到行里**
@@ -71,8 +72,10 @@
 
 `hintChars`（字符池，顺序即分配顺序；默认 `asdfghjkl;qwertyuiopzxcv`，含 `;`，池里每个
 字符都必须能敲进去）、`hintFontSize`、`statusHeight/Font/Fg/Bg`、
-`insertFg/Bg`、`hintFg/Bg`、`statusBlur`（默认 12）、`statusOpacity`（默认 0.15）、`keybindings`、`scrollStepLines`（默认 3）、
-`pageOverlapLines`（默认 5）、`maxCandidates`（默认 10）。
+`insertFg/Bg`、`hintFg/Bg`、`hintOpacity`（默认 0.65）、`statusBlur`（默认 12）、`statusOpacity`（默认 0.1）、
+`cmdBg`/`cmdFg`/`cmdOpacity`/`cmdScrollbar`（命令面板的色相、文字色、alpha、候选列表滚动条宽度 px）、
+`progressHeight`（默认 2）/`progressColors`（多段渐变色，空格分隔的多色列表）、
+`keybindings`、`scrollStepLines`（默认 3）、`pageOverlapLines`（默认 5）。
 
 **优先级**：`config.kdl`（仓库层 + `~/.config/mudra/config.kdl` 用户层逐键合并）是源——服务
 worker 每次同步都跟上文件，改文件即改外观；`:set` 写过的键会被钉住（storage 的 `setKeys`），
@@ -82,24 +85,39 @@ worker 每次同步都跟上文件，改文件即改外观；`:set` 写过的键
 **状态栏形态**：右下角一块单行高的 chip（`#mudra-bar`），宽度随文字长（上限 `70vw`），
 四角 4px 圆角，**只显示右侧那段状态**——`title · url · 滚动百分比`（消息态改成一整行提示）。
 ctx、数字前缀、模式名、tag 胶囊都不再画：chip 让掉了左半边，模式只从底色色相看出来。
-**颜色**：底色默认半透明（`bg "rgba(0,0,0,.55)"`、insert 模式另用
+**颜色**：chip 底色默认半透明（`bg "rgba(0,0,0,.55)"`、insert 模式另用
 `insertBg "rgba(232,232,232,.62)"`、hint 模式的深蓝 `rgba(32,64,128,.62)` 同理），配
-`statusBlur`（毛玻璃/backdrop-filter 半径，`0` = 只留半透明）。**条本身的透明度单独一个
+`statusBlur`（毛玻璃/backdrop-filter 半径，`0` = 只留半透明；chip、命令面板、hint 标签
+共用这一个半径）。**条本身的透明度单独一个
 旋钮**：`bar.opacity`（默认 0.1）——色相仍由 `bg` 给，alpha 由它接管。
-**命令模式是另一块面**：`:` 弹出居中浮动面板（`#mudra-cmdpanel`：上沿在 `100vh / 3`、宽
-`min(720px, 80vw)`、6px 圆角 + 投影），输入行（`#mudra-cmdline`）在面板顶部，候选列表
-（`#mudra-cmdbox`）向下展开。面板与 chip 共用 `bg` 的色相 + `bar.opacity` + `statusBlur` +
-`fg` 的文字色；面板开着时 chip 隐去（`visibility:hidden`），免得两处读数。
-`insertBg`/`insertFg` 只影响 insert 模式下的 chip。
+**命令模式是另一块面，颜色也是它自己的**：`:` 弹出居中浮动面板（`#mudra-cmdpanel`：上沿
+`100vh / 3`、最大高度同为 `100vh / 3`（到 2/3 处为止）、宽 `50vw`、6px 圆角 + 投影），输入行
+（`#mudra-cmdline`）在面板顶部，候选列表（`#mudra-cmdbox`）占满余下空间并在面板内滚动。
+颜色走 `command { bg … fg … opacity … }`：`bg` 是**色相**（默认 gruvbox 淡黄 `#fbf1c7`），
+alpha 由 `opacity` 单独接管（默认 0.62），`fg` 默认深灰 `#3c3836`。**色相与 alpha 分开是
+为了让毛玻璃真的看得见**——alpha 接近 1 时 `backdrop-filter` 照样在跑，但 8% 的透光量等于
+没有；要更虚化就调低 `opacity`。候选列表的滚动条是 `scrollbar` px 宽（默认 2）的**纯滑块**：
+无轨道、无边框、无圆角，滑块色 = `fg` 的 15% alpha（比面板底色只深一点）。面板带 `statusBlur` 毛玻璃；面板开着时
+chip 隐去（`visibility:hidden`），免得两处读数。`insertBg`/`insertFg` 只影响 insert 模式下的 chip。
 文字色默认深灰 `#666666`；写 `"auto"` 则按背景色算 WCAG 相对亮度、取黑/白里对比度高的
 那个（alpha 不参与判色——半透明下真实底色是网页内容，静态算不出来，所以按配置的色相判）；
-写死别的颜色即锁死。hint 标签（`f` 的小方块）保持不透明：它要压在页面文字上。
+写死别的颜色即锁死。**hint 标签（`f` 的小方块）也是毛玻璃**：底色 `hintBg`（默认 gruvbox
+淡黄 `#fbf1c7`，同样是色相）、alpha 走 `hint.opacity`（默认 0.65，高于 `bar.opacity` 但
+远低于 1——要能看见桌面上透过来的模糊，同时压得住底下的页面文字），模糊半径同 `statusBlur`；
+文字色按 `hintFg`（`"auto"` 时由 `hintBg` 亮度取黑/白）。insert 模式的多输入框 picker 用同一套。
+
+**加载进度条**：页面顶部一条 `progress { height … colors … }` 的横条，默认 2px 高、gruvbox 六色
+从左到右的多段渐变（`#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b`，空格分隔的多色列表；
+两个以上才成渐变，一个色就是纯色）。它由 content script 在 `document_start` 挂上，所以覆盖整段
+加载：宽度自己爬到 72%（没有进度 API，只有 load 事件），`load` 后补到 100% 再淡出移除；20 秒
+还没加载完就当作结束，免得永远卡在 72%。`height 0` 等于关掉。渐变按视口宽度铺满、被增长的
+盒子裁切，所以颜色钉在视口上，不跟着进度条右沿跑。
 
 cmd 模式就地修改（写入 storage，立即生效，重启实例保留）：
 
 ```
 :set scrollStepLines 5        # 空格分隔
-:set maxCandidates=20         # = 连接等价
+:set pageOverlapLines=8       # = 连接等价
 :set keybindings.u=pageUp     # 键位覆盖；off/- 解绑
 :set                          # 裸调用：状态栏列出全部配置
 ```

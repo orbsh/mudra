@@ -41,12 +41,13 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
             ("opacity", "statusOpacity"),
         ],
     ),
-    ("hint", &[("chars", "hintChars"), ("fontSize", "hintFontSize")]),
+    ("hint", &[("chars", "hintChars"), ("fontSize", "hintFontSize"), ("opacity", "hintOpacity")]),
     (
         "scroll",
         &[("stepLines", "scrollStepLines"), ("overlapLines", "pageOverlapLines")],
     ),
-    ("command", &[("maxCandidates", "maxCandidates")]),
+    ("command", &[("bg", "cmdBg"), ("fg", "cmdFg"), ("opacity", "cmdOpacity"), ("scrollbar", "cmdScrollbar")]),
+    ("progress", &[("height", "progressHeight"), ("colors", "progressColors")]),
     ("ui", &[("thumbnails", "thumbnails"), ("indent", "indent")]),
 ];
 
@@ -57,7 +58,8 @@ const INT_KEYS: &[&str] = &[
     "hintFontSize",
     "scrollStepLines",
     "pageOverlapLines",
-    "maxCandidates",
+    "cmdScrollbar",
+    "progressHeight",
 ];
 
 /// Render a KDL value as JSON. `wants_int`: integer-valued setting —
@@ -306,12 +308,12 @@ bar { height 16 not-a-known-child "x" }
             "default.kdl",
             r#"bar { height 16 }
 hint { fontSize 12.0 }
-command { maxCandidates 10 }
+scroll { stepLines 4 }
 "#,
         );
         let user = write(dir.path(), "user.kdl", "");
         let cfg = load(&default, &user).unwrap();
-        for key in ["statusHeight", "hintFontSize", "maxCandidates"] {
+        for key in ["statusHeight", "hintFontSize", "scrollStepLines"] {
             let v = &cfg[key];
             assert!(v.is_i64(), "{key} must be a JSON integer, got {v}");
         }
@@ -390,7 +392,12 @@ command { maxCandidates 10 }
         assert_eq!(cfg["statusHeight"], json!(16));
         assert_eq!(cfg["hintChars"], json!("asdfghjkl;qwertyuiopzxcv"));
         assert_eq!(cfg["scrollStepLines"], json!(3));
-        assert_eq!(cfg["maxCandidates"], json!(10));
+        assert_eq!(cfg["cmdBg"], json!("#fbf1c7"));
+        assert_eq!(cfg["cmdFg"], json!("#3c3836"));
+        assert_eq!(cfg["cmdScrollbar"], json!(2));
+        assert_eq!(cfg["progressHeight"], json!(2));
+        assert_eq!(cfg["progressColors"], json!("#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b"));
+        assert_eq!(cfg["hintOpacity"], json!(0.65));
         assert_eq!(cfg["thumbnails"], json!(false));
         // em, and a float must stay a float (the panel multiplies it as one)
         assert_eq!(cfg["indent"], json!(1.4));

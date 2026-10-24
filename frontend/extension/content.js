@@ -6,6 +6,10 @@
   if (window.__mudraKeys) return;
   window.__mudraKeys = true;
 
+  // Before anything else: the page is still arriving at document_start, and the
+  // load bar has to be there from the first frame to mean anything.
+  MudraProgress.mount();
+
   // The service worker is the only bridge to mudrad, and a message it never
   // answers resolves to `undefined` — which used to read as success (`r.ok`
   // undefined is not false) and printed "opened in a new window" for a window
@@ -140,7 +144,12 @@
       : [];
     const hr = await send({ type: "history", query: arg || "", limit: 10 });
     if (mine !== historySeq || !cmdApi) return; // a newer keystroke already asked
-    const hist = (hr.ok === false ? [] : hr.candidates || [])
+    if (hr.ok === false) {
+      // An empty list would read as "nothing matches what you typed"; the truth
+      // is the bridge is down (dead service worker, mudrad restart). Say which.
+      return cmdApi.setItems([{ label: `! ${hr.err || "history failed"}`, value: "", kind: "error" }]);
+    }
+    const hist = (hr.candidates || [])
       .filter((h) => !livePages.some((p) => p.url === h.url)) // a live page wins over its history row
       .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "url" }));
     cmdApi.setItems([...pageC, ...hist]);
@@ -250,9 +259,11 @@
     await refreshBar();
   }
 
-  // ---- command mode (enter with :; bar becomes an input, candidates expand upward and filter) ----
+  // ---- command mode (enter with :; the centred panel holds the line and the candidate list) ----
   function filterCmd(q) {
     if (!cmdApi) return;
+    // A stray leading colon is tolerated (the line has no ":" marker any more,
+    // but the habit is older than the panel): strip it before parsing.
     const text = (q || "").replace(/^:/, "");
     const [name, ...rest] = text.split(/\s+/);
     const arg = rest.join(" ");
@@ -262,7 +273,7 @@
     historySeq++; // an address filter may still be in flight; it must not repaint this list
     const items = Object.entries(COMMANDS)
       .filter(([n]) => !name || n.startsWith(name))
-      .map(([n, c]) => ({ label: `:${n}`, desc: c.desc, value: n }));
+      .map(([n, c]) => ({ label: n, desc: c.desc, value: n }));
     cmdApi.setItems(items);
   }
 
@@ -273,6 +284,7 @@
     cmdApi = null;
     await setMode("normal");
     if (reason === "cancel") return; // Esc never fires the typed text (that was a bug once)
+    if (cand && cand.kind === "error") return; // the row is a diagnosis, not a target
     if (cand && cand.kind === "page") {
       const res = await send({ type: "focus_page", page_id: cand.value });
       return flashBar(res.ok === false ? (res.err || "focus failed") : "switched");
@@ -287,7 +299,7 @@
     if (!cand) return; // empty line, nothing highlighted
     const c = COMMANDS[cand.value] || COMMANDS[name];
     if (!c) return flashBar(`no such command: ${name}`);
-    if (!c.run.length && rest.length) return flashBar(`:${cand.value} takes no argument`);
+    if (!c.run.length && rest.length) return flashBar(`${cand.value} takes no argument`);
     await c.run(cand.value === name ? arg : "", {});
     // No blanket refreshBar here: it would clobber the command's own flashBar message (e.g. the :set config echo).
     // Commands that need a refresh (scroll etc.) call it internally already.
@@ -304,7 +316,7 @@
       setMode("normal");
     });
     if (initial) cmdApi.setValue(initial);
-    else filterCmd(":");
+    else filterCmd("");
     // Live pages are console-role jump targets for `open`; they ride in the
     // background so the first keystrokes are never swallowed by a round trip.
     if (role === "console") send({ type: "pages" }).then((r) => {
@@ -389,7 +401,12 @@
         "position:fixed",
         `left:${Math.max(0, r.left + r.width / 2)}px`, `top:${Math.max(0, r.top + r.height / 2)}px`,
         "transform:translate(-50%,-50%)",
-        `font:${c.hintFontSize}px monospace`, `color:${MudraConfig.fgFor(c.hintBg, c.hintFg)}`, `background:${c.hintBg}`,
+        `font:${c.hintFontSize}px monospace`,
+        // frost + the hint alpha: the label sits on page text, so it blurs what
+        // is under it instead of painting an opaque block over it
+        `color:${MudraConfig.fgFor(c.hintBg, c.hintFg)}`,
+        `background:${MudraConfig.withAlpha(c.hintBg, c.hintOpacity)}`,
+        ...MudraConfig.frost(c.statusBlur),
         "padding:0 2px", "border-radius:2px", "white-space:pre",
       ].join(";");
       overlay.appendChild(d);
@@ -472,7 +489,10 @@
         "position:fixed",
         `left:${Math.max(0, r.left + r.width / 2)}px`, `top:${Math.max(0, r.top + r.height / 2)}px`,
         "transform:translate(-50%,-50%)",
-        `font:${c.hintFontSize}px monospace`, `color:${c.hintFg}`, `background:#7ec8ff`,
+        `font:${c.hintFontSize}px monospace`,
+        `color:${MudraConfig.fgFor(c.hintBg, c.hintFg)}`,
+        `background:${MudraConfig.withAlpha(c.hintBg, c.hintOpacity)}`,
+        ...MudraConfig.frost(c.statusBlur),
         "padding:0 2px", "border-radius:2px", "white-space:pre",
       ].join(";");
       overlay.appendChild(d);

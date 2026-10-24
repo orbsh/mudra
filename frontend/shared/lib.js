@@ -13,13 +13,19 @@ const MudraConfig = {
     insertFg: "auto",
     insertBg: "rgba(232,232,232,.62)",
     hintFg: "auto",
-    hintBg: "#ffd76e",               // hint labels stay opaque: they sit on top of page text
+    hintBg: "#fbf1c7",               // gruvbox light yellow (the hue; the alpha is hintOpacity)
+    hintOpacity: 0.65,               // hint label alpha — far above bar.opacity, low enough to show the frost
     statusBlur: 12,                  // px of frosted glass; 0 = translucency only
     statusOpacity: 0.1,              // the strip's own alpha (the tint still comes from statusBg)
+    cmdBg: "#fbf1c7",                // command panel hue: same gruvbox light yellow
+    cmdOpacity: 0.62,                // command panel alpha; lower = more frost, higher = more colour
+    cmdFg: "#3c3836",                // command panel text: gruvbox dark gray
+    cmdScrollbar: 2,                 // command list scrollbar width px (thumb only, no track)
+    progressHeight: 2,               // page-load bar thickness px; 0 hides it
+    progressColors: "#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b", // multi-stop gradient, left to right
     keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
     scrollStepLines: 3,              // lines per j/k scroll
     pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
-    maxCandidates: 10,               // max entries shown in the command-mode popup menu
   },
   storage: chrome.storage.local,
 
@@ -71,6 +77,16 @@ const MudraConfig = {
     const n = parseFloat(a);
     if (!rgb || Number.isNaN(n)) return color;
     return `rgba(${rgb.join(",")},${Math.max(0, Math.min(1, n))})`;
+  },
+
+  // Frosted-glass properties for one blur radius. One formula for every
+  // surface that blurs (strip, command panel, hint labels), so they cannot
+  // drift apart; 0/unset means translucent only.
+  frost(px) {
+    const n = parseFloat(px);
+    if (!n) return [];
+    const f = `blur(${n}px) saturate(1.4)`;
+    return [`-webkit-backdrop-filter:${f}`, `backdrop-filter:${f}`];
   },
 
   async all() {
@@ -167,14 +183,10 @@ const MudraBar = {
     return { fg: MudraConfig.fgFor(bg, fg), bg };
   },
 
-  // Frosted glass: the blur lives on every surface of this bar (the strip, the
-  // command line that replaces it, the candidate popup above it) so command
-  // mode does not snap back to an opaque strip.
+  // Frosted glass on the bar's own surfaces (strip + the command panel it
+  // hosts). One formula lives on MudraConfig so the hint labels get the same.
   _frost() {
-    const px = this._cfg.statusBlur;
-    if (!px) return [];
-    const f = `blur(${px}px) saturate(1.4)`;
-    return [`-webkit-backdrop-filter:${f}`, `backdrop-filter:${f}`];
+    return MudraConfig.frost(this._cfg.statusBlur);
   },
 
   // Rewrite the two slots from the stored state. Every dynamic value lives
@@ -216,7 +228,8 @@ const MudraBar = {
   },
 
   // ---- command mode: a centred floating panel (input row on top, candidate
-  // list below it), at most maxCandidates entries, scrollable beyond that. ----
+  // list below it). The panel's band is the middle third of the viewport, so
+  // the list scrolls inside it instead of being capped at a row count. ----
   // onInput(query, api) filters candidates on the host side; onPick(candidate, query, api) handles selection;
   // candidate = {label, value, desc?}；Esc → onPick(null, ...)。A candidate with `desc` renders
   // as two columns (name padded to a shared width, description in dim gray) so name and
@@ -227,58 +240,73 @@ const MudraBar = {
   // "no candidate" as "use the typed text" must not fire that on Esc.
   // Tab moves the selection (wrapping, Shift+Tab backwards) and never edits the line: the
   // line is what the user typed, the highlight is what Enter will take.
-  // opts.prompt replaces the leading ":" marker (a host entered by a key binding shows what
-  // that key would have typed, e.g. ":open ").
-  async openCommand(onInput, onPick, onBackspace, opts) {
+  async openCommand(onInput, onPick, onBackspace) {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
 
-    // Command mode is a floating panel, not the strip moved somewhere else:
-    // centred horizontally, its top edge on the 1/3 line of the viewport,
-    // input row first and candidates hanging below it.
+    // The panel is placed and sized by ratios, not pixels: centred
+    // horizontally, top edge on the 1/3 line, at most one third of the
+    // viewport tall (so the list ends by the 2/3 line), half the viewport wide.
     const rowH = cfg.statusHeight + 2;
-    const barFg = MudraConfig.fgFor(cfg.statusBg, cfg.statusFg);
-    const stripBg = MudraConfig.withAlpha(cfg.statusBg, cfg.statusOpacity);
+    // The panel has its own colours (cmdBg/cmdFg): a frosted gruvbox light
+    // surface reads as a menu, where the chip's translucent dark tint reads as
+    // part of the page. The hue and the alpha are separate knobs (cmdBg +
+    // cmdOpacity) — at near-opaque alpha the frost is there but invisible.
+    const cmdTint = MudraConfig.withAlpha(cfg.cmdBg, cfg.cmdOpacity);
+    const cmdFg = MudraConfig.fgFor(cfg.cmdBg, cfg.cmdFg);
     const panel = document.createElement("div");
     panel.id = "mudra-cmdpanel";
     panel.style.cssText = [
-      "position:fixed", "left:50%", "transform:translateX(-50%)", "top:calc(100vh / 3)",
-      "width:min(720px,80vw)", "z-index:2147483647",
-      `background:${stripBg}`, `color:${barFg}`, ...this._frost(),
+      "position:fixed", "left:50%", "transform:translateX(-50%)",
+      "top:calc(100vh / 3)", "max-height:calc(100vh / 3)",
+      "width:50vw", "z-index:2147483647",
+      "display:flex", "flex-direction:column",
+      `background:${cmdTint}`, `color:${cmdFg}`, ...this._frost(),
       "border-radius:6px", "overflow:hidden", "box-sizing:border-box",
       "box-shadow:0 6px 24px rgba(0,0,0,.18)",
     ].join(";");
 
     // The input row keeps the bar's height so the type size does not change
-    // between modes; the candidate list grows downward from it.
+    // between modes; the candidate list takes the rest of the panel.
     const line = document.createElement("div");
     line.id = "mudra-cmdline";
     line.style.cssText = [
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${barFg}`,
+      `color:${cmdFg}`, "flex:0 0 auto",
       "display:flex", "align-items:center", "padding:0 8px", "box-sizing:border-box",
     ].join(";");
-    const promptEl = document.createElement("span");
-    promptEl.textContent = (opts && opts.prompt) || ":";
-    promptEl.style.whiteSpace = "pre"; // keep the trailing space of ":open "
     const input = document.createElement("input");
     input.id = "mudra-cmdinput";
     input.style.cssText = [
       "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
-      `color:${barFg}`, `font:${cfg.statusFont}`, "padding:0",
+      `color:${cmdFg}`, `font:${cfg.statusFont}`, "padding:0",
     ].join(";");
-    line.appendChild(promptEl);
     line.appendChild(input);
 
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
     box.style.cssText = [
-      `max-height:${cfg.maxCandidates * rowH}px`,
+      "flex:1 1 auto", "min-height:0",
       "overflow-y:auto", "box-sizing:border-box",
     ].join(";");
     const list = document.createElement("div");
     list.id = "mudra-cmdlist";
     box.appendChild(list);
+
+    // Scrollbar on the candidate list: a thin thumb and nothing else — no
+    // track, no frame, no radius. Pseudo-element rules cannot ride along in an
+    // inline style, so the panel carries one scoped <style>, rewritten on every
+    // open (so `:set cmdScrollbar 4` lands without a reload).
+    document.getElementById("mudra-cmd-scrollbar-style")?.remove();
+    const sbStyle = document.createElement("style");
+    sbStyle.id = "mudra-cmd-scrollbar-style";
+    sbStyle.textContent = [
+      `#mudra-cmdbox::-webkit-scrollbar{width:${cfg.cmdScrollbar}px;height:${cfg.cmdScrollbar}px;background:transparent}`,
+      "#mudra-cmdbox::-webkit-scrollbar-track{background:transparent;border:none}",
+      `#mudra-cmdbox::-webkit-scrollbar-thumb{background:${MudraConfig.withAlpha(cmdFg, 0.15)};border:none;border-radius:0}`,
+      "#mudra-cmdbox::-webkit-scrollbar-corner{background:transparent}",
+    ].join("");
+    document.documentElement.appendChild(sbStyle);
 
     // The panel is a sibling of the bar, never a node inside it: the bar is
     // repainted wholesale by _paint, and anything appended into it gets
@@ -314,7 +342,7 @@ const MudraBar = {
           `font:${cfg.statusFont}`, `height:${rowH}px`, "line-height:" + rowH + "px",
           "padding:0 6px", "white-space:pre", "box-sizing:border-box",
           "background:" + (i === sel ? "rgba(0,0,0,.18)" : "transparent"),
-          "color:" + barFg,
+          "color:" + cmdFg,
         ].join(";");
         list.appendChild(row);
       });
@@ -322,6 +350,7 @@ const MudraBar = {
 
     const close = () => {
       document.getElementById("mudra-cmdpanel")?.remove();
+      document.getElementById("mudra-cmd-scrollbar-style")?.remove();
       if (this.bar) this.bar.style.visibility = "";
       this._paint(); // colors come from the stored state's mode again
     };
@@ -380,5 +409,76 @@ const MudraBar = {
     this.bar = null;
     this.right = null;
     this._state = {};
+  },
+};
+
+// ---- load progress bar ----------------------------------------------------
+// The browser reports a load in the tab strip, which a keyboard-driven window
+// rarely looks at. This is the one piece of chrome mudra adds at the top of a
+// page: a 4px (`progressHeight`) bar whose fill is a multi-stop gradient
+// (`progressColors`), mounted at document_start so it spans the whole load,
+// then faded out. The gradient is painted at viewport width and clipped by the
+// growing box, so the colours stay put instead of scrolling with the fill.
+const MudraProgress = {
+  el: null,
+  _done: false,
+
+  gradient(colors) {
+    const cs = String(colors || "").trim().split(/\s+/).filter(Boolean);
+    if (!cs.length) cs.push("#fabd2f", "#83a598");
+    if (cs.length === 1) cs.push(cs[0]);
+    return "linear-gradient(90deg, " +
+      cs.map((c, i) => `${c} ${((i / (cs.length - 1)) * 100).toFixed(1)}%`).join(", ") + ")";
+  },
+
+  mount() {
+    // A document that has already finished loading has nothing left to report
+    if (this.el || document.readyState === "complete") return null;
+    const d = MudraConfig.defaults;
+    const el = document.createElement("div");
+    el.id = "mudra-progress";
+    el.style.cssText = [
+      "position:fixed", "top:0", "left:0",
+      `height:${d.progressHeight}px`, "width:0",
+      `background-image:${this.gradient(d.progressColors)}`,
+      "background-size:100vw 100%", "background-repeat:no-repeat",
+      "z-index:2147483647", "pointer-events:none",
+      "transition:width 2.4s cubic-bezier(.08,.72,.24,1), opacity .3s ease-out",
+    ].join(";");
+    this.el = el;
+    (document.documentElement || document.body).appendChild(el);
+    // The fill creeps forward on its own: there is no progress API, only a
+    // load event, and a bar that sits at 0% until the end reports nothing.
+    requestAnimationFrame(() => { if (this.el) el.style.width = "72%"; });
+    MudraConfig.all().then((c) => this.restyle(c)).catch(() => {});
+    if (document.readyState === "complete") this.finish();
+    else window.addEventListener("load", () => this.finish(), { once: true });
+    // A document that never finishes (streaming, hung socket) would leave the
+    // bar parked at 72% forever; give it up after 20s.
+    setTimeout(() => this.finish(), 20000);
+    return el;
+  },
+
+  restyle(cfg) {
+    if (!this.el || !cfg) return;
+    const px = parseFloat(cfg.progressHeight);
+    if (!(px > 0)) { // progressHeight 0 = no bar at all, not a zero-height div
+      this.el.remove();
+      this.el = null;
+      return;
+    }
+    this.el.style.height = `${px}px`;
+    this.el.style.backgroundImage = this.gradient(cfg.progressColors);
+  },
+
+  finish() {
+    if (!this.el || this._done) return;
+    this._done = true;
+    this.el.style.width = "100%";
+    setTimeout(() => { if (this.el) this.el.style.opacity = "0"; }, 150);
+    setTimeout(() => {
+      if (this.el) this.el.remove();
+      this.el = null;
+    }, 800);
   },
 };

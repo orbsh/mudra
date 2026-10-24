@@ -10,15 +10,28 @@ bar {
     bg "rgba(0,0,0,.55)"       // normal mode: translucent, frosted by blur
     insertFg "auto"
     insertBg "rgba(232,232,232,.62)"
-    hintFg "auto"              // hint labels (opaque, they sit on page text)
-    hintBg "#ffd76e"
-    blur 12                    // frosted-glass radius px; 0 = translucency only
+    hintFg "auto"              // hint labels: "auto" = black/white by hintBg; frosted, see hintOpacity
+    hintBg "#fbf1c7"           // gruvbox light yellow
+    blur 12                    // frosted-glass radius px (bar, command panel, hint labels); 0 = off
     opacity 0.1                // the strip's own alpha; the tint comes from bg
 }
 
 hint {
-    chars "asdfghjkl;qwertyuiopzxcv" // letter pool; assignment follows this order
+    chars "asdfghjkl;qwertyuiopzxcv" // character pool; assignment follows this order
     fontSize 12                // hint label font size px
+    opacity 0.65               // hint label alpha; above bar.opacity, low enough to show the frost
+}
+
+command {
+    bg "#fbf1c7"               // command panel hue: gruvbox light yellow
+    fg "#3c3836"               // command panel text: gruvbox dark gray
+    opacity 0.62               // panel alpha; lower = more frost, higher = more colour
+    scrollbar 2                // candidate list scrollbar width px (thumb only, no track)
+}
+
+progress {
+    height 2                   // page-load bar thickness px; 0 = no bar
+    colors "#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b" // multi-stop gradient, left to right
 }
 
 keys {
@@ -39,10 +52,6 @@ keys {
 scroll {
     stepLines 3                // lines per j/k scroll
     overlapLines 5             // lines kept when paging with w/s (overlap)
-}
-
-command {
-    maxCandidates 10           // max entries in the command-mode popup menu
 }
 
 // Placeholder: parsed but not consumed; the port is still decided by mudrad startup args
