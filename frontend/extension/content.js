@@ -396,7 +396,7 @@
       return { el, seq: seqs[i], span: d };
     });
     document.documentElement.appendChild(overlay);
-    hintSession = { overlay, nodes, typed: "", newWindow: !!newWindow };
+    hintSession = { overlay, nodes, typed: "", newWindow: !!newWindow, chars: c.hintChars };
     // `F` is the same hint state machine with a different verb; the bar must
     // say so, otherwise the two keys are indistinguishable until you click.
     setMode("hint", newWindow ? "hintnew" : "hint");
@@ -406,7 +406,10 @@
     if (!hintSession) return;
     const { nodes } = hintSession;
     if (key === "Backspace") hintSession.typed = hintSession.typed.slice(0, -1);
-    else if (/^[a-z]$/.test(key)) hintSession.typed += key;
+    // Membership in the configured pool, not [a-z]: the pool is user text and
+    // may hold punctuation (default has ";"), and any letter it assigns must be
+    // typeable — a rejection here reads as a dead key on the 10th hint.
+    else if (key.length === 1 && hintSession.chars.includes(key)) hintSession.typed += key;
     else return;
     const typed = hintSession.typed;
     const matches = nodes.filter((n) => n.seq.startsWith(typed));
@@ -476,14 +479,14 @@
       return { el, seq: seqs[i], span: d };
     });
     document.documentElement.appendChild(overlay);
-    inputHintSession = { overlay, nodes, typed: "" };
+    inputHintSession = { overlay, nodes, typed: "", chars: c.hintChars };
     setMode("hint");
   }
 
   function inputHintFilter(key) {
     if (!inputHintSession) return;
     if (key === "Backspace") inputHintSession.typed = inputHintSession.typed.slice(0, -1);
-    else if (/^[a-z]$/.test(key)) inputHintSession.typed += key;
+    else if (key.length === 1 && inputHintSession.chars.includes(key)) inputHintSession.typed += key;
     else return;
     const typed = inputHintSession.typed;
     const matches = inputHintSession.nodes.filter((n) => n.seq.startsWith(typed));

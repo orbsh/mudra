@@ -69,7 +69,8 @@
 
 存储在 `chrome.storage.local`（默认值见 `shared/lib.js` 的 `MudraConfig.defaults`）：
 
-`hintChars`（字母池，顺序即分配顺序）、`hintFontSize`、`statusHeight/Font/Fg/Bg`、
+`hintChars`（字符池，顺序即分配顺序；默认 `asdfghjkl;qwertyuiopzxcv`，含 `;`，池里每个
+字符都必须能敲进去）、`hintFontSize`、`statusHeight/Font/Fg/Bg`、
 `insertFg/Bg`、`hintFg/Bg`、`statusBlur`（默认 12）、`statusOpacity`（默认 0.15）、`keybindings`、`scrollStepLines`（默认 3）、
 `pageOverlapLines`（默认 5）、`maxCandidates`（默认 10）。
 
