@@ -45,9 +45,70 @@
     await refreshBar();
   };
 
+  // ---- shadow-DOM traversal ---------------------------------------------
+  // Chrome's own pages (settings, history, downloads, flags) and a growing
+  // share of the web keep their content inside shadow roots. A plain
+  // document.querySelectorAll sees only the light DOM and reports "no links"
+  // on a page full of them, so element queries and the scroll target both go
+  // through the helpers below.
+  const deepQueryAll = (selector, root = document) => {
+    const out = [...root.querySelectorAll(selector)];
+    for (const el of root.querySelectorAll("*"))
+      if (el.shadowRoot) out.push(...deepQueryAll(selector, el.shadowRoot));
+    return out;
+  };
+
+  // The deepest painted node under a point: document.elementFromPoint stops at
+  // the shadow host, so descend through each open root the same way.
+  const deepHit = (x, y) => {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  };
+
+  const scrollsY = (el) => {
+    if (!el || !el.scrollHeight) return false;
+    if (el.scrollHeight - el.clientHeight <= 4) return false;
+    return /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY);
+  };
+
+  // The scroller is not always the window: a WebUI page scrolls a container
+  // inside its shadow root (settings' #container), where window.scrollBy()
+  // moves nothing. Fast path first — the document scrolls on nearly every
+  // site; otherwise hit-test the viewport centre and climb the flat tree
+  // (parentElement, then the shadow host) to the first container that really
+  // scrolls. Resolved at most every 500ms: the chip re-renders on every scroll
+  // event, and a hit test plus getComputedStyle per event is the wrong price.
+  let _scrollTarget = null;
+  let _scrollTargetAt = 0;
+  const scrollTarget = () => {
+    const now = Date.now();
+    if (_scrollTarget && _scrollTarget.isConnected && now - _scrollTargetAt < 500)
+      return _scrollTarget;
+    const doc = document.scrollingElement || document.documentElement;
+    // The document element reports overflow:visible even while the viewport
+    // scrolls (overflow propagates), so it is judged by its own box instead.
+    let t = document.documentElement.scrollHeight - innerHeight > 4 ? doc : null;
+    if (!t) {
+      let el = deepHit(Math.round(innerWidth / 2), Math.round(innerHeight / 2));
+      while (el) {
+        if (scrollsY(el)) { t = el; break; }
+        el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+      }
+    }
+    _scrollTarget = t || doc;
+    _scrollTargetAt = now;
+    return _scrollTarget;
+  };
+
   const scrollPct = () => {
-    const h = document.documentElement.scrollHeight - innerHeight;
-    return h > 0 ? `${Math.round((scrollY / h) * 100)}%` : "all";
+    const t = scrollTarget();
+    const h = t.scrollHeight - (t.clientHeight || innerHeight);
+    return h > 0 ? `${Math.round((t.scrollTop / h) * 100)}%` : "all";
   };
   const pageUrl = () => location.origin + location.pathname + location.search;
 
@@ -170,7 +231,7 @@
     pageDown:    { defaultKey: "w", desc: "page down", run: (_a, o) => scrollPage(1, o) },
     pageUp:      { defaultKey: "s", desc: "page up", run: (_a, o) => scrollPage(-1, o) },
     scrollTop:   { defaultKey: "g", desc: "scroll to top / <N>% of page", run: (_a, o) => scrollToPctOrTop(o) },
-    scrollBottom:{ defaultKey: "G", desc: "scroll to bottom", run: () => scrollTo({ top: document.documentElement.scrollHeight }) },
+    scrollBottom:{ defaultKey: "G", desc: "scroll to bottom", run: () => scrollToBottom() },
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
     // Both verbs have two entry points: the key types the verb into the line
@@ -231,31 +292,39 @@
   }
 
   // ---- scrolling implementation ----
+  // All of these move scrollTarget(), not the window: on a WebUI page the
+  // window does not scroll at all (see scrollTarget above).
+  const lineHeight = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   async function scrollLines(dir, o) {
     const cfg = await MudraConfig.all();
-    const line = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    scrollBy({ top: dir * (o.count || cfg.scrollStepLines) * line });
+    scrollTarget().scrollTop += dir * (o.count || cfg.scrollStepLines) * lineHeight();
     await refreshBar();
   }
   async function scrollCols(dir, o) {
     const cfg = await MudraConfig.all();
-    const line = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    scrollBy({ left: dir * (o.count || cfg.scrollStepLines) * line });
+    const t = scrollTarget();
+    t.scrollLeft += dir * (o.count || cfg.scrollStepLines) * lineHeight();
     await refreshBar();
   }
   async function scrollPage(dir, o) {
     const cfg = await MudraConfig.all();
-    const overlap = (o.count != null ? o.count : cfg.pageOverlapLines) *
-      (parseFloat(getComputedStyle(document.documentElement).fontSize) || 16);
-    scrollBy({ top: dir * (innerHeight - overlap) });
+    const t = scrollTarget();
+    const overlap = (o.count != null ? o.count : cfg.pageOverlapLines) * lineHeight();
+    t.scrollTop += dir * ((t.clientHeight || innerHeight) - overlap);
     await refreshBar();
   }
   // Numeric prefix + g: with a prefix jump to a percentage (30g -> 30%), without it back to top
   async function scrollToPctOrTop(o) {
+    const t = scrollTarget();
     if (o.count != null) {
-      const h = document.documentElement.scrollHeight - innerHeight;
-      scrollTo({ top: Math.min(h, h * o.count / 100) });
-    } else scrollTo({ top: 0 });
+      const h = t.scrollHeight - (t.clientHeight || innerHeight);
+      t.scrollTop = Math.min(h, h * o.count / 100);
+    } else t.scrollTop = 0;
+    await refreshBar();
+  }
+  async function scrollToBottom() {
+    const t = scrollTarget();
+    t.scrollTop = t.scrollHeight;
     await refreshBar();
   }
 
@@ -354,10 +423,13 @@
   // ---- hints (links / clickable elements) ----
   const HINT_ATTR = "data-mudra-hint";
   const clickable = () => {
-    const els = document.querySelectorAll(
+    // Shadow roots included: WebUI pages (and much of the modern web) put their
+    // links and buttons in there, where querySelectorAll on the document sees
+    // none of them.
+    const els = deepQueryAll(
       "a[href], button, input[type=submit], input[type=button], [role=button], [onclick]"
     );
-    return [...els].filter((el) => {
+    return els.filter((el) => {
       const r = el.getBoundingClientRect();
       const st = getComputedStyle(el);
       return r.width > 0 && r.height > 0 && st.visibility !== "hidden" &&
@@ -467,7 +539,7 @@
 
   // ---- insert mode: auto-focus the input; with multiple inputs, pick via hints ----
   async function startInsert() {
-    const inputs = [...document.querySelectorAll("input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, [contenteditable=true]")]
+    const inputs = deepQueryAll("input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, [contenteditable=true], [contenteditable=plaintext-only]")
       .filter((el) => {
         const r = el.getBoundingClientRect();
         const st = getComputedStyle(el);

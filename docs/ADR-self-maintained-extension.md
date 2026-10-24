@@ -34,8 +34,13 @@ tag 打标。这是浏览器内行为，只能由浏览器扩展承担。选择�
   `shared/` 放与 panel 共用的库——manifest 以 `/shared/lib.js` 绝对路径引用跨子目录共享代码）。
 - **模式机与按键**（2026-09-05）：四模式 FSM（normal / hint / insert / command），状态提示
   是右下角一枚单行 chip（title / url / 滚动百分比），命令模式另开居中浮动面板（位置与大小
-  全按视口比例，输入行不带 `:` 前缀）。页面顶部另有一条 2px 加载进度条（`progress.height`
-  可调、`progress.colors` 多段渐变），`document_start` 挂载、`load` 后淡出。键位与全部
+  全按视口比例，输入行不带 `:` 前缀，且不是 `<input>` 而是 contenteditable——Chrome 自带的
+  补全下拉会盖在候选列表上，原生控件没有可靠的禁用手段）。页面顶部另有一条 2px 加载进度条
+  （`progress.height` 可调、`progress.colors` 多段渐变），`document_start` 挂载、`load` 后淡出。
+  元素查询与滚动目标穿透 shadow root（WebUI 页与部分站点把内容藏在 shadow 里，light DOM 的
+  选择器在它们身上等于空集）；`chrome://` 页面的脚本由 SW 在 commit 时注入（`host_permissions`
+  收 `chrome://*/*`），不写进 `content_scripts.matches`——那个 pattern 会让未带
+  `--extensions-on-chrome-urls` 的启动方式整包拒载扩展。键位与全部
   行为参数（hintChars、scrollStepLines、pageOverlapLines、progressHeight、progressColors、
   keybindings 覆盖表）存 `chrome.storage.local`，cmd 模式 `:set` 就地修改（`:set scrollStepLines 5`、
   `:set keybindings.u=pageUp`、裸 `:set` 列出全部）。

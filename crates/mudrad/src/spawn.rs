@@ -168,6 +168,13 @@ fn base_args(app_url: &str, profile_dir: &Path) -> Vec<String> {
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
         "--enable-extensions".into(),
+        // chrome:// pages are a real destination (history, settings, downloads),
+        // and an extension is otherwise refused there — the keyboard mode simply
+        // does not exist on them. The switch is honoured by unbranded Chromium
+        // only (Google Chrome ignores it); this build is unbranded, verified by
+        // a content script landing on chrome://version. The manifest needs the
+        // matching "chrome://*/*" entry: <all_urls> does not cover the scheme.
+        "--extensions-on-chrome-urls".into(),
     ]
 }
 
@@ -267,16 +274,19 @@ pub fn spawn_detached_session(cmd: &mut std::process::Command) -> io::Result<u32
 
 /// Data directory layout: `MUDRA_HOME` overrides (tests), else
 /// `~/.local/share/mudra` — same root the fjall store and profiles live under.
-pub fn mudra_home() -> PathBuf {
-    match std::env::var_os("MUDRA_HOME") {
-        Some(v) => PathBuf::from(v),
-        None => {
-            let home = std::env::var_os("HOME").expect("HOME is set for a desktop session");
-            PathBuf::from(home).join(".local/share/mudra")
-        }
+///
+/// Fallible because the fallback IS the environment: a session with neither
+/// variable set has no data directory to name, and inventing one (cwd-relative,
+/// /tmp) would scatter state instead of reporting the gap.
+pub fn mudra_home() -> Result<PathBuf, String> {
+    if let Some(v) = std::env::var_os("MUDRA_HOME") {
+        return Ok(PathBuf::from(v));
     }
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| "neither MUDRA_HOME nor HOME is set: no data directory".to_string())?;
+    Ok(PathBuf::from(home).join(".local/share/mudra"))
 }
 
-pub fn profile_dir(name: &str) -> PathBuf {
-    mudra_home().join("profiles").join(name)
+pub fn profile_dir(name: &str) -> Result<PathBuf, String> {
+    Ok(mudra_home()?.join("profiles").join(name))
 }

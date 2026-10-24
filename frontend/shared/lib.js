@@ -131,6 +131,67 @@ const MudraConfig = {
   },
 };
 
+// ---- command line --------------------------------------------------------
+// The line is deliberately NOT an <input>: Chrome paints its own completion
+// dropdown over any text field it can name (autofill / form history), and no
+// attribute combination makes that stay away for good. A plaintext-only
+// contenteditable has no native autofill at all, so the second menu cannot
+// appear; the caret, the value and the events are ours.
+const MudraLine = {
+  create({ id, color, font }) {
+    const el = document.createElement("div");
+    el.id = id;
+    el.setAttribute("contenteditable", "plaintext-only");
+    el.setAttribute("role", "textbox");
+    el.setAttribute("aria-autocomplete", "none");
+    el.setAttribute("spellcheck", "false");
+    el.setAttribute("autocapitalize", "off");
+    el.style.cssText = [
+      "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
+      "white-space:pre", "overflow:hidden", `caret-color:${color}`,
+      `color:${color}`, `font:${font}`, "padding:0", "line-height:1.2",
+    ].join(";");
+
+    // The value is the text, newlines normalised away: Enter belongs to the
+    // host (it picks a candidate), so a line break here would be a UI bug.
+    const value = () => (el.textContent || "").replace(/\n/g, "");
+    const caretEnd = () => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    };
+    const setValue = (v) => { el.textContent = v; caretEnd(); };
+    // Paste and drop insert plain text at the caret: a dropped node would put
+    // DOM inside the line, and the line's contract is "text in, text out".
+    const insertText = (text) => {
+      const s = getSelection();
+      if (!s.rangeCount || !el.contains(s.anchorNode)) { el.textContent += text; caretEnd(); return; }
+      const r = s.getRangeAt(0);
+      r.deleteContents();
+      const node = document.createTextNode(text.replace(/\n/g, " "));
+      r.insertNode(node);
+      r.setStartAfter(node);
+      r.collapse(true);
+      s.removeAllRanges();
+      s.addRange(r);
+    };
+
+    el.addEventListener("paste", (e) => {
+      e.preventDefault();
+      insertText(((e.clipboardData || window.clipboardData).getData("text") || ""));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    el.addEventListener("drop", (e) => e.preventDefault());
+    el.addEventListener("beforeinput", (e) => {
+      if (e.inputType === "insertParagraph" || e.inputType === "insertLineBreak") e.preventDefault();
+    });
+    return { el, value, setValue, insertText, caretEnd, focus: () => { el.focus(); caretEnd(); } };
+  },
+};
+
 // ---- status bar (a one-character-tall chip in the bottom-right corner) ----
 // Plain DOM, imperative repaint: render(data) stores state and rewrites the
 // single slot: title + url + scroll position.
@@ -275,13 +336,10 @@ const MudraBar = {
       `color:${cmdFg}`, "flex:0 0 auto",
       "display:flex", "align-items:center", "padding:0 8px", "box-sizing:border-box",
     ].join(";");
-    const input = document.createElement("input");
-    input.id = "mudra-cmdinput";
-    input.style.cssText = [
-      "flex:1", "min-width:0", "background:transparent", "border:none", "outline:none",
-      `color:${cmdFg}`, `font:${cfg.statusFont}`, "padding:0",
-    ].join(";");
-    line.appendChild(input);
+    // The line is a contenteditable (MudraLine), not an <input>: Chrome's own
+    // completion dropdown would otherwise open right above our candidate list.
+    const field = MudraLine.create({ id: "mudra-cmdinput", color: cmdFg, font: cfg.statusFont });
+    line.appendChild(field.el);
 
     const box = document.createElement("div");
     box.id = "mudra-cmdbox";
@@ -315,7 +373,7 @@ const MudraBar = {
     panel.appendChild(line);
     panel.appendChild(box);
     document.documentElement.appendChild(panel);
-    input.focus();
+    field.focus();
 
     let items = [];
     let sel = 0;
@@ -357,7 +415,7 @@ const MudraBar = {
 
     const api = {
       setItems(next) { items = next; sel = Math.min(sel, Math.max(0, items.length - 1)); renderList(); },
-      value: () => input.value,
+      value: () => field.value(),
       // The one place that fills the line: value in, selection follows it,
       // host refilter, focus kept. Hosts' Tab hooks use this instead of
       // touching the input node, so no hook can leave the list and the line
@@ -366,19 +424,19 @@ const MudraBar = {
       // to reset to row 0, so Enter could open a different candidate than the
       // line showed).
       setValue(next) {
-        input.value = next;
+        field.setValue(next);
         const hit = items.findIndex((it) => it.value === next);
         sel = hit >= 0 ? hit : 0;
         onInput(next, api);
-        input.focus();
+        field.focus();
       },
       close,
     };
 
-    input.addEventListener("input", () => { sel = 0; onInput(input.value, api); });
-    input.addEventListener("keydown", (e) => {
+    field.el.addEventListener("input", () => { sel = 0; onInput(field.value(), api); });
+    field.el.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (e.key === "Escape") { e.preventDefault(); close(); onPick(null, input.value, api, "cancel"); }
+      if (e.key === "Escape") { e.preventDefault(); close(); onPick(null, field.value(), api, "cancel"); }
       else if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); renderList(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); renderList(); }
       else if (e.key === "Tab") {
@@ -394,11 +452,11 @@ const MudraBar = {
         sel = (sel + step + items.length) % items.length;
         renderList();
       }
-      else if (e.key === "Backspace" && input.value === "" && onBackspace) {
-        // Layer-up hook: only fires on an empty input, so normal text editing is unaffected
+      else if (e.key === "Backspace" && field.value() === "" && onBackspace) {
+        // Layer-up hook: only fires on an empty line, so normal text editing is unaffected
         e.preventDefault(); onBackspace(api);
       }
-      else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, input.value, api, "enter"); }
+      else if (e.key === "Enter") { e.preventDefault(); close(); onPick(items[sel] || null, field.value(), api, "enter"); }
     });
     return api;
   },

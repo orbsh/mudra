@@ -1,6 +1,7 @@
 //! spawn tests — the blood-lesson port from the Python tree, each test
 //! demonstrating one lifecycle contract (PLAN §11 R1 deliverable).
 //! Real processes and real files; no mocks.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudrad::spawn::*;
 use std::os::unix::fs::PermissionsExt;
@@ -281,6 +282,9 @@ fn new_instance_command_carries_debug_port_and_extension_defaults() {
     assert!(args.iter().any(|a| a == "--remote-debugging-port=9201"));
     assert!(args.iter().any(|a| a == "--load-extension=/repo/frontend"));
     assert!(args.iter().any(|a| a == "--proxy-server=http://127.0.0.1:7890"));
+    // chrome:// pages get the keyboard mode too; the switch is what the
+    // content script's "chrome://*/*" match pattern needs to be honoured.
+    assert!(args.iter().any(|a| a == "--extensions-on-chrome-urls"));
     // (stderr policy is fixed inside build_command — std exposes no Stdio
     // query; the piped-not-null choice is a code fact, not a data fact.)
 }

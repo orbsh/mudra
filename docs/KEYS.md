@@ -113,6 +113,12 @@ chip 隐去（`visibility:hidden`），免得两处读数。`insertBg`/`insertFg
 还没加载完就当作结束，免得永远卡在 72%。`height 0` 等于关掉。渐变按视口宽度铺满、被增长的
 盒子裁切，所以颜色钉在视口上，不跟着进度条右沿跑。
 
+**命令行不是 `<input>`**：`#mudra-cmdinput` 是 `contenteditable="plaintext-only"` 的 div。原因不是审美——Chrome 会在任何它认得出名字的文本控件上方弹自带的补全下拉（autofill / 输入历史），那个菜单正好盖在候选列表上，而没有任何属性组合能长期压住它；contenteditable 根本没有原生 autofill，所以第二个菜单不可能出现。代价是 caret、取值、粘贴都要自己实现（`MudraLine`：`value()` 取 `textContent`、粘贴/拖放只收纯文本、Enter 归宿主用来选候选）。
+
+**元素查询和滚动目标都穿透 shadow root**：`chrome://settings`、`history`、`downloads`、`flags` 这些 WebUI 页把内容放进层层 shadow root（`flags` 实测 655 个），网站也越来越多这么干；`document.querySelectorAll` 只看 light DOM，会报"页面上没有链接"。所以 `f` 的候选集、`i` 的输入框集都走 `deepQueryAll`（递归进 `shadowRoot`）。滚动同理：`window.scrollBy` 在 WebUI 上滚不动任何东西，滚动目标由 `scrollTarget()` 解析——文档自己能滚就用它（绝大多数网站，零成本），否则在视口中心做命中测试、沿 flat tree（`parentElement`，再退到 shadow host）找到第一个真正在滚的容器；结果缓存 500ms，因为状态条每次滚动事件都会重算百分比。状态条的滚动百分比跟的就是同一个目标。
+
+**`chrome://` 页面上的脚本由 SW 注入，不写进 manifest 的 matches**：`content_scripts.matches` 里出现 `"chrome://*/*"` 会让 Chrome 在**没带** `--extensions-on-chrome-urls` 的启动方式下直接拒载整个扩展（`Invalid value for 'content_scripts[0].matches[1]': Invalid scheme.`）——结果是浏览器里没有扩展 + 启动报错气泡。同一个 pattern 写在 `host_permissions` 里是合法的，所以改成：manifest 只声明 `<all_urls>`，SW 监听 `webNavigation.onCommitted`，对 `chrome://` 的主框架用 `chrome.scripting.executeScript` 注入 `shared/lib.js` + `extension/content.js`（顺序不能反，content.js 用 lib.js 定义的全局）。缺开关时只有这一个调用失败并被 catch 成一条日志，扩展照常加载——正常页面不受影响，`chrome://` 页面只是没有键位。
+
 cmd 模式就地修改（写入 storage，立即生效，重启实例保留）：
 
 ```

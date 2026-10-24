@@ -124,4 +124,24 @@ async function syncConfig() {
 
 chrome.runtime.onInstalled.addListener(syncConfig);
 chrome.runtime.onStartup.addListener(syncConfig);
-syncConfig(); // re-sync on every SW cold start (MV3 SWs sleep often; onStartup is not guaranteed to fire)
+syncConfig();
+
+// ---- chrome:// pages: injected from here, not declaratively ----------------
+// A "chrome://*/*" match pattern in content_scripts makes Chrome reject the
+// WHOLE extension whenever the launcher does not pass --extensions-on-chrome-urls
+// ("Invalid value for 'content_scripts[0].matches[1]': Invalid scheme."), which
+// is an extension-less browser and an error bubble on startup. The same match is
+// legal in host_permissions, so the scripts are injected per committed tab
+// instead: without the switch the executeScript call is the only thing that
+// fails, and the extension still loads.
+const CHROME_INJECTED = ["shared/lib.js", "extension/content.js"];
+
+chrome.webNavigation.onCommitted.addListener(async (d) => {
+  if (d.frameId !== 0 || !d.url.startsWith("chrome://")) return;
+  try {
+    // two files, order matters: content.js reads the Mudra* globals lib.js defines
+    await chrome.scripting.executeScript({ target: { tabId: d.tabId }, files: CHROME_INJECTED });
+  } catch (e) {
+    console.log("[mudra-keys] chrome:// inject skipped:", (e && e.message) || e);
+  }
+});
