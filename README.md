@@ -325,6 +325,7 @@ refinement phases (P8–P12).
 | `README.zh-CN.md` | Chinese translation of this file |
 | `docs/SCHEMA.md` (+ `.zh-CN.md`) | storage layout contract (the acceptance gate for store changes) |
 | `docs/KEYS.md` | keymap and extension config |
+| `docs/HISTORY-INTERCHANGE.md` | the history exchange format (`:export` / `:import`) — the contract exporters conform to |
 | `docs/PANEL.md` | console architecture and the tag-forest abstraction roadmap |
 | `docs/EXTENSIONS.md` | extension authoring |
 | `docs/ADR-*.md` | decision records — `rust-fullstack`, `self-maintained-extension`, `no-favorites` (bilingual), `extension-protocol` (bilingual), `aura-probe-federation` (superseded, bilingual) |

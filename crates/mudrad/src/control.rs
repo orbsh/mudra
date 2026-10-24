@@ -87,6 +87,10 @@ impl<'a, R: Runtime> Controller<'a, R> {
             "/hook_delete" => self.hook_delete(body),
             "/sort" => self.sort(body),
             "/panel" => self.panel(body),
+            // The history interchange file: curl / POST is the surface (no
+            // palette verbs — the daemon owns the store and the filesystem).
+            "/export" => self.export_history(body),
+            "/import" => self.import_history(body),
             other => Err(format!("unknown endpoint {other}")),
         }
     }
@@ -281,6 +285,35 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let title = self.store.page_title_for_url(&url).map_err(serr)?.unwrap_or_default();
         self.store.history_bump(&url, &title, crate::watch::now_ms()).map_err(serr)?;
         Ok(json!({ "url": url }))
+    }
+
+    /// POST /export {path?} — write the history table as the exchange file
+    /// (`interchange`: NDJSON, one record per line, RFC 3339 timestamps).
+    /// The argument is the palette's raw text — empty means the default file
+    /// under the data directory, `~`/relative resolve against home.
+    pub fn export_history(&mut self, body: &Value) -> Result<Value, String> {
+        let arg = body.get("path").and_then(Value::as_str).unwrap_or_default();
+        let path = crate::interchange::resolve_path(arg)?;
+        let rows = crate::interchange::export(self.store, &path)?;
+        Ok(json!({"path": crate::interchange::display_path(&path), "rows": rows}))
+    }
+
+    /// POST /import {path?} — fold an exchange file into the history table.
+    /// Folding is idempotent (`MudraStore::history_absorb` takes the max of
+    /// counter and timestamp), so re-running the same import is a no-op and a
+    /// stale file cannot walk a live row backwards. `invalid` counts skipped
+    /// lines: bad JSON, no url, or a `last_visit` that is not RFC 3339 UTC.
+    pub fn import_history(&mut self, body: &Value) -> Result<Value, String> {
+        let arg = body.get("path").and_then(Value::as_str).unwrap_or_default();
+        let path = crate::interchange::resolve_path(arg)?;
+        let r = crate::interchange::import(self.store, &path)?;
+        Ok(json!({
+            "path": crate::interchange::display_path(&path),
+            "rows": r.rows,
+            "created": r.created,
+            "updated": r.updated,
+            "invalid": r.invalid,
+        }))
     }
 
     /// POST /history {query?, limit?} — address-bar candidates: the store's

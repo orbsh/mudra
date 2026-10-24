@@ -32,6 +32,7 @@ pub mod config;
 pub mod control;
 pub mod daemon;
 pub mod host;
+pub mod interchange;
 pub mod runtime;
 pub mod spawn;
 pub mod watch;
