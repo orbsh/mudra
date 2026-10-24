@@ -1,8 +1,6 @@
 // mudra-keys shared settings + status-bar widget library.
 // Used by content.js here; plain DOM only — the extension never loads the
-// panel's Solid bundle (the wasm panel owns its own rendering; the bar's
-// tag capsules come from mudrad's SSR HTML string — tag-forest crate is
-// the single component source).
+// panel's Solid bundle (the wasm panel owns its own rendering).
 
 const MudraConfig = {
   defaults: {
@@ -117,13 +115,12 @@ const MudraConfig = {
   },
 };
 
-// ---- status bar (qutebrowser style: a single strip at the bottom, one character tall) ----
+// ---- status bar (a one-character-tall chip in the bottom-right corner) ----
 // Plain DOM, imperative repaint: render(data) stores state and rewrites the
-// two slots. Left: ctx - numeric prefix - mode - tag capsule string; right: title + url + scroll position.
+// single slot: title + url + scroll position.
 const MudraBar = {
   el: null,
   bar: null,
-  left: null,
   right: null,
   _cfg: null,
   _state: {},
@@ -142,31 +139,16 @@ const MudraBar = {
     st.id = "mudra-scrollbar-style";
     st.textContent = "html { scrollbar-width: none !important; } html::-webkit-scrollbar { display: none !important; }";
     document.documentElement.appendChild(st);
-    // Capsule/mode segment styles are shared with the panel (styles.css loads only in the panel), so inject them inline here
-    const css = document.createElement("style");
-    css.id = "mudra-tags-style";
-    css.textContent = [
-      "#mudra-bar-root .capsule{display:inline-flex;align-items:stretch;border:1px solid #555;border-radius:9px;overflow:hidden}",
-      "#mudra-bar-root .seg{padding:0 5px;border-right:1px solid #333;white-space:nowrap}",
-      "#mudra-bar-root .seg:last-child{border-right:none}",
-      "#mudra-bar-root .seg.leaf{background:rgba(122,162,247,.25)}",
-    ].join("");
-    document.documentElement.appendChild(css);
 
     const bar = document.createElement("div");
     bar.id = "mudra-bar";
-    const left = document.createElement("span");
-    left.id = "mudra-bar-left";
-    left.style.cssText = "display:flex;gap:6px;align-items:center;min-width:0";
     const right = document.createElement("span");
     right.id = "mudra-bar-right";
     right.style.cssText = "display:flex;gap:10px;align-items:center;overflow:hidden;flex-direction:row";
-    bar.appendChild(left);
     bar.appendChild(right);
     root.appendChild(bar);
     this.el = root;
     this.bar = bar;
-    this.left = left;
     this.right = right;
     this._paint();
     return this;
@@ -203,51 +185,22 @@ const MudraBar = {
     const cfg = this._cfg;
     const mode = d.mode || "normal";
     const col = this._colors(mode);
+    // A chip, not a strip: the box is only as wide as its text and tucks into
+    // the bottom-right corner — `left` must stay unset or it spans the viewport.
     this.bar.style.cssText = [
-      "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
+      "position:fixed", "right:0", "bottom:0", "z-index:2147483647",
+      "max-width:70vw", "border-radius:4px",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
       `color:${col.fg}`, `background:${MudraConfig.withAlpha(col.bg, cfg.statusOpacity)}`, ...this._frost(),
-      "display:flex", "align-items:center", "justify-content:space-between",
-      "padding:0 6px", "box-sizing:border-box", "user-select:none",
+      "display:flex", "align-items:center",
+      "padding:0 8px", "box-sizing:border-box", "user-select:none",
       "pointer-events:none", "white-space:nowrap", "overflow:hidden",
     ].join(";");
 
-    // Capsule row: mudrad renders the capsule HTML (tag-forest crate — one
-    // component source; content scripts can't compile wasm under the page's
-    // CSP). The local path-segment renderer is the fallback for a mudrad
-    // that predates the `capsules` field. The sentinel must stay
-    // null-vs-value: "" is a legal server answer ("no tags"), only
-    // null/undefined means "old backend".
-    const seg = (text, cls) => {
-      const s = document.createElement("span");
-      if (cls) s.className = cls;
-      s.textContent = text;
-      return s;
-    };
-    this.left.textContent = "";
-    // d.modeLabel overrides the mode word: hint mode reached by `F` says
-    // "hintnew" — same state machine, other verb, and the pointer at the
-    // bottom is the only place that difference is visible before you click.
-    for (const part of [d.ctx, d.count, d.modeLabel || mode].filter(Boolean)) {
-      this.left.appendChild(seg(part));
-    }
-    if (d.capsules != null) {
-      if (d.capsules) {
-        const holder = document.createElement("span");
-        holder.innerHTML = d.capsules;
-        this.left.appendChild(holder);
-      }
-    } else {
-      for (const path of d.tags || []) {
-        const segs = path.split("::");
-        const cap = seg("", "capsule");
-        segs.forEach((name, i) => {
-          cap.appendChild(seg(name, "seg" + (i === segs.length - 1 ? " leaf" : "")));
-        });
-        this.left.appendChild(cap);
-      }
-    }
-
+    // The chip carries the right-hand status only (title · url · scroll).
+    // ctx/tags/mode are not drawn: they were the strip's left half, and a
+    // 4-corner chip has no room for a second block. Mode still reads off the
+    // tint, which is why _colors() keeps feeding the background.
     this.right.textContent = d.message != null
       ? d.message
       : `${d.title || ""} ${d.url || ""}${d.scroll != null ? " " + d.scroll : ""}`;
@@ -262,8 +215,8 @@ const MudraBar = {
     this._paint();
   },
 
-  // ---- command mode: the whole bar becomes an input line (: prompt + input filling it),
-  // candidate popup above the input, full width, at most maxCandidates entries, scrollable beyond that. ----
+  // ---- command mode: a centred floating panel (input row on top, candidate
+  // list below it), at most maxCandidates entries, scrollable beyond that. ----
   // onInput(query, api) filters candidates on the host side; onPick(candidate, query, api) handles selection;
   // candidate = {label, value, desc?}；Esc → onPick(null, ...)。A candidate with `desc` renders
   // as two columns (name padded to a shared width, description in dim gray) so name and
@@ -280,39 +233,30 @@ const MudraBar = {
     if (!this.el) await this.mount();
     const cfg = await MudraConfig.all();
 
-    // Candidate popup: flush with the bar's top edge, 100% width (left0/right0), at most maxCandidates rows tall
+    // Command mode is a floating panel, not the strip moved somewhere else:
+    // centred horizontally, its top edge on the 1/3 line of the viewport,
+    // input row first and candidates hanging below it.
     const rowH = cfg.statusHeight + 2;
-    // One theme for the whole bottom strip — the bar, the command line that
-    // replaces it, and the candidate popup: same tint, same opacity, same
-    // foreground. Anything else makes command mode look like a separate app.
     const barFg = MudraConfig.fgFor(cfg.statusBg, cfg.statusFg);
     const stripBg = MudraConfig.withAlpha(cfg.statusBg, cfg.statusOpacity);
-    const box = document.createElement("div");
-    box.id = "mudra-cmdbox";
-    box.style.cssText = [
-      "position:fixed", "left:0", "right:0", `bottom:${cfg.statusHeight}px`,
-      "z-index:2147483646", `max-height:${cfg.maxCandidates * rowH}px`,
-      "overflow-y:auto", "box-sizing:border-box", `background:${stripBg}`, `color:${barFg}`,
-      ...this._frost(),
+    const panel = document.createElement("div");
+    panel.id = "mudra-cmdpanel";
+    panel.style.cssText = [
+      "position:fixed", "left:50%", "transform:translateX(-50%)", "top:calc(100vh / 3)",
+      "width:min(720px,80vw)", "z-index:2147483647",
+      `background:${stripBg}`, `color:${barFg}`, ...this._frost(),
+      "border-radius:6px", "overflow:hidden", "box-sizing:border-box",
+      "box-shadow:0 6px 24px rgba(0,0,0,.18)",
     ].join(";");
-    const list = document.createElement("div");
-    list.id = "mudra-cmdlist";
-    box.appendChild(list);
-    document.documentElement.appendChild(box);
 
-    // The input line REPLACES the bar (not appended into it): any host
-    // node inserted into a frame-owned tree gets shuffled by re-renders —
-    // the bar (and later Solid) taught this the hard way. A standalone
-    // fixed line at the same position avoids all ownership conflicts; the
-    // bar is hidden while open.
-    this.bar.style.visibility = "hidden";
+    // The input row keeps the bar's height so the type size does not change
+    // between modes; the candidate list grows downward from it.
     const line = document.createElement("div");
     line.id = "mudra-cmdline";
     line.style.cssText = [
-      "position:fixed", "left:0", "right:0", "bottom:0", "z-index:2147483647",
       `height:${cfg.statusHeight}px`, `font:${cfg.statusFont}`,
-      `color:${barFg}`, `background:${stripBg}`, ...this._frost(),
-      "display:flex", "align-items:center", "padding:0 6px", "box-sizing:border-box",
+      `color:${barFg}`,
+      "display:flex", "align-items:center", "padding:0 8px", "box-sizing:border-box",
     ].join(";");
     const promptEl = document.createElement("span");
     promptEl.textContent = (opts && opts.prompt) || ":";
@@ -325,7 +269,24 @@ const MudraBar = {
     ].join(";");
     line.appendChild(promptEl);
     line.appendChild(input);
-    document.documentElement.appendChild(line);
+
+    const box = document.createElement("div");
+    box.id = "mudra-cmdbox";
+    box.style.cssText = [
+      `max-height:${cfg.maxCandidates * rowH}px`,
+      "overflow-y:auto", "box-sizing:border-box",
+    ].join(";");
+    const list = document.createElement("div");
+    list.id = "mudra-cmdlist";
+    box.appendChild(list);
+
+    // The panel is a sibling of the bar, never a node inside it: the bar is
+    // repainted wholesale by _paint, and anything appended into it gets
+    // shuffled. The bar is hidden while the panel is open.
+    this.bar.style.visibility = "hidden";
+    panel.appendChild(line);
+    panel.appendChild(box);
+    document.documentElement.appendChild(panel);
     input.focus();
 
     let items = [];
@@ -360,8 +321,7 @@ const MudraBar = {
     };
 
     const close = () => {
-      document.getElementById("mudra-cmdline")?.remove();
-      document.getElementById("mudra-cmdbox")?.remove();
+      document.getElementById("mudra-cmdpanel")?.remove();
       if (this.bar) this.bar.style.visibility = "";
       this._paint(); // colors come from the stored state's mode again
     };
@@ -418,7 +378,6 @@ const MudraBar = {
     if (this.el) this.el.remove();
     this.el = null;
     this.bar = null;
-    this.left = null;
     this.right = null;
     this._state = {};
   },
