@@ -118,6 +118,17 @@ hole per the no-reuse rule (ADR-0002).
   never key materialized — the fixed-width discipline): the WRITE path
   finds the row to bump by exact url without a full scan. The ranked read
   declares no index and cannot have one — see below.
+- **the index is a prefix scan, so the write path must compare url text**:
+  a lookup for `https://x/` also returns every longer url that starts with
+  it, in key order — taking the first hit folds unrelated addresses into one
+  row (`/` swallowed `/a`, `/a` swallowed `/a/b`). Both writers
+  (`history_bump`, `history_absorb`) filter on `row.url == url`. At import
+  scale the unfiltered version merged 6,314 of 60,122 rows into their
+  prefixes; `tests/history_test.rs` is the regression gate.
+- bulk write: `history_absorb` folds an interchange record (see
+  `docs/HISTORY-INTERCHANGE.md`) taking `max()` of counter and timestamp, so
+  re-importing a file is idempotent and a stale file cannot walk a live row
+  backwards. The live open verb still uses `history_bump` (increment).
 - semantics: one row per opened address. `/open` and `/add` bump visits +
   last_at; the title label is refreshed at open time from the watcher-
   synced page rows. Nothing outside the open verbs ever writes History —

@@ -103,6 +103,14 @@ ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
 - 访问方法：`by_url` func 索引，对完整 `url`（变长，绝不落 key 段——定宽纪律）：
   **写路径**按精确 url 命中待累加行，无需全扫。排名的读面不声明索引，也不
   可能有——见下。
+- **索引是前缀扫描，写路径必须比对 url 文本**：查 `https://x/` 会把所有以它
+  开头的更长的 url 一并返回（按 key 序），取第一条命中会把无关地址折进一行
+  （`/` 吞掉 `/a`，`/a` 吞掉 `/a/b`）。两个写者（`history_bump`、
+  `history_absorb`）都用 `row.url == url` 过滤。不做过滤时按导入规模实测：
+  60,122 行里 6,314 行被前缀吞掉；回归门是 `tests/history_test.rs`。
+- 批量写：`history_absorb` 折叠一条交换格式记录（见
+  `docs/HISTORY-INTERCHANGE.md`），计数与时间取 `max()`——同一份文件重复导入是
+  幂等的，过期文件也不会把活着的行往回拨。open 动词仍用 `history_bump`（累加）。
 - 语义：每个打开过的地址一行。`/open` 与 `/add` 累加 visits 与 last_at，
   标题标签在打开时从 watcher 同步的页行刷新；open 动词之外没有任何路径
   写 History——访问计数只属于它们。写 history 不 bump epoch：History 对

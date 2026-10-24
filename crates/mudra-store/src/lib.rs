@@ -812,7 +812,10 @@ impl MudraStore {
             .history
             .scan::<ByHistoryUrl>(url.as_bytes())?
             .into_iter()
-            .find_map(|(pk, row)| row.map(|r| (pk.decoded, r)));
+            // The index is a prefix scan, so a short url also matches every
+            // longer url that starts with it (`/` vs `/a/b`). Taking the first
+            // hit merged unrelated rows; the row must be the exact one.
+            .find_map(|(pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
         match hit {
             Some((k, mut row)) => {
                 row.visits += 1;
@@ -833,6 +836,49 @@ impl MudraStore {
             }
         }
         Ok(())
+    }
+
+    /// One imported history row: fold an interchange record into the table.
+    ///
+    /// `max` rather than `+=` or assignment, because an import file describes a
+    /// world state, not a stream of events: re-running the same import must be a
+    /// no-op, while a fresher file still wins. It also keeps a stale export from
+    /// walking a live row's counter or timestamp backwards. Returns whether the
+    /// row was created (as opposed to folded into an existing one).
+    pub fn history_absorb(
+        &mut self,
+        url: &str,
+        title: &str,
+        visits: u64,
+        last_at: u64,
+    ) -> StoreResult<bool> {
+        let hit = self
+            .history
+            .scan::<ByHistoryUrl>(url.as_bytes())?
+            .into_iter()
+            // Exact url only: the index entry is a prefix of longer urls too.
+            .find_map(|(pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
+        match hit {
+            Some((k, mut row)) => {
+                row.visits = row.visits.max(visits);
+                row.last_at = row.last_at.max(last_at);
+                if !title.is_empty() {
+                    row.title = title.to_string();
+                }
+                self.history.put(&k, &row)?;
+                Ok(false)
+            }
+            None => {
+                let k = HistoryKey { id: self.next_id(state::HISTORY_ID)? };
+                self.history.put(&k, &History {
+                    url: url.to_string(),
+                    title: title.to_string(),
+                    visits: visits.max(1),
+                    last_at,
+                })?;
+                Ok(true)
+            }
+        }
     }
 
     /// Every history row (id order; the caller ranks).
