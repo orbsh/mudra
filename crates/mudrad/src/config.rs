@@ -48,6 +48,7 @@ const GROUP_TABLES: &[(&str, &[(&str, &str)])] = &[
     ),
     ("command", &[("bg", "cmdBg"), ("fg", "cmdFg"), ("opacity", "cmdOpacity"), ("scrollbar", "cmdScrollbar")]),
     ("progress", &[("height", "progressHeight"), ("colors", "progressColors")]),
+    ("sequence", &[("timeout", "seqTimeout")]),
     ("ui", &[("thumbnails", "thumbnails"), ("indent", "indent")]),
 ];
 
@@ -60,6 +61,7 @@ const INT_KEYS: &[&str] = &[
     "pageOverlapLines",
     "cmdScrollbar",
     "progressHeight",
+    "seqTimeout",
 ];
 
 /// Render a KDL value as JSON. `wants_int`: integer-valued setting —
@@ -402,6 +404,8 @@ scroll { stepLines 4 }
         assert_eq!(cfg["progressHeight"], json!(2));
         assert_eq!(cfg["progressColors"], json!("#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b"));
         assert_eq!(cfg["hintOpacity"], json!(0.65));
+        assert_eq!(cfg["hintFontSize"], json!(14));
+        assert_eq!(cfg["seqTimeout"], json!(1200));
         assert_eq!(cfg["thumbnails"], json!(false));
         // em, and a float must stay a float (the panel multiplies it as one)
         assert_eq!(cfg["indent"], json!(1.4));

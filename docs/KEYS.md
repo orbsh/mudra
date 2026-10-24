@@ -58,6 +58,9 @@
 | `o` | open | 命令行打 `open `（≡ `:open`），Enter 在本页打开 |
 | `O` | new | 命令行打 `new `（≡ `:new`），Enter 另开窗口 |
 | `P` | pages | 切页（mudrad） |
+| `y` `y` | — | 复制当前页地址到剪贴板 |
+| `y` `t` | — | 复制当前页标题到剪贴板 |
+| `?` | — | 键位表（在状态条上方弹出，超出高度可滚动） |
 | — | q | 关闭当前页（`:q`，无默认键） |
 | `:` | — | command 模式 |
 
@@ -65,6 +68,22 @@
 不做 URL 匹配（mudrad 的 `/close_page` 收的是子串，会认错页），所以控制台也能 `:q`（它只是
 另一个 tab）。mudrad 的 watcher 收到 `Target.targetDestroyed` 自己把 page 行标 closed，
 不需要扩展回报。
+
+## 键序列与键位表
+
+`y` 不单独成命令，它是**序列开头**：按下去之后状态条上方弹出一枚小菜单（`y y` 复制地址、`y t`
+复制标题），等第二个键，最多等 `sequence { timeout }`（默认 1200 ms）。第二个键命中就执行并关掉
+菜单；按 Esc 放弃；按别的键则当作序列没开始过、照常执行（不会吞键）——吞掉的键普通用户读作
+"键没了"，这是不可接受的。等待期间没有模式切换：仍是 normal，只是下一键先由序列消费。
+
+菜单和 `?` 的键位表是同一个组件（`mudra-menu`）：右下角、紧贴状态条上沿、宽度随内容、高度上限
+`66vh`，超出就在菜单内部滚动（2px 纯滑块，与命令面板同一套规则）。配色也直接用命令面板那组
+`cmdBg`/`cmdOpacity`/`cmdFg`——淡黄毛玻璃只有一份定义，改一处三处一起变。`?` 列出全部绑定
+（含当前 `keybindings` 覆盖后的实际键）、两个序列、`:`、`Esc` 与数字前缀，按 key 排序。
+
+复制走 `navigator.clipboard.writeText`；页面上下文被拒时（部分 `chrome://`、`file://`）退回隐藏
+textarea + `execCommand("copy")`。成功与否都在状态条上落一行字（`copied url: …` / `copy failed`），
+复制失败静默是查不出来的。
 
 ## 配置
 
@@ -75,6 +94,7 @@
 `insertFg/Bg`、`hintFg/Bg`、`hintOpacity`（默认 0.65）、`statusBlur`（默认 12）、`statusOpacity`（默认 0.1）、
 `cmdBg`/`cmdFg`/`cmdOpacity`/`cmdScrollbar`（命令面板的色相、文字色、alpha、候选列表滚动条宽度 px）、
 `progressHeight`（默认 2）/`progressColors`（多段渐变色，空格分隔的多色列表）、
+`seqTimeout`（序列等待毫秒数，默认 1200）、
 `keybindings`、`scrollStepLines`（默认 3）、`pageOverlapLines`（默认 5）。
 
 **优先级**：`config.kdl`（仓库层 + `~/.config/mudra/config.kdl` 用户层逐键合并）是源——服务

@@ -18,7 +18,7 @@ bar {
 
 hint {
     chars "asdfghjkl;qwertyuiopzxcv" // character pool; assignment follows this order
-    fontSize 12                // hint label font size px
+    fontSize 14                // hint label font size px — read at a glance over page text
     opacity 0.65               // hint label alpha; above bar.opacity, low enough to show the frost
 }
 
@@ -32,6 +32,10 @@ command {
 progress {
     height 2                   // page-load bar thickness px; 0 = no bar
     colors "#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b" // multi-stop gradient, left to right
+}
+
+sequence {
+    timeout 1200               // ms a sequence opener waits for its second key (y → yy / yt)
 }
 
 keys {

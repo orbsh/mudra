@@ -40,7 +40,9 @@ tag 打标。这是浏览器内行为，只能由浏览器扩展承担。选择�
   元素查询与滚动目标穿透 shadow root（WebUI 页与部分站点把内容藏在 shadow 里，light DOM 的
   选择器在它们身上等于空集）；`chrome://` 页面的脚本由 SW 在 commit 时注入（`host_permissions`
   收 `chrome://*/*`），不写进 `content_scripts.matches`——那个 pattern 会让未带
-  `--extensions-on-chrome-urls` 的启动方式整包拒载扩展。键位与全部
+  `--extensions-on-chrome-urls` 的启动方式整包拒载扩展。键序列（`yy` 复制地址、`yt` 复制标题）
+  按下首键后在状态条上方弹出等待菜单，`sequence { timeout }` 内等次键，未命中则把该键当新键处理；
+  `?` 用同一组件列全部键位（超 `66vh` 内部滚动），配色与滚动条直接复用命令面板那组键。键位与全部
   行为参数（hintChars、scrollStepLines、pageOverlapLines、progressHeight、progressColors、
   keybindings 覆盖表）存 `chrome.storage.local`，cmd 模式 `:set` 就地修改（`:set scrollStepLines 5`、
   `:set keybindings.u=pageUp`、裸 `:set` 列出全部）。

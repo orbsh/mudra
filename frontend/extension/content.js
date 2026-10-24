@@ -42,6 +42,9 @@
     // Mode switches must sync focus: blur when leaving insert so a lingering input focus does not swallow Esc
     if (m !== "insert" && document.activeElement && isEditable(document.activeElement))
       document.activeElement.blur();
+    // An overlay belongs to the mode it was opened in: any switch closes the
+    // waiting sequence menu and the keymap with it.
+    if (m !== "normal") closeOverlay();
     await refreshBar();
   };
 
@@ -215,6 +218,57 @@
       .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "url" }));
     cmdApi.setItems([...pageC, ...hist]);
   }
+
+  // ---- clipboard -----------------------------------------------------------------
+  // navigator.clipboard needs a focused document and a user gesture; a keydown
+  // in the page is both. The textarea fallback covers documents where the async
+  // API is refused (some chrome:// and file:// pages) — copying is one of the
+  // few things that must not fail silently, because the user cannot tell a
+  // successful copy from a broken one.
+  async function copyText(text) {
+    // Real key presses carry user activation, which is what the async API wants;
+    // programmatic callers (tests, page scripts) have none, so the fallback is
+    // not dead code.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch { /* not focused / not activated / refused: try the legacy path */ }
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none";
+    document.documentElement.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  async function yank(what) {
+    const text = what === "title" ? document.title || "" : location.href;
+    const ok = await copyText(text);
+    const short = text.length > 60 ? text.slice(0, 57) + "…" : text;
+    await flashBar(ok ? `copied ${what}: ${short}` : `copy failed: ${what}`);
+  }
+
+  // ---- key sequences ---------------------------------------------------------
+  // A key that starts a sequence does nothing on its own: it opens a menu above
+  // the status bar and waits seqTimeout ms for the second key. The menu is the
+  // point — a sequence nobody can discover is a secret, not a binding.
+  const SEQUENCES = {
+    y: {
+      desc: "yank",
+      items: [
+        { key: "y", desc: "copy page url", run: () => yank("url") },
+        { key: "t", desc: "copy page title", run: () => yank("title") },
+      ],
+    },
+  };
 
   // ---- commands ----
   // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
@@ -706,6 +760,81 @@
     }
 
     // ---- normal mode ----
+    // An open overlay takes the key first: the sequence completes, or is dropped
+    // and the key acts as if it had never started; the keymap just closes. A
+    // keystroke is never swallowed silently — that is how a keymap starts
+    // feeling broken.
+    if (pending) {
+      const hit = pending.items.find((it) => it.key === e.key);
+      closeOverlay();
+      if (hit) { e.preventDefault(); await hit.run(); return; }
+      if (e.key === "Escape") { e.preventDefault(); return; }
+      return dispatchNormal(e);
+    }
+    if (keymapOpen) {
+      closeOverlay();
+      if (e.key === "Escape" || e.key === "?") { e.preventDefault(); return; }
+      return dispatchNormal(e);
+    }
+    return dispatchNormal(e);
+  }, true);
+
+  // ---- overlays: a sequence waiting for its second key, and the ? keymap ----
+  // Both are MudraBar.showMenu, so they wear the same pale frosted surface and
+  // neither can outlive the mode it belongs to.
+  let pending = null;   // {key, items, timer} — a sequence waiting for its second key
+  let menu = null;      // the open overlay, whichever of the two it is
+  let keymapOpen = false;
+
+  function closeOverlay() {
+    if (pending && pending.timer) clearTimeout(pending.timer);
+    pending = null;
+    keymapOpen = false;
+    if (menu) { menu.close(); menu = null; }
+    else MudraBar.hideMenu();
+  }
+
+  async function openPending(key) {
+    const seq = SEQUENCES[key];
+    closeOverlay();
+    const cfg = await MudraConfig.all();
+    pending = { key, items: seq.items, timer: null };
+    menu = await MudraBar.showMenu({
+      rows: seq.items.map((it) => ({ key: `${key} ${it.key}`, desc: it.desc })),
+    });
+    // The wait is finite: a menu that stays is a mode, and a mode nobody asked
+    // for swallows the next key.
+    pending.timer = setTimeout(closeOverlay, cfg.seqTimeout);
+  }
+
+  // Every binding in one list, including the sequences and the two openers that
+  // are not commands (":" and "?"). Height is the viewport's problem, not the
+  // list's: the menu scrolls.
+  async function openKeymap() {
+    closeOverlay();
+    const cfg = await MudraConfig.all();
+    const map = cfg.keybindings || {};
+    const rows = [];
+    for (const [name, def] of Object.entries(COMMANDS)) {
+      const bound = Object.keys(map).find((k) => map[k] === name);
+      const k = bound || def.defaultKey;
+      if (k) rows.push({ key: k, desc: def.desc });
+    }
+    for (const [sk, seq] of Object.entries(SEQUENCES))
+      for (const it of seq.items) rows.push({ key: `${sk} ${it.key}`, desc: it.desc });
+    rows.push({ key: ":", desc: "command line" });
+    rows.push({ key: "?", desc: "this list" });
+    rows.push({ key: "Esc", desc: "cancel" });
+    rows.push({ key: "0-9", desc: "count prefix (5j, 30g)" });
+    rows.sort((a, b) => a.key.localeCompare(b.key));
+    menu = await MudraBar.showMenu({ rows });
+    keymapOpen = true;
+  }
+
+  // One normal-mode key, in one place: the sequence menu and the keymap re-enter
+  // here after they are done with a key, so no path can skip the numeric prefix
+  // or the ":" / "?" openers.
+  async function dispatchNormal(e) {
     // Numeric prefix accumulation (30g percent jump)
     if (/^[0-9]$/.test(e.key)) {
       e.preventDefault();
@@ -713,27 +842,25 @@
       await refreshBar(); // show the typed digits in the status bar
       return;
     }
-
-    // : enters command mode
-    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key === ":") {
-      e.preventDefault();
-      return enterCommand();
-    }
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (plain && e.key === ":") { e.preventDefault(); return enterCommand(); }
+    if (plain && e.key === "?") { e.preventDefault(); return openKeymap(); }
+    if (!plain) return;
 
     // key -> command (configurable); the numeric prefix is passed as count to commands that support it
-    const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
-    if (plain) {
-      const count = numPrefix ? parseInt(numPrefix, 10) : null;
-      numPrefix = "";
-      const name = await keyToCommand(e.key);
-      if (name) {
-        e.preventDefault();
-        COMMANDS[name].run("", { count });
-      } else {
-        refreshBar(); // an invalid key clears the numeric-prefix display
-      }
+    const count = numPrefix ? parseInt(numPrefix, 10) : null;
+    numPrefix = "";
+    const name = await keyToCommand(e.key);
+    if (name) {
+      e.preventDefault();
+      COMMANDS[name].run("", { count });
+      return;
     }
-  }, true);
+    // A sequence opener shows its menu and waits; any other key is dead and only
+    // clears the numeric-prefix display.
+    if (SEQUENCES[e.key]) { e.preventDefault(); return openPending(e.key); }
+    refreshBar();
+  }
 
   // ---- status bar ----
   const boot = async () => {

@@ -5,7 +5,7 @@
 const MudraConfig = {
   defaults: {
     hintChars: "asdfghjkl",          // letter pool; assignment follows this order
-    hintFontSize: 12,                // px
+    hintFontSize: 14,                // px — the label sits on page text, so it is read at a glance in a busy corner
     statusHeight: 16,                // px, one character tall
     statusFont: "12px monospace",
     statusFg: "#666666",             // dark gray by default; "auto" = black or white, whichever contrasts with the bg
@@ -24,6 +24,7 @@ const MudraConfig = {
     progressHeight: 2,               // page-load bar thickness px; 0 hides it
     progressColors: "#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b", // multi-stop gradient, left to right
     keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
+    seqTimeout: 1200,                // ms a key waits for its sequence partner (y → yy / yt)
     scrollStepLines: 3,              // lines per j/k scroll
     pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
   },
@@ -286,6 +287,81 @@ const MudraBar = {
     if (document.getElementById("mudra-cmdinput")) return;
     this._state = { ...data };
     this._paint();
+  },
+
+  // ---- key menus (sequence hints and the ? keymap) ----
+  // Bottom-right, stacked directly above the status chip, wearing the command
+  // panel's clothes: same pale tint, same frost, same 2px thumb with no track.
+  // A sibling of the bar, never a child — _paint rewrites the bar wholesale —
+  // and it leaves the chip visible, because that is what it is anchored to.
+  // `maxVh` is the only geometry knob; past it the rows scroll, which is the
+  // whole reason a keymap can be shown without a row count.
+  async showMenu({ rows, maxVh = 66 }) {
+    if (!this.el) await this.mount();
+    this.hideMenu();
+    const cfg = this._cfg || (await MudraConfig.all());
+    const tint = MudraConfig.withAlpha(cfg.cmdBg, cfg.cmdOpacity);
+    const fg = MudraConfig.fgFor(cfg.cmdBg, cfg.cmdFg);
+
+    const wrap = document.createElement("div");
+    wrap.id = "mudra-menu";
+    wrap.style.cssText = [
+      "position:fixed", "right:8px", `bottom:${cfg.statusHeight + 6}px`,
+      "z-index:2147483647", `max-height:${maxVh}vh`,
+      `background:${tint}`, `color:${fg}`, ...this._frost(),
+      "border-radius:6px", "overflow:hidden", "box-sizing:border-box",
+      "box-shadow:0 6px 24px rgba(0,0,0,.18)",
+      `font:${cfg.statusFont}`, "padding:3px 0",
+      "min-width:150px", "max-width:46vw",
+      "display:flex", "flex-direction:column",
+    ].join(";");
+
+    const box = document.createElement("div");
+    box.id = "mudra-menubox";
+    box.style.cssText = "flex:1 1 auto;min-height:0;overflow-y:auto;box-sizing:border-box";
+    // Key column padded to the widest key: descriptions line up in one column
+    // instead of ragging a pixel or two with every row.
+    const keyW = rows.reduce((w, r) => Math.max(w, (r.key || "").length), 0);
+    const descColor = MudraConfig.withAlpha(fg, 0.72);
+    for (const r of rows) {
+      const row = document.createElement("div");
+      row.style.cssText = `display:flex;gap:12px;padding:0 10px;white-space:pre;line-height:${cfg.statusHeight + 2}px`;
+      const k = document.createElement("span");
+      k.textContent = (r.key || "") + " ".repeat(Math.max(0, keyW - (r.key || "").length));
+      k.style.fontWeight = "600";
+      const d = document.createElement("span");
+      d.textContent = r.desc || "";
+      d.style.color = descColor;
+      row.append(k, d);
+      box.appendChild(row);
+    }
+    if (!rows.length) box.textContent = "";
+    wrap.appendChild(box);
+
+    document.getElementById("mudra-menu-scrollbar-style")?.remove();
+    const sb = document.createElement("style");
+    sb.id = "mudra-menu-scrollbar-style";
+    sb.textContent = [
+      `#mudra-menubox::-webkit-scrollbar{width:${cfg.cmdScrollbar}px;height:${cfg.cmdScrollbar}px;background:transparent}`,
+      "#mudra-menubox::-webkit-scrollbar-track{background:transparent;border:none}",
+      `#mudra-menubox::-webkit-scrollbar-thumb{background:${MudraConfig.withAlpha(fg, 0.15)};border:none;border-radius:0}`,
+      "#mudra-menubox::-webkit-scrollbar-corner{background:transparent}",
+    ].join("");
+    document.documentElement.appendChild(sb);
+    document.documentElement.appendChild(wrap);
+    this._menu = {
+      wrap,
+      close: () => {
+        wrap.remove();
+        sb.remove();
+        this._menu = null;
+      },
+    };
+    return this._menu;
+  },
+
+  hideMenu() {
+    if (this._menu) this._menu.close();
   },
 
   // ---- command mode: a centred floating panel (input row on top, candidate
