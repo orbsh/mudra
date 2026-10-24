@@ -136,7 +136,9 @@ pub fn parse(text: &str) -> Result<Value, String> {
             let ex = out
                 .entry("extensions")
                 .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            let ex = ex.as_object_mut().expect("just created as object");
+            // Created two lines up, so the object arm is the only reachable
+            // one; `continue` states that without an unwrap.
+            let Some(ex) = ex.as_object_mut() else { continue };
             for child in children(group) {
                 if let Some(value) = first_arg(child) {
                     ex.insert(child.name().value().to_string(), to_json(value, false));
@@ -147,7 +149,9 @@ pub fn parse(text: &str) -> Result<Value, String> {
             let kb = out
                 .entry("keybindings")
                 .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            let kb = kb.as_object_mut().expect("just created as object");
+            // Same shape as the `extensions` group above: the entry was just
+            // created as an object, so the arm is the only reachable one.
+            let Some(kb) = kb.as_object_mut() else { continue };
             for child in children(group) {
                 if let Some(value) = first_arg(child) {
                     // keybinding commands are strings; no int coercion

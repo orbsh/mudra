@@ -250,13 +250,13 @@ impl CdpConn {
             .await
             .map_err(|e| CdpError::Io(e.to_string()))?;
         let got = tokio::time::timeout(timeout, rx).await;
-        if got.is_err() {
-            self.pending.lock().await.remove(&id);
-            return Err(CdpError::Io(format!("{method} timed out")));
-        }
-        let resp = got
-            .unwrap()
-            .map_err(|_| CdpError::Io(format!("{method}: reader gone")))?;
+        let resp = match got {
+            Ok(r) => r.map_err(|_| CdpError::Io(format!("{method}: reader gone")))?,
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(CdpError::Io(format!("{method} timed out")));
+            }
+        };
         if let Some(err) = resp.get("error") {
             return Err(CdpError::Api(err.clone()));
         }

@@ -219,12 +219,17 @@ impl MudraStore {
         extensions: Option<&str>,
     ) -> InstanceKey {
         if let Some(k) = reuse {
-            let mut row = self.instances.get(k).expect("reused row must exist");
-            row.port = port;
-            row.pid = pid;
-            row.running = 1;
-            self.instances.put(k, &row);
-            return k.clone();
+            // The row is what makes a key reusable. A key whose row was
+            // evicted (or never written) falls through to the create path
+            // instead of panicking: the caller gets a live instance either
+            // way, and the missing row is a state repair, not a fatal error.
+            if let Some(mut row) = self.instances.get(k) {
+                row.port = port;
+                row.pid = pid;
+                row.running = 1;
+                self.instances.put(k, &row);
+                return k.clone();
+            }
         }
         let k = InstanceKey { id: self.next_id(state::INSTANCE_ID) as u32 };
         self.instances.put(

@@ -4,6 +4,7 @@
 //! budgeted I/O and the live pipe are `induction-*`'s — covered there
 //! (protocol wire tests + host session tests, including a live child).
 //! Run: `cargo test -p mudrad --test host_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudrad::host::event_row_frame;
 use serde_json::{Value, json};

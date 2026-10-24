@@ -1420,7 +1420,9 @@ pub fn snap_column_width(ratio: f64) -> (f64, &'static str) {
     BANDS
         .into_iter()
         .min_by(|a, b| (a.0 - ratio).abs().total_cmp(&(b.0 - ratio).abs()))
-        .unwrap()
+        // The table is a non-empty literal, and the fallback names the widest
+        // band, so the function stays total without an `unwrap` on `min_by`.
+        .unwrap_or((1.0, "1"))
 }
 
 fn or_none(s: &str) -> Option<&str> {

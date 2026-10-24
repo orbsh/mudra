@@ -66,4 +66,9 @@ web-time = "1"
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
 all = { level = "warn", priority = -1 }

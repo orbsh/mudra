@@ -27,6 +27,11 @@
 //! closures therefore compute their content from the snapshot they were
 //! built with (the JS panel's memo-rebuild did the same).
 
+
+// Unit tests may use the unwrap/panic vocabulary the production targets are
+// denied (a panicking test is a failing test). `cfg(test)` is on only for this
+// crate's own test build; `tests/` crates set the same line at their own root.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 pub mod events;
 pub mod hooks;
 pub mod http;
@@ -177,9 +182,12 @@ pub fn App() -> impl IntoView {
                             if !n.root
                                 && n.rank.is_none()
                                 && n.children.is_empty()
-                                && n.path.is_some()
                             {
-                                plain.push((n.id, n.path.clone().unwrap()));
+                                // The path is read only when it exists: matching
+                                // the Option keeps the check and the push one step.
+                                if let Some(path) = &n.path {
+                                    plain.push((n.id, path.clone()));
+                                }
                             }
                             for c in &n.children {
                                 walk(c, map, plain);

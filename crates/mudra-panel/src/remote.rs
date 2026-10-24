@@ -50,6 +50,10 @@ impl WsLink {
     /// endpoint is PANEL_PORT+1 — same layout rule the JS client used
     /// (`Number(location.port) + 1`).
     pub fn from_location() -> Rc<Self> {
+        // wasm32 always has a window — the panel IS a document script, so
+        // `None` is unrepresentable here and an allow states that once
+        // instead of threading an error through every constructor caller.
+        #[allow(clippy::expect_used)]
         let win = web_sys::window().expect("no window");
         let loc = win.location();
         let proto = if loc.protocol().unwrap_or_default() == "https:" { "wss" } else { "ws" };
@@ -102,6 +106,9 @@ impl WsLink {
                 s.open();
             }
         });
+        // Same wasm32 invariant as `from_location`: a document script always has
+        // a window; the reconnect timer has nowhere else to be armed.
+        #[allow(clippy::expect_used)]
         let win = web_sys::window().expect("no window");
         if win
             .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 800)

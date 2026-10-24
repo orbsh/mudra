@@ -151,21 +151,21 @@ impl Registry {
     /// Register one live session, replacing a same-name predecessor (one
     /// session per name: the supervisor respawns, it does not duplicate).
     pub fn register(&self, h: Handle) {
-        let mut v = self.sessions.lock().unwrap();
+        let mut v = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         v.retain(|s| s.name != h.name);
         v.push(h);
     }
 
     /// A session ended: drop its handle so the gate stops dispatching to it.
     pub fn unregister(&self, name: &str) {
-        let mut v = self.sessions.lock().unwrap();
+        let mut v = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         v.retain(|s| s.name != name);
     }
 
     fn declaring(&self, event: &str) -> Vec<Handle> {
         self.sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|s| s.declares(event))
             .cloned()

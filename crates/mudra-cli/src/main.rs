@@ -556,12 +556,15 @@ fn tag(action: &str, tag_id: Option<String>, page_id: Option<String>) -> i32 {
                 println!("tag add/remove needs a tag_id");
                 return 1;
             };
-            // Python validated the numeric id before any query
-            if raw_id.strip_prefix('-').unwrap_or(&raw_id).parse::<u64>().is_err() {
+            // A leading '-' is tolerated by the old python CLI, but the id
+            // itself must be a plain number: parse the signed-stripped form
+            // ONCE and use the result (the previous shape validated one parse
+            // and unwrapped another, so "-5" passed the check and panicked on
+            // the parse below).
+            let Ok(id) = raw_id.strip_prefix('-').unwrap_or(&raw_id).parse::<u64>() else {
                 println!("invalid tag_id {}", repr(&raw_id));
                 return 1;
-            }
-            let id: u64 = raw_id.parse().unwrap();
+            };
             let mut body = json!({"tag_id": id, "on": action == "add"});
             if let Some(p) = page_id {
                 match p.parse::<u64>() {

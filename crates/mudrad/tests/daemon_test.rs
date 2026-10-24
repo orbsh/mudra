@@ -3,6 +3,7 @@
 //! the session-env gate. The HTTP/WS servers themselves are exercised
 //! through these same handlers where the logic is testable.
 //! Run: `cargo test -p mudrad --test daemon_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudrad::daemon::{acquire_lock, config_default_path, resolve_static_path, startup_env_gaps, WS_PORT, PANEL_PORT, CONTROL_PORT};
 

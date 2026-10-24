@@ -2,6 +2,7 @@
 //! a raw HTTP mock for `/json*` helpers and a tungstenite mock for the
 //! browser-level ws, exercising the single-reader routing contract.
 //! Run: `cargo test -p mudrad --test cdp_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudrad::cdp::*;
 use mudrad::watch::connect_ready;

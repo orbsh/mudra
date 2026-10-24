@@ -60,7 +60,9 @@ impl UiState {
 
     pub fn collapsed(&self) -> Vec<u64> {
         self.fixed(self.get(K_COLLAPSED), 8, |c| {
-            u64::from_be_bytes(c.try_into().expect("chunk of 8"))
+            // `fixed` hands out chunks of exactly `width`; a short chunk reads
+            // as zero rather than panicking on the conversion.
+            u64::from_be_bytes(c.try_into().unwrap_or_default())
         })
     }
 

@@ -7,7 +7,15 @@ fn main() {
         eprintln!("mudrad: only 'run' is supported (foreground); exit 2");
         std::process::exit(2);
     }
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    // A runtime that cannot start is a boot failure the supervisor must see:
+    // report it and exit non-zero instead of panicking inside a task-less process.
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("mudrad: cannot start the tokio runtime: {e}");
+            std::process::exit(1);
+        }
+    };
     if let Err(e) = rt.block_on(mudrad::daemon::run()) {
         eprintln!("[mudrad] {e}");
         std::process::exit(1);

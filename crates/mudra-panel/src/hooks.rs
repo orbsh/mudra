@@ -101,7 +101,7 @@ pub fn HooksView(view: ReadSignal<String>, tick: ReadSignal<u64>) -> impl IntoVi
     let edit: Arc<dyn Fn(HookRow) + Send + Sync> = {
         let draft = Arc::clone(&draft);
         Arc::new(move |h: HookRow| {
-            *draft.lock().unwrap() = Draft {
+            *draft.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Draft {
                 name: h.name,
                 fresh: false,
                 matches: h.matches,
@@ -113,7 +113,7 @@ pub fn HooksView(view: ReadSignal<String>, tick: ReadSignal<u64>) -> impl IntoVi
     let new_hook = {
         let draft = Arc::clone(&draft);
         move |_: leptos::ev::MouseEvent| {
-            *draft.lock().unwrap() = Draft { fresh: true, ..Default::default() };
+            *draft.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Draft { fresh: true, ..Default::default() };
             set_open.set(true);
         }
     };
@@ -123,7 +123,7 @@ pub fn HooksView(view: ReadSignal<String>, tick: ReadSignal<u64>) -> impl IntoVi
         let draft = Arc::clone(&draft);
         let post = Arc::clone(&post);
         Arc::new(move |_: leptos::ev::MouseEvent| {
-            let d = draft.lock().unwrap().clone();
+            let d = draft.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             let name = d.name.trim().to_string();
             if name.is_empty() || d.code.trim().is_empty() {
                 set_err.set("a hook needs a name and code".into());
@@ -158,18 +158,18 @@ pub fn HooksView(view: ReadSignal<String>, tick: ReadSignal<u64>) -> impl IntoVi
             // editor opens — an uncontrolled form by construction
             <Show when=move || open.get() fallback=|| ()>
                 {
-                    let d = draft.lock().unwrap().clone();
+                    let d = draft.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                     // per-mount handlers + a per-mount save clone: the
                     // form is uncontrolled (fields are initial values,
                     // typing only reaches the draft) and nothing here
                     // moves out of the component's environment
                     let (dn, dm, dc) = (Arc::clone(&draft), Arc::clone(&draft), Arc::clone(&draft));
                     let on_name =
-                        move |ev: leptos::ev::Event| dn.lock().unwrap().name = event_target_value(&ev);
+                        move |ev: leptos::ev::Event| dn.lock().unwrap_or_else(std::sync::PoisonError::into_inner).name = event_target_value(&ev);
                     let on_matches =
-                        move |ev: leptos::ev::Event| dm.lock().unwrap().matches = event_target_value(&ev);
+                        move |ev: leptos::ev::Event| dm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).matches = event_target_value(&ev);
                     let on_code =
-                        move |ev: leptos::ev::Event| dc.lock().unwrap().code = event_target_value(&ev);
+                        move |ev: leptos::ev::Event| dc.lock().unwrap_or_else(std::sync::PoisonError::into_inner).code = event_target_value(&ev);
                     let save = {
                         let save = Arc::clone(&save);
                         move |ev: leptos::ev::MouseEvent| save(ev)

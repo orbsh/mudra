@@ -5,6 +5,7 @@
 //! changes with the head-starting cursor (§4), and `host:invoke` routed to
 //! `run_verb` with the canonical `ok` reply key (§5).
 //! Run: `cargo test -p mudrad --test host_live_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use std::sync::Arc;
 use std::time::Duration;

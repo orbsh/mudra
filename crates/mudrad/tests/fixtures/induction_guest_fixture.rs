@@ -12,6 +12,7 @@
 //! whole session: `Stdin::lock` is a non-reentrant mutex, so a second
 //! `stdin().lock()` inside the loop would deadlock against the loop's own
 //! lock (this cost the first live run its reply).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use std::io::{BufRead, Write};
 

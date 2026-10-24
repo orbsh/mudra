@@ -632,7 +632,7 @@ pub async fn run() -> Result<(), String> {
             "session env incomplete: {gaps:?} — a daemon without WAYLAND spawns zombie chromium"
         ));
     }
-    let home = spawn::mudra_home();
+    let home = spawn::mudra_home()?;
     let _lock = acquire_lock(&home)?; // held for the process lifetime
 
     let store = MudraStore::open(&home.join("store")).map_err(|e| format!("store open: {e}"))?;
@@ -682,17 +682,34 @@ pub async fn run() -> Result<(), String> {
         pending_parent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
-    { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_control(d2).await.expect("control server") }); }
-    { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_panel_static(d2).await.expect("static server") }); }
-    { let d2 = Arc::clone(&d); tokio::spawn(async move { serve_panel_ws(d2).await.expect("ws server") }); }
+    // A dead control or panel socket leaves a daemon nobody can drive (and no
+    // panel to drive it with): exiting non-zero is the only state a launcher
+    // can act on, so the task reports and terminates the process.
+    { let d2 = Arc::clone(&d); tokio::spawn(async move {
+        if let Err(e) = serve_control(d2).await {
+            eprintln!("[mudrad] FATAL control server died: {e}");
+            std::process::exit(1);
+        }
+    }); }
+    { let d2 = Arc::clone(&d); tokio::spawn(async move {
+        if let Err(e) = serve_panel_static(d2).await {
+            eprintln!("[mudrad] FATAL static server died: {e}");
+            std::process::exit(1);
+        }
+    }); }
+    { let d2 = Arc::clone(&d); tokio::spawn(async move {
+        if let Err(e) = serve_panel_ws(d2).await {
+            eprintln!("[mudrad] FATAL ws server died: {e}");
+            std::process::exit(1);
+        }
+    }); }
     { let d2 = Arc::clone(&d); tokio::spawn(async move { scheduler(d2).await }); }
     { let d2 = Arc::clone(&d); tokio::spawn(async move { crate::host::supervise(d2).await }); }
 
     eprintln!("[mudrad] started");
-    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("signal")
-        .recv()
-        .await;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| format!("signal handler: {e}"))?;
+    sigterm.recv().await;
     let store = d.store.lock().await;
     let _ = store.persist();
     eprintln!("[mudrad] persisted, bye");

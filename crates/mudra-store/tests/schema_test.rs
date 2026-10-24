@@ -3,6 +3,7 @@
 //! clause on the REAL fjall engine (temp dir; no mock).
 //!
 //! Run: `cargo test -p mudra-store`
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudra_store::*;
 use okm_core::{Document, KeyEncode, KvJunction, Quant, Ref};

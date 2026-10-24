@@ -4,6 +4,7 @@
 //! Tests drive `WatchSession` exactly the way the daemon task does:
 //! await the event OUTSIDE the store borrow, apply it inside.
 //! Run: `cargo test -p mudrad --test watcher_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use futures_util::{SinkExt, StreamExt};
 use mudrad::watch::{WatchSession, connect_ready, now_ms, page_infos};

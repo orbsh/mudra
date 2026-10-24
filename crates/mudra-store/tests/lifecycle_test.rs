@@ -5,6 +5,7 @@
 //! The epoch law (SCHEMA): every state-changing transition returns the
 //! bumped epoch; every no-op returns None — the invalidation push can
 //! never drift from the write.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudra_store::*;
 use okm_core::Quant;

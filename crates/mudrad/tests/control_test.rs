@@ -3,6 +3,7 @@
 //! that records calls and answers target probes). State assertions
 //! read the real fjall store; effect assertions read the recorded call
 //! list. Run: `cargo test -p mudrad --test control_test`.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudrad::control::Controller;
 use mudrad::runtime::Runtime;
