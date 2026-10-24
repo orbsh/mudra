@@ -14,7 +14,7 @@ const MudraConfig = {
     insertBg: "rgba(232,232,232,.62)",
     hintFg: "auto",
     hintBg: "#fbf1c7",               // gruvbox light yellow (the hue; the alpha is hintOpacity)
-    hintOpacity: 0.65,               // hint label alpha — far above bar.opacity, low enough to show the frost
+    hintOpacity: 0.45,               // hint label alpha — low enough that the page's own text shows through the tint
     statusBlur: 12,                  // px of frosted glass; 0 = translucency only
     statusOpacity: 0.1,              // the strip's own alpha (the tint still comes from statusBg)
     cmdBg: "#fbf1c7",                // command panel hue: same gruvbox light yellow

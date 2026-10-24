@@ -91,7 +91,7 @@ textarea + `execCommand("copy")`。成功与否都在状态条上落一行字（
 
 `hintChars`（字符池，顺序即分配顺序；默认 `asdfghjkl;qwertyuiopzxcv`，含 `;`，池里每个
 字符都必须能敲进去）、`hintFontSize`、`statusHeight/Font/Fg/Bg`、
-`insertFg/Bg`、`hintFg/Bg`、`hintOpacity`（默认 0.65）、`statusBlur`（默认 12）、`statusOpacity`（默认 0.1）、
+`insertFg/Bg`、`hintFg/Bg`、`hintOpacity`（默认 0.45——高到能压住页面花纹，低到能透出底下的字）、`statusBlur`（默认 12）、`statusOpacity`（默认 0.1）、
 `cmdBg`/`cmdFg`/`cmdOpacity`/`cmdScrollbar`（命令面板的色相、文字色、alpha、候选列表滚动条宽度 px）、
 `progressHeight`（默认 2）/`progressColors`（多段渐变色，空格分隔的多色列表）、
 `seqTimeout`（序列等待毫秒数，默认 1200）、
@@ -138,6 +138,8 @@ chip 隐去（`visibility:hidden`），免得两处读数。`insertBg`/`insertFg
 **元素查询和滚动目标都穿透 shadow root**：`chrome://settings`、`history`、`downloads`、`flags` 这些 WebUI 页把内容放进层层 shadow root（`flags` 实测 655 个），网站也越来越多这么干；`document.querySelectorAll` 只看 light DOM，会报"页面上没有链接"。所以 `f` 的候选集、`i` 的输入框集都走 `deepQueryAll`（递归进 `shadowRoot`）。滚动同理：`window.scrollBy` 在 WebUI 上滚不动任何东西，滚动目标由 `scrollTarget()` 解析——文档自己能滚就用它（绝大多数网站，零成本），否则在视口中心做命中测试、沿 flat tree（`parentElement`，再退到 shadow host）找到第一个真正在滚的容器；结果缓存 500ms，因为状态条每次滚动事件都会重算百分比。状态条的滚动百分比跟的就是同一个目标。
 
 **`chrome://` 页面上的脚本由 SW 注入，不写进 manifest 的 matches**：`content_scripts.matches` 里出现 `"chrome://*/*"` 会让 Chrome 在**没带** `--extensions-on-chrome-urls` 的启动方式下直接拒载整个扩展（`Invalid value for 'content_scripts[0].matches[1]': Invalid scheme.`）——结果是浏览器里没有扩展 + 启动报错气泡。同一个 pattern 写在 `host_permissions` 里是合法的，所以改成：manifest 只声明 `<all_urls>`，SW 监听 `webNavigation.onCommitted`，对 `chrome://` 的主框架用 `chrome.scripting.executeScript` 注入 `shared/lib.js` + `extension/content.js`（顺序不能反，content.js 用 lib.js 定义的全局）。缺开关时只有这一个调用失败并被 catch 成一条日志，扩展照常加载——正常页面不受影响，`chrome://` 页面只是没有键位。
+
+**`--extensions-on-chrome-urls` 必须配 `--test-type`**：这个开关在 Chromium 的 bad-flag 名单里（它确实给了扩展更大权力——能改 `chrome://settings`），所以每个窗口顶部会永久挂一条 infobar：「You are using an unsupported command-line flag: --extensions-on-chrome-urls. Stability and security will suffer.」。在 `--app=` 窗口里它直接压在页面内容上，虽然能点 × 关掉，但每次启动都回来。`--test-type` 只抑制这条启动提示，开关本身照常生效（crbug 40205764、41109334）；像素验证：同一页面同一 profile，不带 `--test-type` 时窗口顶上有条，带上之后页面内容顶到窗口上沿。
 
 cmd 模式就地修改（写入 storage，立即生效，重启实例保留）：
 

@@ -403,7 +403,7 @@ scroll { stepLines 4 }
         assert_eq!(cfg["cmdScrollbar"], json!(2));
         assert_eq!(cfg["progressHeight"], json!(2));
         assert_eq!(cfg["progressColors"], json!("#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b"));
-        assert_eq!(cfg["hintOpacity"], json!(0.65));
+        assert_eq!(cfg["hintOpacity"], json!(0.45));
         assert_eq!(cfg["hintFontSize"], json!(14));
         assert_eq!(cfg["seqTimeout"], json!(1200));
         assert_eq!(cfg["thumbnails"], json!(false));

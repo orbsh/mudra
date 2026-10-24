@@ -19,7 +19,7 @@ bar {
 hint {
     chars "asdfghjkl;qwertyuiopzxcv" // character pool; assignment follows this order
     fontSize 14                // hint label font size px — read at a glance over page text
-    opacity 0.65               // hint label alpha; above bar.opacity, low enough to show the frost
+    opacity 0.45               // hint label alpha; low enough to read the page through the tint
 }
 
 command {
