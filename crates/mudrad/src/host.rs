@@ -315,8 +315,18 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
         tx: hot_tx,
     });
 
-    // per-session cursor starts at the log head (no history replay, v1)
-    let mut cursor = { d.store.lock().await.event_head() };
+    // per-session cursor starts at the log head (no history replay, v1).
+    // An unreadable head is a store fault: the session ends and the
+    // supervisor respawns it (a cursor guessed from 0 would replay the
+    // whole log into a fresh subscriber).
+    let mut cursor = match { d.store.lock().await.event_head() } {
+        Ok(head) => head,
+        Err(e) => {
+            eprintln!("[host:{name}] event head read failed: {e}; session ends");
+            process.kill();
+            return;
+        }
+    };
     // verdicts this host is waiting on: host-assigned id -> the waiter. The
     // table lives here because the answers arrive here.
     let mut pending: HashMap<u64, oneshot::Sender<Value>> = HashMap::new();
@@ -336,6 +346,17 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                 let rows = {
                     let store = d.store.lock().await;
                     store.events_since(cursor, EVENT_BATCH)
+                };
+                // a failed read is not an empty window: the session ends
+                // rather than advancing a cursor over rows it never saw
+                let rows = match rows {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        eprintln!("[host:{name}] event read failed: {e}; stalling session");
+                        d.host.unregister(name);
+                        process.kill();
+                        return; // supervisor respawns; cursor = new head
+                    }
                 };
                 for (id, e) in &rows {
                     if !hello.schema.receives(&e.kind) {

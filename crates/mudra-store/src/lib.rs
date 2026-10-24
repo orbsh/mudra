@@ -34,6 +34,22 @@ pub mod lifecycle;
 #[cfg(feature = "engine")]
 pub use lifecycle::{TargetInfo, UpsertMode};
 
+/// The store's error: okm's own refusal (ADR-0037/0038), re-exported so
+/// the store's signatures name one type.
+///
+/// Absence and failure are different answers: every read verb here
+/// answers `StoreResult<Option<_>>` / `StoreResult<Vec<_>>`, and every
+/// write verb answers `StoreResult<()>` or `StoreResult<bool>`. mudrad's
+/// verb layer answers `Result<_, String>`, so the daemon maps this into
+/// its own error at the boundary (`.map_err(err_text)?`) — the typed
+/// refusal stays visible all the way to the HTTP edge.
+#[cfg(feature = "engine")]
+pub use okm_core::Error as StoreError;
+
+/// `Result` in the store's spelling — see [`StoreError`].
+#[cfg(feature = "engine")]
+pub type StoreResult<T> = std::result::Result<T, StoreError>;
+
 // ================= keys =================
 
 /// Tag identity: surrogate id only (tree position lives on the row).
@@ -560,59 +576,59 @@ impl MudraStore {
 
 #[cfg(feature = "engine")]
 impl MudraStore {
-    fn state_u64(&self, slot: u8) -> u64 {
-        self.state
-            .get(&StateKey { slot })
-            .map(|s| {
-                let mut b = [0u8; 8];
-                b.copy_from_slice(&s.value.0[..8]);
-                u64::from_be_bytes(b)
-            })
-            .unwrap_or(0)
+    fn state_u64(&self, slot: u8) -> StoreResult<u64> {
+        // `0` is the absent sentinel for every counter/setting slot, so a
+        // missing row is absence — a failed read is the `?`.
+        let Some(s) = self.state.get(&StateKey { slot })? else {
+            return Ok(0);
+        };
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&s.value.0[..8]);
+        Ok(u64::from_be_bytes(b))
     }
 
-    fn put_state_u64(&mut self, slot: u8, v: u64) {
+    fn put_state_u64(&mut self, slot: u8, v: u64) -> StoreResult<()> {
         self.state.put(
             &StateKey { slot },
             &State { value: Bytes(v.to_be_bytes().to_vec()) },
-        );
+        )
     }
 
     /// Allocate the next id from a per-table counter row. Under the
     /// single-writer model this is contention-free — chosen over a
     /// `HighWater` reduce for its simplicity (SCHEMA decision).
-    pub fn next_id(&mut self, slot: u8) -> u64 {
-        let v = self.state_u64(slot) + 1;
-        self.put_state_u64(slot, v);
-        v
+    pub fn next_id(&mut self, slot: u8) -> StoreResult<u64> {
+        let v = self.state_u64(slot)? + 1;
+        self.put_state_u64(slot, v)?;
+        Ok(v)
     }
 
     /// Invalidations seen so far.
-    pub fn epoch(&self) -> u64 {
+    pub fn epoch(&self) -> StoreResult<u64> {
         self.state_u64(state::EPOCH)
     }
 
     /// Bump after every CDP-driven write; return the new epoch. The panel
     /// re-scans on a changed number; the value never rides payloads.
-    pub fn bump_epoch(&mut self) -> u64 {
-        let v = self.state_u64(state::EPOCH) + 1;
-        self.put_state_u64(state::EPOCH, v);
-        v
+    pub fn bump_epoch(&mut self) -> StoreResult<u64> {
+        let v = self.state_u64(state::EPOCH)? + 1;
+        self.put_state_u64(state::EPOCH, v)?;
+        Ok(v)
     }
 
     /// Read a text setting slot; empty when unset.
-    pub fn state_text(&self, slot: u8) -> String {
-        self.state
-            .get(&StateKey { slot })
-            .map(|s| String::from_utf8_lossy(&s.value.0).into_owned())
-            .unwrap_or_default()
+    pub fn state_text(&self, slot: u8) -> StoreResult<String> {
+        match self.state.get(&StateKey { slot })? {
+            Some(s) => Ok(String::from_utf8_lossy(&s.value.0).into_owned()),
+            None => Ok(String::new()),
+        }
     }
 
-    pub fn put_state_text(&mut self, slot: u8, text: &str) {
+    pub fn put_state_text(&mut self, slot: u8, text: &str) -> StoreResult<()> {
         self.state.put(
             &StateKey { slot },
             &State { value: Bytes(text.as_bytes().to_vec()) },
-        );
+        )
     }
 }
 
@@ -628,61 +644,69 @@ impl MudraStore {
 impl MudraStore {
     /// Children of a tag node, rank-ordered (root: `parent_id == -1`).
     /// Soft-deleted nodes drop out here — the tree column never shows them.
-    pub fn tag_children(&self, parent_id: i32) -> Vec<(TagKey, Tag)> {
+    pub fn tag_children(&self, parent_id: i32) -> StoreResult<Vec<(TagKey, Tag)>> {
         let mut rows: Vec<(TagKey, Tag)> = self
             .tags
-            .scan::<ByTagParent>(&parent_id.to_be_bytes())
+            .scan::<ByTagParent>(&parent_id.to_be_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
             .collect();
         rows.sort_by_key(|(_, t)| t.rank);
-        rows
+        Ok(rows)
     }
 
     /// Rows addressed by bare tag name (the `/tags` API semantics).
-    pub fn tag_by_name(&self, name: &str) -> Vec<(TagKey, Tag)> {
-        self.tags
-            .scan::<ByTagName>(name.as_bytes())
+    pub fn tag_by_name(&self, name: &str) -> StoreResult<Vec<(TagKey, Tag)>> {
+        Ok(self
+            .tags
+            .scan::<ByTagName>(name.as_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
-            .collect()
+            .collect())
     }
 
     /// Pages of one instance. Live by default; `include_deleted` widens
     /// to the closed-and-soft-deleted history.
-    pub fn pages_of_instance(&self, instance_id: u32, include_deleted: bool) -> Vec<(PageKey, Page)> {
-        self.pages
-            .scan::<ByInstance>(&instance_id.to_be_bytes())
+    pub fn pages_of_instance(
+        &self,
+        instance_id: u32,
+        include_deleted: bool,
+    ) -> StoreResult<Vec<(PageKey, Page)>> {
+        Ok(self
+            .pages
+            .scan::<ByInstance>(&instance_id.to_be_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| {
                 row.filter(|p| include_deleted || p.deleted_at == 0)
                     .map(|p| (pk.decoded, p))
             })
-            .collect()
+            .collect())
     }
 
     /// Subtree of pages opened by `parent` (CDP openerId sorting).
-    pub fn page_children(&self, parent_id: u64) -> Vec<(PageKey, Page)> {
-        self.pages
-            .scan::<ByPageParent>(&parent_id.to_be_bytes())
+    pub fn page_children(&self, parent_id: u64) -> StoreResult<Vec<(PageKey, Page)>> {
+        Ok(self
+            .pages
+            .scan::<ByPageParent>(&parent_id.to_be_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
-            .collect()
+            .collect())
     }
 
     /// The live row whose CDP target id is exactly `target_id`. Consumers
     /// are CDP-driven (`/open {tabId}`, focus): a target that exists is
     /// an open page, so closed rows do not match. A rebind of target_id
     /// moves the index entry (see lifecycle `upsert_target`).
-    pub fn page_by_target(&self, target_id: &str) -> Option<(PageKey, Page)> {
-        self.pages
-            .scan::<ByTarget>(target_id.as_bytes())
+    pub fn page_by_target(&self, target_id: &str) -> StoreResult<Option<(PageKey, Page)>> {
+        Ok(self
+            .pages
+            .scan::<ByTarget>(target_id.as_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| {
                 row.filter(|p| p.closed_at == 0 && p.deleted_at == 0)
                     .map(|p| (pk.decoded, p))
             })
-            .max_by_key(|(_, p)| p.opened_at)
+            .max_by_key(|(_, p)| p.opened_at))
     }
 
     /// Ranked page recall by a fragment of the addressing text (url or
@@ -700,18 +724,20 @@ impl MudraStore {
     /// No `limit`, deliberately: the ranking must not be cut before the
     /// caller's filters run — the row a context is looking for can sit
     /// below any fixed depth — so the caller's own walk bounds the work.
-    pub fn pages_by_fragment(&self, query: &str) -> Vec<(PageKey, Page)> {
+    pub fn pages_by_fragment(&self, query: &str) -> StoreResult<Vec<(PageKey, Page)>> {
         let tokens = query_tokens(query);
         if tokens.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let rows: Vec<(PageKey, Page)> = self
-            .pages
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.pages.get(&k).map(|p| (k, p)))
-            .filter(|(_, p)| p.deleted_at == 0)
-            .collect();
+        let mut rows: Vec<(PageKey, Page)> = Vec::new();
+        for k in self.pages.scan_keys()? {
+            // a row that vanished mid-walk is absence, not a shorter corpus
+            if let Some(p) = self.pages.get(&k)?
+                && p.deleted_at == 0
+            {
+                rows.push((k, p));
+            }
+        }
         let texts: Vec<(u64, String, String)> = rows
             .iter()
             .map(|(k, p)| {
@@ -721,68 +747,70 @@ impl MudraStore {
             .collect();
         let at: std::collections::HashMap<u64, usize> =
             rows.iter().enumerate().map(|(i, (k, _))| (k.id, i)).collect();
-        token_bm25(&texts, &tokens)
+        Ok(token_bm25(&texts, &tokens)
             .into_iter()
             .map(|(id, _)| rows[at[&id]].clone())
-            .collect()
+            .collect())
     }
 
     /// Instance rows for a situation leaf name.
-    pub fn instance_by_profile(&self, profile: &str) -> Vec<(InstanceKey, Instance)> {
-        self.instances
-            .scan::<ByProfile>(profile.as_bytes())
+    pub fn instance_by_profile(&self, profile: &str) -> StoreResult<Vec<(InstanceKey, Instance)>> {
+        Ok(self
+            .instances
+            .scan::<ByProfile>(profile.as_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| row.map(|r| (pk.decoded, r)))
-            .collect()
+            .collect())
     }
 
     /// Every remembered width, site-ordered (port of `col show`'s SQL
     /// ORDER BY site; the scan yields id order, so re-sort on the name).
-    pub fn site_widths_all(&self) -> Vec<SiteWidth> {
-        let mut rows: Vec<SiteWidth> = self
-            .site_widths
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.site_widths.get(&k))
-            .collect();
+    pub fn site_widths_all(&self) -> StoreResult<Vec<SiteWidth>> {
+        let mut rows: Vec<SiteWidth> = Vec::new();
+        for k in self.site_widths.scan_keys()? {
+            if let Some(row) = self.site_widths.get(&k)? {
+                rows.push(row);
+            }
+        }
         rows.sort_by(|a, b| a.site.cmp(&b.site));
-        rows
+        Ok(rows)
     }
 
     /// Remember (or replace) a site's proportion; returns the bumped
     /// epoch when the stored value actually changed (epoch discipline:
     /// writing the same proportion again is a silent no-op).
-    pub fn site_width_put(&mut self, site: &str, proportion: f64) -> Option<u64> {
+    pub fn site_width_put(&mut self, site: &str, proportion: f64) -> StoreResult<Option<u64>> {
         let q = okm_core::Quant::<4>::new(proportion);
-        if let Some((k, mut row)) = self.site_width(site) {
+        if let Some((k, mut row)) = self.site_width(site)? {
             if row.proportion == q {
-                return None;
+                return Ok(None);
             }
             row.proportion = q;
-            self.site_widths.put(&k, &row);
+            self.site_widths.put(&k, &row)?;
         } else {
-            let k = SiteWidthKey { id: self.next_id(state::SITE_WIDTH_ID) as u32 };
-            self.site_widths.put(&k, &SiteWidth { site: site.to_string(), proportion: q });
+            let k = SiteWidthKey { id: self.next_id(state::SITE_WIDTH_ID)? as u32 };
+            self.site_widths.put(&k, &SiteWidth { site: site.to_string(), proportion: q })?;
         }
-        Some(self.bump_epoch())
+        Ok(Some(self.bump_epoch()?))
     }
 
     /// The SiteWidth row for a host, if remembered.
-    pub fn site_width(&self, site: &str) -> Option<(SiteWidthKey, SiteWidth)> {
-        self.site_widths
-            .scan::<BySite>(site.as_bytes())
+    pub fn site_width(&self, site: &str) -> StoreResult<Option<(SiteWidthKey, SiteWidth)>> {
+        Ok(self
+            .site_widths
+            .scan::<BySite>(site.as_bytes())?
             .into_iter()
-            .find_map(|(pk, row)| row.map(|r| (pk.decoded, r)))
+            .find_map(|(pk, row)| row.map(|r| (pk.decoded, r))))
     }
 
     /// One open-verb visit: bump the History row for `url` (create on
     /// first sight). Visits always count — no epoch-bump discipline here:
     /// History is not a panel-visible collection (nothing re-scans on it),
     /// and the open write's own notification already rides the verb.
-    pub fn history_bump(&mut self, url: &str, title: &str, ts: u64) {
+    pub fn history_bump(&mut self, url: &str, title: &str, ts: u64) -> StoreResult<()> {
         let hit = self
             .history
-            .scan::<ByHistoryUrl>(url.as_bytes())
+            .scan::<ByHistoryUrl>(url.as_bytes())?
             .into_iter()
             .find_map(|(pk, row)| row.map(|r| (pk.decoded, r)));
         match hit {
@@ -792,27 +820,30 @@ impl MudraStore {
                 if !title.is_empty() {
                     row.title = title.to_string();
                 }
-                self.history.put(&k, &row);
+                self.history.put(&k, &row)?;
             }
             None => {
-                let k = HistoryKey { id: self.next_id(state::HISTORY_ID) };
+                let k = HistoryKey { id: self.next_id(state::HISTORY_ID)? };
                 self.history.put(&k, &History {
                     url: url.to_string(),
                     title: title.to_string(),
                     visits: 1,
                     last_at: ts,
-                });
+                })?;
             }
         }
+        Ok(())
     }
 
     /// Every history row (id order; the caller ranks).
-    pub fn history_all(&self) -> Vec<History> {
-        self.history
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.history.get(&k))
-            .collect()
+    pub fn history_all(&self) -> StoreResult<Vec<History>> {
+        let mut rows: Vec<History> = Vec::new();
+        for k in self.history.scan_keys()? {
+            if let Some(h) = self.history.get(&k)? {
+                rows.push(h);
+            }
+        }
+        Ok(rows)
     }
 
     /// The address bar's ranking over the History log. Four legs, fused
@@ -846,21 +877,21 @@ impl MudraStore {
     ///
     /// The empty query keeps the old rule: every row, in visits order —
     /// the bar's first state wants the most-opened addresses.
-    pub fn history_search(&self, query: &str, limit: usize) -> Vec<History> {
+    pub fn history_search(&self, query: &str, limit: usize) -> StoreResult<Vec<History>> {
         let q = query.trim().to_lowercase();
         // one census per query: the scan is the recall, so the rows, their
         // keys and the corpus statistics all come from this pass
-        let rows: Vec<(HistoryKey, History)> = self
-            .history
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.history.get(&k).map(|h| (k, h)))
-            .collect();
+        let mut rows: Vec<(HistoryKey, History)> = Vec::new();
+        for k in self.history.scan_keys()? {
+            if let Some(h) = self.history.get(&k)? {
+                rows.push((k, h));
+            }
+        }
         if q.is_empty() {
             let mut all: Vec<History> = rows.into_iter().map(|(_, h)| h).collect();
             all.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_at.cmp(&a.last_at)));
             all.truncate(limit);
-            return all;
+            return Ok(all);
         }
         let texts: Vec<(u64, String, String)> = rows
             .iter()
@@ -899,7 +930,7 @@ impl MudraStore {
             cands.entry(*id).or_insert_with(|| rows[at[id]].1.clone());
         }
         if cands.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         // ---- per-leg orders (rank 0 = best), stable tiebreaks ----
         let mut visits_order: Vec<u64> = cands.keys().copied().collect();
@@ -930,40 +961,40 @@ impl MudraStore {
             b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
         });
         scored.truncate(limit);
-        scored.iter().map(|(_, id)| cands[id].clone()).collect()
+        Ok(scored.iter().map(|(_, id)| cands[id].clone()).collect())
     }
 
     /// Append one event to the log; returns the assigned id (the live
     /// fan-out rides it — a replayed consumer and a live consumer see
     /// the same id). Append-only: no update or delete path exists, and
     /// the epoch never moves for a log write (panel-invisible collection).
-    pub fn emit_event(&mut self, kind: &str, args: String, at: u64) -> u64 {
-        let id = self.next_id(state::EVENT_ID);
+    pub fn emit_event(&mut self, kind: &str, args: String, at: u64) -> StoreResult<u64> {
+        let id = self.next_id(state::EVENT_ID)?;
         self.events.put(
             &EventKey { id },
             &Event { kind: kind.to_string(), args, at },
-        );
-        id
+        )?;
+        Ok(id)
     }
 
     /// Replay the log after `cursor` (id-ordered, capped). A consumer
     /// owns its checkpoint: it advances the cursor only past the rows it
     /// has durably handled.
-    pub fn events_since(&self, cursor: u64, limit: usize) -> Vec<(u64, Event)> {
-        self.events
-            .scan_keys()
-            .into_iter()
-            .filter(|k| k.id > cursor)
-            .take(limit)
-            .filter_map(|k| self.events.get(&k).map(|e| (k.id, e)))
-            .collect()
+    pub fn events_since(&self, cursor: u64, limit: usize) -> StoreResult<Vec<(u64, Event)>> {
+        let mut out = Vec::new();
+        for k in self.events.scan_keys()?.into_iter().filter(|k| k.id > cursor).take(limit) {
+            if let Some(e) = self.events.get(&k)? {
+                out.push((k.id, e));
+            }
+        }
+        Ok(out)
     }
 
     /// The log's current head id (the counter, no allocation) — an
     /// extension session starts its cursor here: a fresh subscriber does
     /// not replay history (the aura ADR-0014 subscribe rule; a consumer
     /// that wants the past advances its own cursor through `/events`).
-    pub fn event_head(&self) -> u64 {
+    pub fn event_head(&self) -> StoreResult<u64> {
         self.state_u64(state::EVENT_ID)
     }
 
@@ -972,12 +1003,13 @@ impl MudraStore {
     /// One hook by its upsert identity (`name`), through the by_name func
     /// index — the write path's lookup, so the probe encoding cannot drift
     /// from the index's.
-    pub fn hook_by_name(&self, name: &str) -> Option<(HookKey, Hook)> {
-        self.hooks
-            .scan::<ByHookName>(name.as_bytes())
+    pub fn hook_by_name(&self, name: &str) -> StoreResult<Option<(HookKey, Hook)>> {
+        Ok(self
+            .hooks
+            .scan::<ByHookName>(name.as_bytes())?
             .into_iter()
             .filter_map(|(pk, row)| row.map(|h| (pk.decoded, h)))
-            .next()
+            .next())
     }
 
     /// Idempotent upsert on `name`: an existing hook is updated in place
@@ -991,7 +1023,7 @@ impl MudraStore {
         code: &str,
         enabled: u8,
         at: u64,
-    ) -> (u64, bool) {
+    ) -> StoreResult<(u64, bool)> {
         let row = Hook {
             name: name.to_string(),
             matches: matches.to_string(),
@@ -999,83 +1031,90 @@ impl MudraStore {
             enabled,
             updated_at: at,
         };
-        match self.hook_by_name(name) {
+        match self.hook_by_name(name)? {
             Some((k, _)) => {
-                self.hooks.put(&k, &row);
-                (k.id, false)
+                self.hooks.put(&k, &row)?;
+                Ok((k.id, false))
             }
             None => {
-                let k = HookKey { id: self.next_id(state::HOOK_ID) };
-                self.hooks.put(&k, &row);
-                (k.id, true)
+                let k = HookKey { id: self.next_id(state::HOOK_ID)? };
+                self.hooks.put(&k, &row)?;
+                Ok((k.id, true))
             }
         }
     }
 
     /// Every hook, id order (the operator-facing read).
-    pub fn hooks_all(&self) -> Vec<(HookKey, Hook)> {
-        let mut rows: Vec<(HookKey, Hook)> = self
-            .hooks
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.hooks.get(&k).map(|h| (k, h)))
-            .collect();
+    pub fn hooks_all(&self) -> StoreResult<Vec<(HookKey, Hook)>> {
+        let mut rows: Vec<(HookKey, Hook)> = Vec::new();
+        for k in self.hooks.scan_keys()? {
+            if let Some(h) = self.hooks.get(&k)? {
+                rows.push((k, h));
+            }
+        }
         rows.sort_by_key(|(k, _)| k.id);
-        rows
+        Ok(rows)
     }
 
     /// The enabled hooks, id order — exactly what the injection bridge
     /// composes into guarded sources.
-    pub fn hooks_enabled(&self) -> Vec<Hook> {
-        self.hooks_all()
+    pub fn hooks_enabled(&self) -> StoreResult<Vec<Hook>> {
+        Ok(self
+            .hooks_all()?
             .into_iter()
             .filter(|(_, h)| h.enabled == 1)
             .map(|(_, h)| h)
-            .collect()
+            .collect())
     }
 
     /// Delete by name; `false` when there was nothing to delete. The row does
     /// not have to be in hand: `purge` derives its removal set from the STORED
     /// row, so the lookup is only the existence check and the name-to-key hop.
-    pub fn hook_delete_by_name(&mut self, name: &str) -> bool {
-        match self.hook_by_name(name) {
+    pub fn hook_delete_by_name(&mut self, name: &str) -> StoreResult<bool> {
+        match self.hook_by_name(name)? {
             Some((k, _)) => self.hooks.purge(&k),
-            None => false,
+            None => Ok(false),
         }
     }
 
     /// Last-known title for a URL from any live page row (the open verb
     /// uses it to refresh the history label). Full-table scan: acceptable
     /// at page scale, and this runs inside the verb's short lock anyway.
-    pub fn page_title_for_url(&self, url: &str) -> Option<String> {
-        self.pages
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.pages.get(&k))
-            .filter(|p| p.url == url && p.deleted_at == 0 && !p.title.is_empty())
-            .max_by_key(|p| p.opened_at)
-            .map(|p| p.title)
+    pub fn page_title_for_url(&self, url: &str) -> StoreResult<Option<String>> {
+        let mut best: Option<Page> = None;
+        for k in self.pages.scan_keys()? {
+            if let Some(p) = self.pages.get(&k)?
+                && p.url == url
+                && p.deleted_at == 0
+                && !p.title.is_empty()
+                && best.as_ref().is_none_or(|b| p.opened_at > b.opened_at)
+            {
+                best = Some(p);
+            }
+        }
+        Ok(best.map(|p| p.title))
     }
 
     /// Tag ids linked to a page (junction A side: page → tags).
-    pub fn tags_of_page(&self, page: &PageKey) -> Vec<TagKey> {
+    pub fn tags_of_page(&self, page: &PageKey) -> StoreResult<Vec<TagKey>> {
         page.get_tag(&self.page_tags)
     }
 
     /// Pages carrying a tag (junction B side: tag → pages).
-    pub fn pages_of_tag(&self, tag: &TagKey) -> Vec<PageKey> {
-        tag.get_page(&self.page_tags)
+    pub fn pages_of_tag(&self, tag: &TagKey) -> StoreResult<Vec<PageKey>> {
+        Ok(tag
+            .get_page(&self.page_tags)?
             .into_iter()
             .map(|pk| pk.decoded)
-            .collect()
+            .collect())
     }
 
     /// Link a page to a tag (idempotent: junction entries are keyed).
-    pub fn link_page_tag(&mut self, page: &PageKey, tag: &TagKey) {
-        self.page_tags.link(page, tag);
+    pub fn link_page_tag(&mut self, page: &PageKey, tag: &TagKey) -> StoreResult<()> {
+        self.page_tags.link(page, tag)
     }
 
-    pub fn unlink_page_tag(&mut self, page: &PageKey, tag: &TagKey) {
-        self.page_tags.unlink(page, tag);
+    pub fn unlink_page_tag(&mut self, page: &PageKey, tag: &TagKey) -> StoreResult<()> {
+        self.page_tags.unlink(page, tag)
     }
 }

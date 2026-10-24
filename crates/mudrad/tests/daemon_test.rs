@@ -102,6 +102,22 @@ fn config_endpoint_returns_loaded_layers_on_200() {
 }
 
 #[test]
+fn config_endpoint_exposes_grouped_keys_the_extension_reads() {
+    // Contract check on the payload, not on the loader: a daemon built before a
+    // group was mapped served a config with that key missing, and the extension
+    // fell back to a built-in default nobody could see (hint opacity read 0.65
+    // while the file said 0.45 — invisible until someone measured the CSS).
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.kdl");
+    let (status, body): (u16, String) =
+        mudrad::daemon::config_response(&repo, std::path::Path::new("/nonexistent-user.kdl"));
+    assert_eq!(status, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["config"]["hintOpacity"], serde_json::json!(0.45));
+    assert_eq!(v["config"]["hintFontSize"], serde_json::json!(14));
+    assert_eq!(v["config"]["seqTimeout"], serde_json::json!(1200));
+}
+
+#[test]
 fn config_endpoint_surfaces_broken_file_as_500() {
     // A parse error must be loud (Python's `config: {e}` shape) — never
     // a 200 with an empty config the extension would silently ignore.

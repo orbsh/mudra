@@ -253,8 +253,9 @@ pub(crate) async fn run_verb(d: &Arc<Daemon>, path: &str, req: Value) -> Result<
     };
     if out.is_ok() {
         // the store is the epoch authority: publish whatever the verb
-        // (or its runtime side effects) may have bumped
-        d.publish_epoch(store.epoch());
+        // (or its runtime side effects) may have bumped — an unreadable
+        // epoch is an error, not a stale number
+        d.publish_epoch(store.epoch().map_err(|e| e.to_string())?);
     }
     out
 }
@@ -461,16 +462,35 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
             return;
         }
     };
-    // injection is a CDP round trip: awaited OUTSIDE the store lock
-    inject_pages(port, &ctx, &infos, &hook_sources(&d).await).await;
-    {
+    // injection is a CDP round trip: awaited OUTSIDE the store lock. A hook
+    // read that fails is reported and the injection goes on without the
+    // hook sources — the durable arming path (`inject_pages` per new
+    // document) re-reads them, so this is not a permanent loss.
+    let hooks = match hook_sources(&d).await {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[watcher] {ctx}: hook read failed: {e} (injecting without hooks)");
+            Vec::new()
+        }
+    };
+    inject_pages(port, &ctx, &infos, &hooks).await;
+    let baseline = {
         let mut store = d.store.lock().await;
         let mut bumped: Option<u64> = None;
         let mut noop = |_p: u16, _t: &str, _c: &str| {}; // pages injected above
-        session.apply_baseline(&mut store, &infos, &mut noop, &mut |e| bumped = Some(e));
+        let out = session.apply_baseline(&mut store, &infos, &mut noop, &mut |e| bumped = Some(e));
         if let Some(e) = bumped {
             d.publish_epoch(e);
         }
+        out
+    };
+    if let Err(e) = baseline {
+        // the baseline is the watcher's first write: a refusal here means
+        // the store, not the page, is the problem — end the session (the
+        // scheduler retries the instance) instead of watching blind
+        eprintln!("[watcher] {ctx}: baseline write failed: {e}");
+        teardown(&d, instance_id).await;
+        return;
     }
 
     // event loop: await outside the lock, apply inside
@@ -479,17 +499,22 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
             Some(ev) => ev,
             None => break, // stream end = instance gone
         };
-        let created: Vec<String> = {
+        let (created, step) = {
             let mut store = d.store.lock().await;
             let mut injected = Vec::new();
             let mut bumped: Option<u64> = None;
             let mut inject = |_p: u16, t: &str, _c: &str| injected.push(t.to_string());
-            session.on_event(&mut store, &ev, &mut inject, &mut |e| bumped = Some(e));
+            let step = session.on_event(&mut store, &ev, &mut inject, &mut |e| bumped = Some(e));
             if let Some(e) = bumped {
                 d.publish_epoch(e);
             }
-            injected
+            (injected, step)
         };
+        if let Err(e) = step {
+            eprintln!("[watcher] {ctx}: event write failed: {e}");
+            teardown(&d, instance_id).await;
+            return;
+        }
         if !created.is_empty() {
             // created pages get the interception script; resolve ws urls
             // through /json like the Python _inject_page does
@@ -501,7 +526,16 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
                     })
                     .map(cdp::target_info_of)
                     .collect();
-                inject_pages(port, &ctx, &infos, &hook_sources(&d).await).await;
+                // same best-effort hook read as the baseline injection:
+                // reported, and the page injection still happens
+                let hooks = match hook_sources(&d).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("[watcher] {ctx}: hook read failed: {e} (injecting without hooks)");
+                        Vec::new()
+                    }
+                };
+                inject_pages(port, &ctx, &infos, &hooks).await;
             }
         }
     }
@@ -512,7 +546,11 @@ pub async fn watch_instance(d: Arc<Daemon>, instance_id: u32, port: u16, ctx: St
 async fn teardown(d: &Daemon, instance_id: u32) {
     let mut store = d.store.lock().await;
     let mut bumped: Option<u64> = None;
-    WatchSession::teardown(&mut store, instance_id, &mut |e| bumped = Some(e));
+    if let Err(e) = WatchSession::teardown(&mut store, instance_id, &mut |e| bumped = Some(e)) {
+        // nothing to undo: the instance is gone either way, and the next
+        // scheduler round re-reads it. Logged, never hidden.
+        eprintln!("[mudrad] teardown write for instance {instance_id} failed: {e}");
+    }
     if let Some(e) = bumped {
         d.publish_epoch(e);
     }
@@ -550,9 +588,14 @@ catch(e){{console.warn(\"[mudra:hook] \"+{name},e)}}}}}})();",
 /// The composed sources for the currently enabled hooks. A short store
 /// lock, no await held across it — callers are outside the lock (the
 /// injection is a CDP round trip and must stay outside too).
-pub async fn hook_sources(d: &Arc<Daemon>) -> Vec<String> {
+pub async fn hook_sources(d: &Arc<Daemon>) -> Result<Vec<String>, String> {
     let store = d.store.lock().await;
-    store.hooks_enabled().iter().map(hook_source).collect()
+    Ok(store
+        .hooks_enabled()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(hook_source)
+        .collect())
 }
 
 /// inject = per-page CDP round trip (awaited OUTSIDE the store lock):
@@ -601,14 +644,29 @@ pub async fn scheduler(d: Arc<Daemon>) {
         ticker.tick().await;
         let candidates: Vec<(u32, u16, String)> = {
             let store = d.store.lock().await;
-            store
-                .instances
-                .scan_keys()
-                .into_iter()
-                .filter_map(|k| store.instances.get(&k).map(|i| (k.id, i)))
-                .filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid) && i.port > 0)
-                .map(|(id, i)| (id, i.port as u16, i.profile))
-                .collect()
+            let mut out = Vec::new();
+            match store.instances.scan_keys() {
+                Ok(keys) => {
+                    for k in keys {
+                        match store.instances.get(&k) {
+                            Ok(Some(i))
+                                if i.running == 1 && spawn::pid_alive(i.pid) && i.port > 0 =>
+                            {
+                                out.push((k.id, i.port as u16, i.profile));
+                            }
+                            Ok(_) => {}
+                            // a mid-walk refusal ends this round, not the
+                            // loop: the next tick starts over (2s later)
+                            Err(e) => {
+                                eprintln!("[mudrad] scheduler instance read failed: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[mudrad] scheduler instance scan failed: {e}"),
+            }
+            out
         };
         let mut watched = d.watched.lock().await;
         watched.retain(|_, h| !h.is_finished());
@@ -636,7 +694,7 @@ pub async fn run() -> Result<(), String> {
     let _lock = acquire_lock(&home)?; // held for the process lifetime
 
     let store = MudraStore::open(&home.join("store")).map_err(|e| format!("store open: {e}"))?;
-    let current_epoch = store.epoch();
+    let current_epoch = store.epoch().map_err(|e| format!("store epoch: {e}"))?;
     let frontend = std::env::var_os("MUDRA_FRONTEND_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -659,7 +717,10 @@ pub async fn run() -> Result<(), String> {
         niri_socket: niri_socket(),
         // projection of the State DEV_MODE slot; the /dev verb keeps it
         // in sync after every switch (the store stays the fact source)
-        dev_mode: store.state_text(mudra_store::state::DEV_MODE) == "1",
+        dev_mode: store
+            .state_text(mudra_store::state::DEV_MODE)
+            .map_err(|e| format!("store dev_mode: {e}"))?
+            == "1",
     };
     // bare receiver: panel frames execute byte-identical on the engine
     // (no prefix), SCHEMA's ns numbers are the shared contract

@@ -93,7 +93,8 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
             "mudra:page_open",
             json!({ "url": "https://before.test" }).to_string(),
             1,
-        );
+        )
+        .expect("event appended");
     }
 
     // the session under test: spawn → handshake → deliver loop
@@ -173,7 +174,8 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
             "mudra:page_open",
             json!({ "url": "https://live.test" }).to_string(),
             2,
-        );
+        )
+        .expect("event appended");
     }
     d.epoch_tx.send(1).expect("epoch receiver alive");
 

@@ -165,7 +165,7 @@ async fn baseline_sync_injects_pages_and_notifies_epoch_once() {
     // Contract: getTargets first (baseline), inject per page, one epoch
     // notify for the whole batch; openerId backfills through the batch map.
     let (_d, mut store) = mk_store();
-    let inst = store.launch_started(None, "work", 9210, 4242, None, None);
+    let inst = store.launch_started(None, "work", 9210, 4242, None, None).unwrap();
     let addr = start_scripted_cdp(
         vec![
             page_target("T1", "https://a.test", "A", None),
@@ -181,13 +181,13 @@ async fn baseline_sync_injects_pages_and_notifies_epoch_once() {
     let infos: Vec<TargetInfo> = session.start(&conn).await.expect("baseline snapshot");
     assert!(session.ready(), "discovery armed");
     let mut rec = Recorder::default();
-    let epoch = session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    let epoch = session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
 
     assert_eq!(epoch, Some(1), "batch = one epoch bump");
     assert_eq!(rec.injected, vec!["T1", "T2"]); // baseline injects every page
-    assert_eq!(store.pages_of_instance(inst.id, false).len(), 2);
-    let (_, t2) = store.page_by_target("T2").unwrap();
-    let (t1k, _) = store.page_by_target("T1").unwrap();
+    assert_eq!(store.pages_of_instance(inst.id, false).unwrap().len(), 2);
+    let (_, t2) = store.page_by_target("T2").unwrap().unwrap();
+    let (t1k, _) = store.page_by_target("T1").unwrap().unwrap();
     assert_eq!(t2.parent_id, t1k.id); // openerId resolved batch-locally
 }
 
@@ -197,7 +197,7 @@ async fn events_drive_the_store_through_the_daemon_step_shape() {
     // sync only (no re-inject); non-page -> Ignored; destroyed ->
     // close_target + notify. Driven exactly as the daemon task does it.
     let (_d, mut store) = mk_store();
-    let inst = store.launch_started(None, "work", 9211, 4242, None, None);
+    let inst = store.launch_started(None, "work", 9211, 4242, None, None).unwrap();
     let events = vec![
         json!({"method": "Target.targetCreated", "params": {"targetInfo": page_target("T2", "https://c.test", "C", None)}}),
         json!({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "W9", "type": "service_worker", "url": "chrome-extension://x"}}}),
@@ -215,7 +215,7 @@ async fn events_drive_the_store_through_the_daemon_step_shape() {
     let mut session = WatchSession::new(inst.id, addr.port(), "work");
     let infos = session.start(&conn).await.expect("baseline");
     let mut rec = Recorder::default();
-    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
 
     // drain the scripted events as the daemon loop does: await OUTSIDE
     // the store, step INSIDE it
@@ -224,15 +224,15 @@ async fn events_drive_the_store_through_the_daemon_step_shape() {
             .await
             .expect("event arrives")
             .expect("stream open");
-        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
     }
 
     assert_eq!(rec.injected, vec!["T1", "T2"]); // worker skipped, changed not re-injected
-    let (_, t1) = store.page_by_target("T1").expect("changed row");
+    let (_, t1) = store.page_by_target("T1").unwrap().expect("changed row");
     assert_eq!(t1.url, "https://a.test/next"); // infoChanged refreshed
-    assert!(store.page_by_target("T2").is_none()); // destroyed -> out of live view
+    assert!(store.page_by_target("T2").unwrap().is_none()); // destroyed -> out of live view
     assert!(store
-        .pages_of_instance(inst.id, true)
+        .pages_of_instance(inst.id, true).unwrap()
         .iter()
         .any(|(_, p)| p.target_id == "T2" && p.closed_at != 0)); // still in history
     // epochs: baseline, T2 create, T1 change, T2 destroy — consecutive
@@ -245,7 +245,7 @@ async fn events_drive_the_store_through_the_daemon_step_shape() {
         &json!({"method": "Storage.watcher.updated"}),
         &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()),
         &mut |e: u64| rec.epochs.push(e),
-    );
+    ).unwrap();
     assert!(matches!(step, mudrad::watch::Step::Ignored));
 }
 
@@ -258,7 +258,7 @@ async fn open_hand_off_links_the_new_window_to_the_page_that_asked() {
     // A hand-off that does not match (wrong url) must leave the row flat
     // rather than guess — a wrong parent is worse than no nesting.
     let (_d, mut store) = mk_store();
-    let inst = store.launch_started(None, "work", 9211, 4242, None, None);
+    let inst = store.launch_started(None, "work", 9211, 4242, None, None).unwrap();
     let addr = start_scripted_cdp(
         vec![page_target("T1", "https://a.test", "A", None)],
         vec![
@@ -273,8 +273,8 @@ async fn open_hand_off_links_the_new_window_to_the_page_that_asked() {
     let mut session = WatchSession::new(inst.id, addr.port(), "work");
     let infos = session.start(&conn).await.expect("baseline");
     let mut rec = Recorder::default();
-    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
-    let (parent, _) = store.page_by_target("T1").expect("parent row");
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
+    let (parent, _) = store.page_by_target("T1").unwrap().expect("parent row");
 
     let queue = std::sync::Arc::new(std::sync::Mutex::new(vec![
         mudrad::watch::PendingParent {
@@ -298,12 +298,12 @@ async fn open_hand_off_links_the_new_window_to_the_page_that_asked() {
             .await
             .expect("event arrives")
             .expect("stream open");
-        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+        session.on_event(&mut store, &ev, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
     }
 
-    let (_, b) = store.page_by_target("T2").expect("child row");
+    let (_, b) = store.page_by_target("T2").unwrap().expect("child row");
     assert_eq!(b.parent_id, parent.id, "the hand-off lands as the parent link");
-    let (_, c) = store.page_by_target("T3").expect("stale row");
+    let (_, c) = store.page_by_target("T3").unwrap().expect("stale row");
     assert_eq!(c.parent_id, 0, "a stale hand-off must not be claimed");
     assert!(queue.lock().unwrap().is_empty(), "stale entries are pruned");
 }
@@ -316,7 +316,7 @@ async fn disconnect_marks_down_and_notifies_teardown() {
     // event stream ends, the daemon calls teardown: instance down, every
     // open page closed, final epoch notified. The mock hangs up on schedule.
     let (_d, mut store) = mk_store();
-    let inst = store.launch_started(None, "work", 9212, 4242, None, None);
+    let inst = store.launch_started(None, "work", 9212, 4242, None, None).unwrap();
     let addr = start_scripted_cdp(
         vec![page_target("T1", "https://a.test", "A", None)],
         vec![],
@@ -328,7 +328,7 @@ async fn disconnect_marks_down_and_notifies_teardown() {
     let mut session = WatchSession::new(inst.id, addr.port(), "work");
     let infos = session.start(&conn).await.expect("baseline");
     let mut rec = Recorder::default();
-    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e));
+    session.apply_baseline(&mut store, &infos, &mut |_p: u16, t: &str, _c: &str| rec.injected.push(t.to_string()), &mut |e: u64| rec.epochs.push(e)).unwrap();
 
     // the daemon event loop: ends when next_event returns None
     while let Some(_ev) =
@@ -336,14 +336,14 @@ async fn disconnect_marks_down_and_notifies_teardown() {
     {
         // no scripted events; only the hangup matters
     }
-    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e));
+    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e)).unwrap();
 
-    let (_, inst_row) = store.instance_for_context("work").unwrap();
+    let (_, inst_row) = store.instance_for_context("work").unwrap().unwrap();
     assert_eq!(inst_row.running, 0, "disconnect marks the instance down");
-    assert!(store.pages_of_instance(inst.id, false).iter().all(|(_, p)| p.closed_at != 0));
+    assert!(store.pages_of_instance(inst.id, false).unwrap().iter().all(|(_, p)| p.closed_at != 0));
     assert_eq!(rec.injected, vec!["T1"]);
     assert_eq!(rec.epochs.len(), 2, "{:?}", rec.epochs); // baseline + teardown
-    assert_eq!(store.epoch(), *rec.epochs.last().unwrap());
+    assert_eq!(store.epoch().unwrap(), *rec.epochs.last().unwrap());
 }
 
 #[tokio::test]
@@ -353,7 +353,7 @@ async fn command_failure_before_baseline_means_teardown_and_stop() {
     // then drops: start() fails -> the daemon tears down and never
     // touches the pages table.
     let (_d, mut store) = mk_store();
-    let inst = store.launch_started(None, "work", 9213, 4242, None, None);
+    let inst = store.launch_started(None, "work", 9213, 4242, None, None).unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -375,13 +375,13 @@ async fn command_failure_before_baseline_means_teardown_and_stop() {
     assert!(start.is_err(), "dead baseline must not yield a snapshot");
     assert!(!session.ready());
     let mut rec = Recorder::default();
-    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e));
+    WatchSession::teardown(&mut store, inst.id, &mut |e: u64| rec.epochs.push(e)).unwrap();
 
-    let (_, inst_row) = store.instance_for_context("work").unwrap();
+    let (_, inst_row) = store.instance_for_context("work").unwrap().unwrap();
     assert_eq!(inst_row.running, 0);
     assert!(rec.injected.is_empty());
     assert_eq!(rec.epochs.len(), 1); // teardown epoch only
-    assert!(store.pages_of_instance(inst.id, true).is_empty());
+    assert!(store.pages_of_instance(inst.id, true).unwrap().is_empty());
 }
 
 #[test]

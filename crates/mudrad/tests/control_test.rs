@@ -166,16 +166,16 @@ impl Harness {
 /// Seed: situation root + `work` leaf; a running instance for `work`
 /// with one open page (target T1 at https://a.test).
 fn seeded(h: &mut Harness) -> InstanceKey {
-    let sit = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&sit, &Tag { name: "situation".into(), parent_id: -1, ..Default::default() });
-    let work = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&work, &Tag { name: "work".into(), parent_id: sit.id as i32, isolated: 1, ..Default::default() });
+    let sit = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&sit, &Tag { name: "situation".into(), parent_id: -1, ..Default::default() }).unwrap();
+    let work = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&work, &Tag { name: "work".into(), parent_id: sit.id as i32, isolated: 1, ..Default::default() }).unwrap();
 
-    let k = InstanceKey { id: h.store.next_id(state::INSTANCE_ID) as u32 };
+    let k = InstanceKey { id: h.store.next_id(state::INSTANCE_ID).unwrap() as u32 };
     h.store.instances.put(
         &k,
         &Instance { profile: "work".into(), port: 9301, pid: std::process::id(), running: 1, proxy: "http://p:1".into(), extensions: "/e1".into() },
-    );
+    ).unwrap();
     h.store.sync_targets(
         k.id,
         &[mudra_store::TargetInfo {
@@ -186,7 +186,7 @@ fn seeded(h: &mut Harness) -> InstanceKey {
         }],
         1000,
         false,
-    );
+    ).unwrap();
     k
 }
 
@@ -205,16 +205,16 @@ fn open_joins_a_live_instance_without_touching_the_store() {
     // no new instance row, pages untouched until the watcher reports.
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
-    let epoch_before = h.store.epoch();
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
+    let epoch_before = h.store.epoch().unwrap();
 
     let r = h.verb("/open", json!({"url": "https://b.test"})).unwrap();
     assert_eq!(r["mode"], "joined");
     assert_eq!(r["port"], 9301);
     assert_eq!(h.calls(), vec![Call::LaunchJoin { ctx: "work".into(), url: "https://b.test".into() }]);
-    assert_eq!(h.store.epoch(), epoch_before, "the join itself writes no state");
+    assert_eq!(h.store.epoch().unwrap(), epoch_before, "the join itself writes no state");
     // the page is NOT recorded here — CDP/watcher owns the row lifecycle
-    assert_eq!(h.store.pages_of_instance(k.id, false).len(), 1);
+    assert_eq!(h.store.pages_of_instance(k.id, false).unwrap().len(), 1);
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn open_creates_an_instance_when_none_exists() {
     // port in 9200.. range; url bare -> https normalized.
     let mut h = Harness::new();
     let sit = TagKey { id: 1 };
-    h.store.tags.put(&sit, &Tag { name: "situation".into(), parent_id: -1, ..Default::default() });
+    h.store.tags.put(&sit, &Tag { name: "situation".into(), parent_id: -1, ..Default::default() }).unwrap();
     let r = h.verb("/open", json!({"url": "example.com", "ctx": "inbox"})).unwrap();
     assert_eq!(r["mode"], "new");
     assert_eq!(r["ctx"], "inbox");
@@ -231,7 +231,7 @@ fn open_creates_an_instance_when_none_exists() {
     assert!((9200..9400).contains(&port));
     let calls = h.calls();
     assert!(matches!(&calls[0], Call::LaunchNew { ctx, url, proxy: None } if ctx == "inbox" && url == "https://example.com"), "{calls:?}");
-    let (_, inst) = h.store.instance_for_context("inbox").expect("row written");
+    let (_, inst) = h.store.instance_for_context("inbox").expect("store read").expect("row written");
     assert_eq!(inst.running, 1);
     assert_eq!(inst.port as u16, port);
 }
@@ -244,16 +244,16 @@ fn open_replaces_a_dead_instance_row_and_carries_config() {
     let mut h = Harness::new();
     let k = seeded(&mut h);
     // kill the liveness: pid -> nonexistent, running flag left at 1
-    let mut inst = h.store.instances.get(&k).unwrap();
+    let mut inst = h.store.instances.get(&k).unwrap().unwrap();
     inst.pid = u32::MAX;
-    h.store.instances.put(&k, &inst);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.instances.put(&k, &inst).unwrap();
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
 
     let r = h.verb("/open", json!({"url": "https://c.test"})).unwrap();
     assert_eq!(r["mode"], "new", "a dead pid must never be joined");
     let calls = h.calls();
     assert!(matches!(&calls[0], Call::LaunchNew { proxy: Some(p), .. } if p == "http://p:1"), "proxy carried: {calls:?}");
-    let (k2, inst2) = h.store.instance_for_context("work").unwrap();
+    let (k2, inst2) = h.store.instance_for_context("work").unwrap().unwrap();
     assert_eq!(k2, k, "old row reused (id stable)");
     assert_ne!(inst2.pid, u32::MAX);
     assert_eq!(inst2.extensions, "/e1", "extensions carried");
@@ -268,7 +268,7 @@ fn open_applies_remembered_site_width() {
     h.store.site_widths.put(
         &swk,
         &mudra_store::SiteWidth { site: "news.ycombinator.com".into(), proportion: okm_core::Quant::<4>::new(0.618) },
-    );
+    ).unwrap();
     let r = h.verb("/open", json!({"url": "https://news.ycombinator.com/item?id=1", "ctx": "inbox"})).unwrap();
     let pid = r["pid"].as_u64().unwrap() as u32;
     let calls = h.calls();
@@ -308,7 +308,7 @@ fn close_page_targets_the_matching_open_page() {
     let r = h.verb("/close_page", json!({"query": "a.test", "ctx": "work"})).unwrap();
     assert_eq!(r["closed"], "https://a.test/page");
     assert_eq!(h.calls(), vec![Call::CloseTarget { port: 9301, target: "T1".into() }]);
-    assert_eq!(h.store.pages_of_instance(k.id, false)[0].1.closed_at, 0, "row untouched by the verb");
+    assert_eq!(h.store.pages_of_instance(k.id, false).unwrap()[0].1.closed_at, 0, "row untouched by the verb");
     assert!(h.verb("/close_page", json!({"query": "nomatch", "ctx": "work"})).is_err());
 }
 
@@ -331,7 +331,7 @@ fn ctx_switch_validates_and_notifies() {
     seeded(&mut h);
     let r = h.verb("/ctx", json!({"ctx": "work"})).unwrap();
     assert_eq!(r["ctx"], "work");
-    assert_eq!(h.store.state_text(state::CURRENT_CONTEXT), "work");
+    assert_eq!(h.store.state_text(state::CURRENT_CONTEXT).unwrap(), "work");
     let calls = h.calls();
     assert!(matches!(&calls[..], [Call::Notify(_)]));
     assert_eq!(h.verb("/ctx", json!({"ctx": "nope"})), Err("not a situation leaf: \"nope\"".into()));
@@ -345,19 +345,19 @@ fn tag_toggles_through_tab_resolution() {
     // flips added/removed and notifies the new epoch.
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    let t = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&t, &Tag { name: "unread".into(), parent_id: -1, ..Default::default() });
+    let t = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&t, &Tag { name: "unread".into(), parent_id: -1, ..Default::default() }).unwrap();
     h.rt.live_targets.insert((9301, "123".into())); // extension tabId
 
     let r = h.verb("/tag", json!({"tabId": "123", "url": "https://a.test/page", "tag": "unread"})).unwrap();
     assert_eq!(r["action"], "added");
-    let pk = h.store.page_by_target("T1").unwrap().0;
-    assert_eq!(h.store.tags_of_page(&pk), vec![t.clone()]);
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
+    assert_eq!(h.store.tags_of_page(&pk).unwrap(), vec![t.clone()]);
     assert!(h.calls().iter().any(|c| matches!(c, Call::Notify(_))));
 
     let r = h.verb("/tag", json!({"tabId": "123", "url": "https://a.test/page", "tag": "unread"})).unwrap();
     assert_eq!(r["action"], "removed");
-    assert!(h.store.tags_of_page(&pk).is_empty());
+    assert!(h.store.tags_of_page(&pk).unwrap().is_empty());
     let _ = k;
 
     assert!(h.verb("/tag", json!({"tabId": "123", "url": "https://a.test/page", "tag": "ghost"})).is_err(), "unknown tag");
@@ -367,8 +367,8 @@ fn tag_toggles_through_tab_resolution() {
 fn tags_drills_root_and_named_parent() {
     let mut h = Harness::new();
     seeded(&mut h); // situation -> work
-    let inbox = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&inbox, &Tag { name: "inbox".into(), parent_id: 1, ..Default::default() });
+    let inbox = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&inbox, &Tag { name: "inbox".into(), parent_id: 1, ..Default::default() }).unwrap();
     let root = h.verb("/tags", json!({})).unwrap();
     assert_eq!(root["tags"], json!(["situation"]));
     let under = h.verb("/tags", json!({"parent": "situation"})).unwrap();
@@ -398,12 +398,12 @@ fn focus_page_acts_on_both_planes() {
     // pid (best effort: Fake focus never fails, Real logs and moves on).
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    let pk = h.store.page_by_target("T1").unwrap().0;
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
     h.verb("/focus_page", json!({"page_id": pk.id})).unwrap();
     let pid = std::process::id();
     assert_eq!(h.calls(), vec![Call::Activate { port: 9301, target: "T1".into() }, Call::FocusWindow { pid }]);
     // closed page -> not found
-    h.store.close_target(k.id, "T1", 2000);
+    h.store.close_target(k.id, "T1", 2000).unwrap();
     assert!(h.verb("/focus_page", json!({"page_id": pk.id})).is_err());
 }
 
@@ -425,12 +425,12 @@ fn ctx_status_resolves_page_role_with_tag_paths() {
     let k = seeded(&mut h);
     let _ = k;
     h.rt.live_targets.insert((9301, "77".into()));
-    let state_root = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&state_root, &Tag { name: "state".into(), parent_id: -1, ..Default::default() });
-    let unread = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&unread, &Tag { name: "unread".into(), parent_id: state_root.id as i32, ..Default::default() });
-    let pk = h.store.page_by_target("T1").unwrap().0;
-    h.store.link_page_tag(&pk, &unread);
+    let state_root = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&state_root, &Tag { name: "state".into(), parent_id: -1, ..Default::default() }).unwrap();
+    let unread = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&unread, &Tag { name: "unread".into(), parent_id: state_root.id as i32, ..Default::default() }).unwrap();
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
+    h.store.link_page_tag(&pk, &unread).unwrap();
 
     let r = h.verb("/ctx_status", json!({"tabId": "77", "url": "https://a.test/page"})).unwrap();
     assert_eq!(r["role"], "page");
@@ -460,11 +460,11 @@ fn forest_shapes_roots_rank_axis_and_paths() {
     // leaves in id order; current resolves through the same default.
     let mut h = Harness::new();
     let _k = seeded(&mut h); // situation -> work
-    let imp = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&imp, &Tag { name: "importance".into(), parent_id: -1, ..Default::default() });
-    let hi = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&hi, &Tag { name: "high".into(), parent_id: imp.id as i32, rank: 3, ..Default::default() });
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    let imp = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&imp, &Tag { name: "importance".into(), parent_id: -1, ..Default::default() }).unwrap();
+    let hi = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&hi, &Tag { name: "high".into(), parent_id: imp.id as i32, rank: 3, ..Default::default() }).unwrap();
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
 
     let r = h.verb("/forest", json!({})).unwrap();
     assert_eq!(r["current"], "work");
@@ -485,8 +485,8 @@ fn forest_shapes_roots_rank_axis_and_paths() {
 fn forest_drops_deleted_and_their_subtrees_are_orphan_free() {
     let mut h = Harness::new();
     seeded(&mut h);
-    let gone = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&gone, &Tag { name: "gone".into(), parent_id: 1, deleted: 1, ..Default::default() });
+    let gone = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&gone, &Tag { name: "gone".into(), parent_id: 1, deleted: 1, ..Default::default() }).unwrap();
     let r = h.verb("/forest", json!({})).unwrap();
     let kids = r["forest"][0]["children"].as_array().unwrap();
     assert!(kids.iter().all(|c| c["name"] != "gone"));
@@ -498,10 +498,10 @@ fn ctx_pages_includes_closed_rows_with_tags() {
     // come back, position-ordered, tag_ids and closed flag per row.
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    let unread = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&unread, &Tag { name: "unread".into(), parent_id: -1, ..Default::default() });
-    let pk = h.store.page_by_target("T1").unwrap().0;
-    h.store.link_page_tag(&pk, &unread);
+    let unread = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&unread, &Tag { name: "unread".into(), parent_id: -1, ..Default::default() }).unwrap();
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
+    h.store.link_page_tag(&pk, &unread).unwrap();
     // a second page, then close it
     h.store.sync_targets(
         k.id,
@@ -513,9 +513,9 @@ fn ctx_pages_includes_closed_rows_with_tags() {
         }],
         2000,
         false,
-    );
-    let pk2 = h.store.page_by_target("T2").unwrap().0;
-    h.store.close_target(k.id, "T2", 3000);
+    ).unwrap();
+    let pk2 = h.store.page_by_target("T2").unwrap().unwrap().0;
+    h.store.close_target(k.id, "T2", 3000).unwrap();
 
     let r = h.verb("/ctx_pages", json!({"ctx": "work"})).unwrap();
     let pages = r["pages"].as_array().unwrap();
@@ -537,11 +537,11 @@ fn ctx_pages_lists_closed_rows_after_the_instance_stopped() {
     // row — struck through and reopenable — instead of going blank.
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    h.store.close_target(k.id, "T1", 2000);
-    let mut inst = h.store.instances.get(&k).unwrap();
+    h.store.close_target(k.id, "T1", 2000).unwrap();
+    let mut inst = h.store.instances.get(&k).unwrap().unwrap();
     inst.running = 0;
     inst.pid = 0; // the window and its process are gone
-    h.store.instances.put(&k, &inst);
+    h.store.instances.put(&k, &inst).unwrap();
 
     let r = h.verb("/ctx_pages", json!({})).unwrap();
     let rows = r["pages"].as_array().unwrap();
@@ -554,17 +554,17 @@ fn ctx_pages_lists_closed_rows_after_the_instance_stopped() {
 fn set_tags_replaces_whole_set_and_filters_deleted() {
     let mut h = Harness::new();
     seeded(&mut h);
-    let a = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&a, &Tag { name: "a".into(), parent_id: -1, ..Default::default() });
-    let dead = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&dead, &Tag { name: "dead".into(), parent_id: -1, deleted: 1, ..Default::default() });
-    let pk = h.store.page_by_target("T1").unwrap().0;
-    h.store.link_page_tag(&pk, &dead); // pre-existing link to a deleted tag
+    let a = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&a, &Tag { name: "a".into(), parent_id: -1, ..Default::default() }).unwrap();
+    let dead = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&dead, &Tag { name: "dead".into(), parent_id: -1, deleted: 1, ..Default::default() }).unwrap();
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
+    h.store.link_page_tag(&pk, &dead).unwrap(); // pre-existing link to a deleted tag
 
-    let epoch_before = h.store.epoch();
+    let epoch_before = h.store.epoch().unwrap();
     h.verb("/set_tags", json!({"page_id": pk.id, "tag_ids": [a.id, dead.id, 999]})).unwrap();
-    assert_eq!(h.store.tags_of_page(&pk), vec![a]);
-    assert!(h.store.epoch() > epoch_before, "a replace always invalidates");
+    assert_eq!(h.store.tags_of_page(&pk).unwrap(), vec![a]);
+    assert!(h.store.epoch().unwrap() > epoch_before, "a replace always invalidates");
     let calls = h.calls();
     assert!(calls.iter().any(|c| matches!(c, Call::Notify(_))));
     // unknown page -> error, no write
@@ -575,13 +575,13 @@ fn set_tags_replaces_whole_set_and_filters_deleted() {
 fn create_tag_is_idempotent_under_parent_name() {
     let mut h = Harness::new();
     seeded(&mut h);
-    let epoch_before = h.store.epoch();
+    let epoch_before = h.store.epoch().unwrap();
     let r1 = h.verb("/create_tag", json!({"parent_id": 1, "name": "deep"})).unwrap();
     let r2 = h.verb("/create_tag", json!({"parent_id": 1, "name": "deep"})).unwrap();
     assert_eq!(r1, r2, "same id both times");
-    assert_eq!(h.store.tag_by_name("deep").len(), 1);
+    assert_eq!(h.store.tag_by_name("deep").unwrap().len(), 1);
     // created once bumps; the idempotent second call must not notify again
-    assert!(h.store.epoch() > epoch_before);
+    assert!(h.store.epoch().unwrap() > epoch_before);
     assert_eq!(h.calls().iter().filter(|c| matches!(c, Call::Notify(_))).count(), 1);
     assert!(h.verb("/create_tag", json!({"parent_id": 1, "name": "  "})).is_err());
 }
@@ -592,9 +592,9 @@ fn close_by_id_marks_row_and_closes_target() {
     // closed on the machine; double close is a silent no-op (one write).
     let mut h = Harness::new();
     let _k = seeded(&mut h);
-    let pk = h.store.page_by_target("T1").unwrap().0;
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
     h.verb("/close", json!({"page_id": pk.id})).unwrap();
-    let page = h.store.pages.get(&pk).unwrap();
+    let page = h.store.pages.get(&pk).unwrap().unwrap();
     assert_ne!(page.closed_at, 0);
     let got = h.calls();
     assert!(
@@ -602,9 +602,9 @@ fn close_by_id_marks_row_and_closes_target() {
         "{got:?}"
     );
     // second close: no re-mark, no effect, epoch already moved once
-    let epoch = h.store.epoch();
+    let epoch = h.store.epoch().unwrap();
     h.verb("/close", json!({"page_id": pk.id})).unwrap();
-    assert_eq!(h.store.epoch(), epoch, "no-op close stays silent");
+    assert_eq!(h.store.epoch().unwrap(), epoch, "no-op close stays silent");
     assert!(h.calls().is_empty());
     assert!(h.verb("/close", json!({"page_id": 4242})).is_err());
 }
@@ -615,8 +615,8 @@ fn reopen_routes_through_open_and_rejects_deleted() {
     seeded(&mut h);
     // close first, then reopen: the URL re-enters via the normal open
     // path (join on the live instance; revive happens later via watcher)
-    let pk = h.store.page_by_target("T1").unwrap().0;
-    h.store.close_target(1, "T1", 2000);
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
+    h.store.close_target(1, "T1", 2000).unwrap();
     h.verb("/reopen", json!({"page_id": pk.id})).unwrap();
     assert_eq!(h.calls(), vec![Call::LaunchJoin { ctx: "work".into(), url: "https://a.test/page".into() }]);
     // deleted row -> refused
@@ -628,12 +628,12 @@ fn reopen_routes_through_open_and_rejects_deleted() {
 fn delete_requires_closed_first() {
     let mut h = Harness::new();
     seeded(&mut h);
-    let pk = h.store.page_by_target("T1").unwrap().0;
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
     // open page -> the lifecycle invariant refuses (ops.py parity)
     assert!(h.verb("/delete", json!({"page_id": pk.id})).is_err());
-    h.store.close_target(1, "T1", 2000);
+    h.store.close_target(1, "T1", 2000).unwrap();
     h.verb("/delete", json!({"page_id": pk.id})).unwrap();
-    assert_ne!(h.store.pages.get(&pk).unwrap().deleted_at, 0);
+    assert_ne!(h.store.pages.get(&pk).unwrap().unwrap().deleted_at, 0);
     let calls = h.calls();
     assert!(calls.iter().any(|c| matches!(c, Call::Notify(_))));
 }
@@ -644,14 +644,14 @@ fn shot_answers_live_pages_only() {
     // with NO runtime call; a live page forwards (port, targetId).
     let mut h = Harness::new();
     seeded(&mut h);
-    let pk = h.store.page_by_target("T1").unwrap().0;
+    let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
 
     h.rt.shot_answer = Some("data:image/png;base64,QUJD".into());
     let r = h.verb("/shot", json!({"page_id": pk.id})).unwrap();
     assert_eq!(r["data"], "data:image/png;base64,QUJD");
     assert_eq!(h.calls(), vec![Call::Shot { port: 9301, target: "T1".into() }]);
 
-    h.store.close_target(1, "T1", 2000);
+    h.store.close_target(1, "T1", 2000).unwrap();
     let r = h.verb("/shot", json!({"page_id": pk.id})).unwrap();
     assert_eq!(r["data"], Value::Null);
     assert!(h.calls().is_empty(), "no round trip for a closed page");
@@ -663,7 +663,7 @@ fn shot_answers_live_pages_only() {
 fn contexts_lists_leaves_with_open_counts_and_current_mark() {
     let mut h = Harness::new();
     seeded(&mut h); // situation -> work leaf with one open page
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
     let r = h.verb("/contexts", json!({})).unwrap();
     let list = r["contexts"].as_array().unwrap();
     assert_eq!(list.len(), 1);
@@ -691,7 +691,7 @@ fn focus_finds_by_query_and_acts_on_both_planes() {
     // target list order, decides.
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
     // a second page in the same instance whose addressing text matches
     // more of the query ("alpha two" vs "alpha")
     h.store.sync_targets(
@@ -704,7 +704,7 @@ fn focus_finds_by_query_and_acts_on_both_planes() {
         }],
         1100,
         false,
-    );
+    ).unwrap();
     h.rt.live_targets.insert((9301, "T1".into()));
     h.rt.live_targets.insert((9301, "T2".into()));
     let r = h.verb("/focus", json!({"query": "alpha two"})).unwrap();
@@ -740,7 +740,7 @@ fn focus_finds_by_query_and_acts_on_both_planes() {
 fn nav_goto_reloads_the_rightmost_open_page() {
     let mut h = Harness::new();
     let k = seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
     h.rt.page_answers.insert("Page.navigate".into(), json!({"result": {}}));
     let r = h.verb("/nav", json!({"cmd": "goto", "url": "b.test/next"})).unwrap();
     assert_eq!(r["ok"], true);
@@ -758,7 +758,7 @@ fn nav_history_step_jumps_to_the_adjacent_entry() {
     // currentIndex + delta; out-of-range answers an error (no guessing).
     let mut h = Harness::new();
     seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
     h.rt.page_answers.insert(
         "Page.getNavigationHistory".into(),
         // the seam hands back the envelope's `result` — the fake answers
@@ -799,7 +799,7 @@ fn col_remember_snaps_and_show_lists_bands() {
     assert_eq!(r["site"], "a.test");
     assert_eq!(r["proportion"], 0.5);
     assert_eq!(r["band"], "1/2");
-    let (_, row) = h.store.site_width("a.test").expect("row written");
+    let (_, row) = h.store.site_width("a.test").expect("store read").expect("row written");
     assert_eq!(row.proportion.0, 0.5);
 
     let show = h.verb("/col", json!({"action": "show"})).unwrap();
@@ -823,17 +823,18 @@ fn conf_checks_leaf_and_persists_omitted_fields_untouched() {
     let sit = h
         .store
         .tag_by_name("situation")
+        .unwrap()
         .into_iter()
         .find(|(_, t)| t.parent_id == -1)
         .unwrap()
         .0;
-    let personal = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&personal, &Tag { name: "personal".into(), parent_id: sit.id as i32, ..Default::default() });
+    let personal = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&personal, &Tag { name: "personal".into(), parent_id: sit.id as i32, ..Default::default() }).unwrap();
     // 'none'/'default' -> "" is the thin CLI's spelling job (Python
     // cmd_conf resolved it before the write); the backend stays literal.
     let r = h.verb("/conf", json!({"ctx": "personal", "proxy": ""})).unwrap();
     assert_eq!(r["proxy"], Value::Null, "empty string clears the proxy");
-    let (_, inst) = h.store.instance_for_context("personal").expect("stopped row");
+    let (_, inst) = h.store.instance_for_context("personal").expect("store read").expect("stopped row");
     assert_eq!(inst.running, 0);
 }
 
@@ -844,7 +845,7 @@ fn dev_switch_writes_the_slot_and_the_live_seam_flag() {
     assert_eq!(r["dev"], false);
     let r = h.verb("/dev", json!({"on": "1"})).unwrap();
     assert_eq!(r["dev"], true);
-    assert_eq!(h.store.state_text(state::DEV_MODE), "1");
+    assert_eq!(h.store.state_text(state::DEV_MODE).unwrap(), "1");
     assert!(h.rt.dev, "the live Real projection follows without a restart");
     let r = h.verb("/dev", json!({})).unwrap();
     assert_eq!(r["dev"], true);
@@ -857,12 +858,12 @@ fn tag_seed_is_idempotent_and_bumps_only_on_change() {
     // 5 remaining roots + 3 sit leaves + 15 stars + 4 state kids = 27
     let r = h.verb("/tag_seed", json!({})).unwrap();
     assert_eq!(r["seeded"], 27);
-    assert!(h.store.epoch() > 0);
-    let e_before = h.store.epoch();
+    assert!(h.store.epoch().unwrap() > 0);
+    let e_before = h.store.epoch().unwrap();
     h.rt.take_calls();
     let r = h.verb("/tag_seed", json!({})).unwrap();
     assert_eq!(r["seeded"], 0, "a re-run creates nothing");
-    assert_eq!(h.store.epoch(), e_before, "no-op stays silent");
+    assert_eq!(h.store.epoch().unwrap(), e_before, "no-op stays silent");
     assert!(h.calls().iter().all(|c| !matches!(c, Call::Notify(_))), "no notify for no writes");
 }
 
@@ -871,10 +872,10 @@ fn tag_set_assigns_removes_and_stays_silent_on_noops() {
     let mut h = Harness::new();
     let _k = seeded(&mut h);
     let pk = PageKey { id: 1 };
-    let work = h.store.tag_by_name("work").into_iter().next().unwrap().0;
+    let work = h.store.tag_by_name("work").unwrap().into_iter().next().unwrap().0;
     let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": true})).unwrap();
     assert_eq!(r["changed"], true);
-    assert!(h.store.tags_of_page(&pk).contains(&work));
+    assert!(h.store.tags_of_page(&pk).unwrap().contains(&work));
 
     h.rt.take_calls();
     let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": true})).unwrap();
@@ -883,7 +884,7 @@ fn tag_set_assigns_removes_and_stays_silent_on_noops() {
 
     let r = h.verb("/tag_set", json!({"page_id": 1, "tag_id": work.id, "on": false})).unwrap();
     assert_eq!(r["changed"], true);
-    assert!(h.store.tags_of_page(&pk).is_empty());
+    assert!(h.store.tags_of_page(&pk).unwrap().is_empty());
 
     let e = h.verb("/tag_set", json!({"page_id": 999, "tag_id": work.id})).unwrap_err();
     assert!(e.contains("page 999 not found"), "{e}");
@@ -894,7 +895,7 @@ fn sort_writes_the_closed_choice() {
     let mut h = Harness::new();
     let r = h.verb("/sort", json!({"kind": "mru"})).unwrap();
     assert_eq!(r["sort"], "mru");
-    assert_eq!(h.store.state_text(state::SORT), "mru");
+    assert_eq!(h.store.state_text(state::SORT).unwrap(), "mru");
     let e = h.verb("/sort", json!({"kind": "bogus"})).unwrap_err();
     assert!(e.contains("unknown sort kind"), "{e}");
 }
@@ -911,7 +912,7 @@ fn panel_focus_without_a_window_spawns_one() {
     h.rt.take_calls();
     let r = h.verb("/panel", json!({"action": "focus"})).unwrap();
     assert_eq!(r["spawned"], 900001, "no window up -> spawn fallback");
-    assert_eq!(h.store.state_text(state::PANEL_PID), "900001");
+    assert_eq!(h.store.state_text(state::PANEL_PID).unwrap(), "900001");
     assert!(matches!(h.calls()[0], Call::Panel));
 }
 
@@ -966,15 +967,15 @@ fn open_records_history_visits_without_epoch_bump() {
     // is for collections the panel re-scans.
     let mut h = Harness::new();
     seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
-    let epoch_before = h.store.epoch();
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
+    let epoch_before = h.store.epoch().unwrap();
 
     h.verb("/open", json!({"url": "https://b.test"})).unwrap();
     h.verb("/open", json!({"url": "https://b.test"})).unwrap();
-    let rows = h.store.history_all();
+    let rows = h.store.history_all().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].visits, 2);
-    assert_eq!(h.store.epoch(), epoch_before, "history writes do not bump the epoch");
+    assert_eq!(h.store.epoch().unwrap(), epoch_before, "history writes do not bump the epoch");
 }
 
 #[test]
@@ -984,9 +985,9 @@ fn open_history_carry_from_reopen_of_watched_page() {
     // updates the history label).
     let mut h = Harness::new();
     seeded(&mut h);
-    h.store.put_state_text(state::CURRENT_CONTEXT, "work");
+    h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
     h.verb("/open", json!({"url": "https://a.test/page"})).unwrap();
-    let rows = h.store.history_all();
+    let rows = h.store.history_all().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].title, "Alpha");
 }
@@ -998,16 +999,16 @@ fn visit_resolves_the_opening_verb_input_and_records_it() {
     // row). /visit is that daemon half: same normalizer as /open, a real
     // visit count, no epoch bump, no runtime call (nothing spawns).
     let mut h = Harness::new();
-    let epoch_before = h.store.epoch();
+    let epoch_before = h.store.epoch().unwrap();
 
     let r = h.verb("/visit", json!({ "url": "bing" })).unwrap();
     assert_eq!(r["url"], "https://bing.com", "a bare word means its .com");
     h.verb("/visit", json!({ "url": "https://bing.com" })).unwrap();
 
-    let rows = h.store.history_all();
+    let rows = h.store.history_all().unwrap();
     assert_eq!(rows.len(), 1, "one row per address, visits accumulate: {rows:?}");
     assert_eq!(rows[0].visits, 2);
-    assert_eq!(h.store.epoch(), epoch_before, "history writes do not bump the epoch");
+    assert_eq!(h.store.epoch().unwrap(), epoch_before, "history writes do not bump the epoch");
     assert!(h.calls().is_empty(), "no window is spawned by a visit");
     assert_eq!(h.verb("/visit", json!({})), Err("need url".into()));
 }
@@ -1015,13 +1016,13 @@ fn visit_resolves_the_opening_verb_input_and_records_it() {
 #[test]
 fn history_verb_ranks_by_fused_score() {
     let mut h = Harness::new();
-    let epoch_before = h.store.epoch();
+    let epoch_before = h.store.epoch().unwrap();
     // seed history directly on the store (visits semantics live in /open,
     // the verb under test is the read/rank surface).
-    h.store.history_bump("https://news.ycombinator.com", "Hacker News", 1);
-    h.store.history_bump("https://github.com/orbsh", "orbsh GitHub", 1);
+    h.store.history_bump("https://news.ycombinator.com", "Hacker News", 1).unwrap();
+    h.store.history_bump("https://github.com/orbsh", "orbsh GitHub", 1).unwrap();
     for _ in 0..3 {
-        h.store.history_bump("https://github.com/orbsh", "", 2);
+        h.store.history_bump("https://github.com/orbsh", "", 2).unwrap();
     }
 
     let r = h.verb("/history", json!({"query": "git"})).unwrap();
@@ -1030,7 +1031,7 @@ fn history_verb_ranks_by_fused_score() {
     assert_eq!(c[0]["url"], "https://github.com/orbsh");
     assert_eq!(c[0]["visits"], 4);
     // read-only verb: no epoch write
-    assert_eq!(h.store.epoch(), epoch_before);
+    assert_eq!(h.store.epoch().unwrap(), epoch_before);
     // limit clamps
     let r = h.verb("/history", json!({"query": "", "limit": 1})).unwrap();
     assert_eq!(r["candidates"].as_array().unwrap().len(), 1);
@@ -1060,11 +1061,11 @@ fn events_verb_pages_the_log_by_consumer_cursor() {
         }],
         5000,
         true,
-    );
-    let pk = h.store.page_by_target("T5").unwrap().0;
-    let t = mudra_store::TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() });
-    h.store.page_tag_toggle(&pk, &t, 6000);
+    ).unwrap();
+    let pk = h.store.page_by_target("T5").unwrap().unwrap().0;
+    let t = mudra_store::TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() }).unwrap();
+    h.store.page_tag_toggle(&pk, &t, 6000).unwrap();
 
     let r = h.verb("/events", json!({"limit": 1})).unwrap();
     assert_eq!(r["events"].as_array().unwrap().len(), 1);
@@ -1106,12 +1107,12 @@ fn events_tail_reads_the_newest_rows_and_reports_head() {
         }],
         5000,
         true,
-    );
-    let pk = h.store.page_by_target("T5").unwrap().0;
-    let t = TagKey { id: h.store.next_id(state::TAG_ID) as u32 };
-    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() });
-    h.store.page_tag_toggle(&pk, &t, 6000);
-    h.store.close_target(k.id, "T5", 7000);
+    ).unwrap();
+    let pk = h.store.page_by_target("T5").unwrap().unwrap().0;
+    let t = TagKey { id: h.store.next_id(state::TAG_ID).unwrap() as u32 };
+    h.store.tags.put(&t, &Tag { name: "unread".into(), ..Default::default() }).unwrap();
+    h.store.page_tag_toggle(&pk, &t, 6000).unwrap();
+    h.store.close_target(k.id, "T5", 7000).unwrap();
 
     let all = h.verb("/events", json!({})).unwrap();
     assert_eq!(all["head"], 3);
@@ -1205,9 +1206,9 @@ fn hook_verbs_upsert_list_delete_and_reinject_into_live_pages() {
     assert_eq!(pushed, 2, "one source = two calls (arm + evaluate)");
 
     // hooks are panel-invisible: no epoch movement
-    let e0 = h.store.epoch();
+    let e0 = h.store.epoch().unwrap();
     h.verb("/hook_set", json!({ "name": "quiet", "code": "3;" })).unwrap();
-    assert_eq!(h.store.epoch(), e0);
+    assert_eq!(h.store.epoch().unwrap(), e0);
 
     // delete removes it (and the second delete is a no-op)
     let out = h.verb("/hook_delete", json!({ "name": "adfree" })).unwrap();

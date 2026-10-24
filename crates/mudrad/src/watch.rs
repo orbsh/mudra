@@ -121,6 +121,12 @@ pub enum Step {
     Ignored,
 }
 
+/// The store's typed refusal, in the watcher's `String` error channel
+/// (the same mapping the verb layer uses — ADR-0037 keeps the sentence).
+fn serr(e: mudra_store::StoreError) -> String {
+    e.to_string()
+}
+
 impl WatchSession {
     pub fn new(instance_id: u32, port: u16, ctx: &str) -> Self {
         WatchSession { instance_id, port, ctx: ctx.to_string(), pending: None, discovery_enabled: false }
@@ -142,7 +148,7 @@ impl WatchSession {
 
     /// Phase 2 (writes only, no awaits): apply the baseline snapshot —
     /// inject per page (interception script), one batched sync, one bump.
-    pub fn apply_baseline<F, N>(&self, store: &mut MudraStore, infos: &[TargetInfo], inject: &mut F, notify: &mut N) -> Option<u64>
+    pub fn apply_baseline<F, N>(&self, store: &mut MudraStore, infos: &[TargetInfo], inject: &mut F, notify: &mut N) -> Result<Option<u64>, String>
     where
         F: FnMut(u16, &str, &str),
         N: FnMut(u64),
@@ -150,14 +156,18 @@ impl WatchSession {
         for t in infos {
             inject(self.port, &t.target_id, &self.ctx);
         }
-        let epoch = store.sync_targets(self.instance_id, infos, now_ms(), false)?;
+        // absence (an empty batch wrote nothing) stays `None`; a refused
+        // write is the `Err` the caller must act on
+        let Some(epoch) = store.sync_targets(self.instance_id, infos, now_ms(), false).map_err(serr)? else {
+            return Ok(None);
+        };
         notify(epoch);
-        Some(epoch)
+        Ok(Some(epoch))
     }
 
     /// Apply one event envelope to the store (no awaits inside). The
     /// daemon feeds it while holding the store lock, then releases.
-    pub fn on_event<F, N>(&self, store: &mut MudraStore, ev: &Value, inject: &mut F, notify: &mut N) -> Step
+    pub fn on_event<F, N>(&self, store: &mut MudraStore, ev: &Value, inject: &mut F, notify: &mut N) -> Result<Step, String>
     where
         F: FnMut(u16, &str, &str),
         N: FnMut(u64),
@@ -173,18 +183,18 @@ impl WatchSession {
                     .map(|t| page_infos(&Value::Array(vec![t.clone()])))
                     .unwrap_or_default();
                 if infos.is_empty() {
-                    return Step::Ignored;
+                    return Ok(Step::Ignored);
                 }
                 if created {
                     inject(self.port, &infos[0].target_id, &self.ctx);
                 }
-                if let Some(e) = store.sync_targets(self.instance_id, &infos, now_ms(), true) {
+                if let Some(e) = store.sync_targets(self.instance_id, &infos, now_ms(), true).map_err(serr)? {
                     epochs.push(e);
                     notify(e);
                 }
                 // a window mudrad spawned for a page: CDP has no openerId for
                 // it, so take /open's hand-off (url + port) as the parent link
-                self.link_pending(store, &infos[0]);
+                self.link_pending(store, &infos[0])?;
             }
             Some("Target.targetDestroyed") => {
                 let target_id = ev
@@ -192,14 +202,14 @@ impl WatchSession {
                     .and_then(|p| p.get("targetId"))
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if let Some(e) = store.close_target(self.instance_id, target_id, now_ms()) {
+                if let Some(e) = store.close_target(self.instance_id, target_id, now_ms()).map_err(serr)? {
                     epochs.push(e);
                     notify(e);
                 }
             }
-            _ => return Step::Ignored,
+            _ => return Ok(Step::Ignored),
         }
-        Step::Handled { epochs }
+        Ok(Step::Handled { epochs })
     }
 
     /// Claim `/open`'s hand-off for a freshly created page: the window the
@@ -210,11 +220,11 @@ impl WatchSession {
     /// its parent from `sync_targets`, and guessing there would overwrite
     /// real knowledge with a url match. Never fatal: an unmatched or stale
     /// hand-off just leaves the row flat, which is what it used to be.
-    fn link_pending(&self, store: &mut MudraStore, info: &TargetInfo) {
+    fn link_pending(&self, store: &mut MudraStore, info: &TargetInfo) -> Result<(), String> {
         if !info.opener_id.is_empty() {
-            return;
+            return Ok(());
         }
-        let Some(queue) = &self.pending else { return };
+        let Some(queue) = &self.pending else { return Ok(()) };
         let parent = {
             let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
             let now = now_ms();
@@ -223,18 +233,22 @@ impl WatchSession {
                 .rposition(|p| p.port == self.port && p.url == info.url)
                 .map(|i| q.remove(i).parent)
         };
-        let Some(parent) = parent else { return };
-        let Some((child, _)) = store.page_by_target(&info.target_id) else { return };
-        store.set_parent_once(&child, &PageKey { id: parent });
+        let Some(parent) = parent else { return Ok(()) };
+        let Some((child, _)) = store.page_by_target(&info.target_id).map_err(serr)? else {
+            return Ok(());
+        };
+        store.set_parent_once(&child, &PageKey { id: parent }).map_err(serr)?;
+        Ok(())
     }
 
     /// The unified teardown: instance down, all pages closed, one notify.
     /// Public so the daemon's stream-end branch (event loop exits) can
     /// call it without consuming the session.
-    pub fn teardown<N: FnMut(u64)>(store: &mut MudraStore, instance_id: u32, notify: &mut N) {
-        if let Some(epoch) = store.mark_down(instance_id, now_ms()) {
+    pub fn teardown<N: FnMut(u64)>(store: &mut MudraStore, instance_id: u32, notify: &mut N) -> Result<(), String> {
+        if let Some(epoch) = store.mark_down(instance_id, now_ms()).map_err(serr)? {
             notify(epoch);
         }
+        Ok(())
     }
 
     /// Whether the baseline finished and discovery is live (daemon's

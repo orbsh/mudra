@@ -42,12 +42,29 @@ impl UiState {
 
     fn put(&self, key: &[u8], value: Vec<u8>) {
         if let Some(s) = &self.store {
-            s.put(key.to_vec(), value);
+            // The write side is fallible too (ADR-0039): the cache degrades the
+            // same way a failed read does — never panics, never breaks the view,
+            // and says the refusal on the console instead of dropping it.
+            if let Err(e) = s.put(key.to_vec(), value) {
+                web_sys::console::warn_1(&format!("ui-state write: {e}").into());
+            }
         }
     }
 
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.store.as_ref().and_then(|s| s.get(key))
+        let s = self.store.as_ref()?;
+        // okm's Store::get answers `Result<Option<_>>` (ADR-0038): `Ok(None)` is
+        // "never saved" and the defaults win. A backend that could not answer is
+        // a different fact — the cache still degrades (never panics, never breaks
+        // the view), but the refusal is said on the console instead of being
+        // read as an absent key.
+        match s.get(key) {
+            Ok(v) => v,
+            Err(e) => {
+                web_sys::console::warn_1(&format!("ui-state read: {e}").into());
+                None
+            }
+        }
     }
 
     // ---- loads (defaults when absent/garbage: cache never breaks the view) ----

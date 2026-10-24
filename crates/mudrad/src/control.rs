@@ -91,31 +91,32 @@ impl<'a, R: Runtime> Controller<'a, R> {
         }
     }
 
-    fn current_ctx(&self) -> String {
-        let t = self.store.state_text(state::CURRENT_CONTEXT);
-        if t.is_empty() { "inbox".into() } else { t } // DEFAULT_CONTEXT
+    fn current_ctx(&self) -> Result<String, String> {
+        let t = self.store.state_text(state::CURRENT_CONTEXT).map_err(serr)?;
+        if t.is_empty() { Ok("inbox".into()) } else { Ok(t) } // DEFAULT_CONTEXT
     }
 
     /// tabId -> owning ctx: the extension's chrome tabId is not a CDP
     /// targetId (Python lesson), so probe each running instance's /json
     /// first, then fall back to URL reverse lookup.
-    fn ctx_for_tab(&mut self, tab_id: &str, url: Option<&str>) -> Option<String> {
+    fn ctx_for_tab(&mut self, tab_id: &str, url: Option<&str>) -> Result<Option<String>, String> {
         if !tab_id.is_empty() {
-            for (k, inst) in self.running_instances() {
-                let _ = k;
+            for (_, inst) in self.running_instances()? {
                 if self.rt.target_exists(inst.port as u16, tab_id) {
-                    return Some(inst.profile);
+                    return Ok(Some(inst.profile));
                 }
             }
         }
-        self.ctx_for_url(url?)
+        // no url to reverse-lookup: nothing names a context (absence)
+        let Some(url) = url else { return Ok(None) };
+        self.ctx_for_url(url)
     }
     /// URL -> ctx when the owning instance is unambiguous among open pages.
-    fn ctx_for_url(&self, url: &str) -> Option<String> {
+    fn ctx_for_url(&self, url: &str) -> Result<Option<String>, String> {
         let prefix = url.split('#').next().unwrap_or(url);
         let mut profiles: Vec<String> = Vec::new();
-        for (k, inst) in self.running_instances() {
-            for (_, p) in self.store.pages_of_instance(k.id, false) {
+        for (k, inst) in self.running_instances()? {
+            for (_, p) in self.store.pages_of_instance(k.id, false).map_err(serr)? {
                 if p.closed_at == 0
                     && p.url.starts_with(prefix)
                     && !profiles.contains(&inst.profile)
@@ -124,17 +125,20 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 }
             }
         }
-        (profiles.len() == 1).then(|| profiles.remove(0))
+        Ok((profiles.len() == 1).then(|| profiles.remove(0)))
     }
 
-    fn running_instances(&self) -> Vec<(mudra_store::InstanceKey, mudra_store::Instance)> {
-        self.store
-            .instances
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.store.instances.get(&k).map(|i| (k, i)))
-            .filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid)) // zombie-safe
-            .collect()
+    fn running_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
+        let mut out = Vec::new();
+        for k in self.store.instances.scan_keys().map_err(serr)? {
+            if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+                && i.running == 1
+                && spawn::pid_alive(i.pid) // zombie-safe
+            {
+                out.push((k, i));
+            }
+        }
+        Ok(out)
     }
 
     /// Every instance row, live or stopped. The panel's page list is history:
@@ -142,21 +146,24 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// — and later its whole context — is gone, so liveness must not decide
     /// what the list contains. Closing the last window stops the instance, and
     /// a running-only scan made the list go blank exactly then.
-    fn all_instances(&self) -> Vec<(mudra_store::InstanceKey, mudra_store::Instance)> {
-        self.store
-            .instances
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.store.instances.get(&k).map(|i| (k, i)))
-            .collect()
+    fn all_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
+        let mut out = Vec::new();
+        for k in self.store.instances.scan_keys().map_err(serr)? {
+            if let Some(i) = self.store.instances.get(&k).map_err(serr)? {
+                out.push((k, i));
+            }
+        }
+        Ok(out)
     }
 
     /// The live instance row for a context (running=1 AND pid actually
     /// alive — the join-path blood lesson: DB flags drift, /proc decides).
-    fn alive_instance_for(&self, ctx: &str) -> Option<(mudra_store::InstanceKey, mudra_store::Instance)> {
-        self.store
+    fn alive_instance_for(&self, ctx: &str) -> Result<Option<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
+        Ok(self
+            .store
             .instance_for_context(ctx)
-            .filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid))
+            .map_err(serr)?
+            .filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid)))
     }
 
     // ================= verbs =================
@@ -186,13 +193,18 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let url = spawn::normalize_url(raw);
         let ctx = match body.get("ctx").and_then(Value::as_str) {
             Some(c) => c.to_string(),
-            None => self.ctx_for_tab(
-                tab_text(body.get("tabId")).as_str(),
-                body.get("url").and_then(Value::as_str),
-            )
-            .unwrap_or_else(|| self.current_ctx()),
+            None => {
+                let by_tab = self.ctx_for_tab(
+                    tab_text(body.get("tabId")).as_str(),
+                    body.get("url").and_then(Value::as_str),
+                )?;
+                match by_tab {
+                    Some(c) => c,
+                    None => self.current_ctx()?,
+                }
+            }
         };
-        let inst = self.store.instance_for_context(&ctx);
+        let inst = self.store.instance_for_context(&ctx).map_err(serr)?;
         // who asked: the only place the parent link can come from — a window
         // mudrad spawns has no CDP openerId. The extension sends its own url
         // (`from`); the chrome tab id it also sends is NOT a CDP target id, so
@@ -204,29 +216,32 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 if tab.is_empty() {
                     None
                 } else {
-                    self.store.page_by_target(&tab).map(|(k, _)| k.id)
+                    self.store.page_by_target(&tab).map_err(serr)?.map(|(k, _)| k.id)
                 }
             };
-            by_tab.or_else(|| {
-                let (k, _) = inst.as_ref()?;
-                if from.is_empty() {
-                    return None;
-                }
-                self.store
-                    .pages_of_instance(k.id, false)
-                    .into_iter()
-                    .filter(|(_, p)| p.closed_at == 0 && p.url == from)
-                    .max_by_key(|(pk, _)| pk.id)
-                    .map(|(pk, _)| pk.id)
-            })
+            match by_tab {
+                Some(id) => Some(id),
+                // no tab id: the extension's own url names the page it came from
+                None => match inst.as_ref() {
+                    Some((k, _)) if !from.is_empty() => self
+                        .store
+                        .pages_of_instance(k.id, false)
+                        .map_err(serr)?
+                        .into_iter()
+                        .filter(|(_, p)| p.closed_at == 0 && p.url == from)
+                        .max_by_key(|(pk, _)| pk.id)
+                        .map(|(pk, _)| pk.id),
+                    _ => None,
+                },
+            }
         };
         // alive? join. dead? new instance reusing the old row's config.
         let alive = inst.as_ref().filter(|(_, i)| i.running == 1 && spawn::pid_alive(i.pid));
         if let Some((_, i)) = alive {
             let (port, proxy, ext) = (i.port as u16, or_none(&i.proxy), or_none(&i.extensions));
             self.rt.launch_join(&ctx, &url, proxy, ext).map_err(|e| e.to_string())?;
-            let title = self.store.page_title_for_url(&url).unwrap_or_default();
-            self.store.history_bump(&url, &title, crate::watch::now_ms());
+            let title = self.store.page_title_for_url(&url).map_err(serr)?.unwrap_or_default();
+            self.store.history_bump(&url, &title, crate::watch::now_ms()).map_err(serr)?;
             self.hand_off_parent(parent, port, &url);
             return Ok(json!({"mode": "joined", "port": port, "ctx": ctx}));
         }
@@ -238,12 +253,14 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let reuse = inst.as_ref().map(|(k, _)| k.clone());
         let port = spawn::free_port(9200, 200).map_err(|e| e.to_string())?;
         let pid = self.rt.launch_new(&ctx, &url, port, proxy.as_deref(), ext.as_deref())?;
-        self.store.launch_started(reuse.as_ref(), &ctx, port as u32, pid, proxy.as_deref(), ext.as_deref());
+        self.store
+            .launch_started(reuse.as_ref(), &ctx, port as u32, pid, proxy.as_deref(), ext.as_deref())
+            .map_err(serr)?;
         // remembered site width: spawn side effect (blocking, 3s budget)
-        if let Some((_, sw)) = self.store.site_width(&mudra_store::url_site(&url)) {
+        if let Some((_, sw)) = self.store.site_width(&mudra_store::url_site(&url)).map_err(serr)? {
             self.rt.apply_site_width(pid, sw.proportion.0);
         }
-        self.store.history_bump(&url, "", crate::watch::now_ms());
+        self.store.history_bump(&url, "", crate::watch::now_ms()).map_err(serr)?;
         self.hand_off_parent(parent, port, &url);
         Ok(json!({"mode": "new", "port": port, "pid": pid, "ctx": ctx}))
     }
@@ -261,8 +278,8 @@ impl<'a, R: Runtime> Controller<'a, R> {
             return Err("need url".into());
         }
         let url = spawn::normalize_url(raw);
-        let title = self.store.page_title_for_url(&url).unwrap_or_default();
-        self.store.history_bump(&url, &title, crate::watch::now_ms());
+        let title = self.store.page_title_for_url(&url).map_err(serr)?.unwrap_or_default();
+        self.store.history_bump(&url, &title, crate::watch::now_ms()).map_err(serr)?;
         Ok(json!({ "url": url }))
     }
 
@@ -273,7 +290,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn history(&self, body: &Value) -> Result<Value, String> {
         let query = body.get("query").and_then(Value::as_str).unwrap_or_default();
         let limit = body.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
-        let cands = self.store.history_search(query, limit);
+        let cands = self.store.history_search(query, limit).map_err(serr)?;
         Ok(json!({"candidates": cands
             .iter()
             .map(|h| json!({"url": h.url, "title": h.title, "visits": h.visits}))
@@ -294,7 +311,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// (append-only, no delete path), so `head - N` is the cursor. The
     /// `cursor` contract is untouched.
     pub fn events(&self, body: &Value) -> Result<Value, String> {
-        let head = self.store.event_head();
+        let head = self.store.event_head().map_err(serr)?;
         let (cursor, limit) = match body.get("tail").and_then(Value::as_u64) {
             Some(n) => {
                 let n = n.clamp(1, 500);
@@ -305,7 +322,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 body.get("limit").and_then(Value::as_u64).unwrap_or(100).clamp(1, 500) as usize,
             ),
         };
-        let rows = self.store.events_since(cursor, limit);
+        let rows = self.store.events_since(cursor, limit).map_err(serr)?;
         Ok(json!({"events": rows
             .iter()
             .map(|(id, e)| json!({"id": id, "kind": e.kind, "args": serde_json::from_str::<Value>(&e.args).unwrap_or(Value::String(e.args.clone())), "at": e.at}))
@@ -323,12 +340,15 @@ impl<'a, R: Runtime> Controller<'a, R> {
             return Err("need url".into());
         }
         let url = spawn::normalize_url(raw);
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
         let (_, inst) = self
-            .alive_instance_for(&ctx)
+            .alive_instance_for(&ctx)?
             .ok_or(format!("ctx {ctx:?} not running; use open first"))?;
         self.rt.launch_join(&ctx, &url, or_none(&inst.proxy), or_none(&inst.extensions))?;
-        self.store.history_bump(&url, "", crate::watch::now_ms());
+        self.store.history_bump(&url, "", crate::watch::now_ms()).map_err(serr)?;
         Ok(json!({"mode": "joined", "port": inst.port, "ctx": ctx}))
     }
 
@@ -339,13 +359,17 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if query.is_empty() {
             return Err("need query".into());
         }
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
         let (k, inst) = self
-            .alive_instance_for(&ctx)
+            .alive_instance_for(&ctx)?
             .ok_or(format!("ctx {ctx:?} not running"))?;
         let hit = self
             .store
             .pages_of_instance(k.id, false)
+            .map_err(serr)?
             .into_iter()
             .find(|(_, p)| p.closed_at == 0 && (p.url.contains(query) || p.title.contains(query)))
             .ok_or(format!("no open page in ctx {ctx:?} matching {query:?}"))?;
@@ -355,9 +379,12 @@ impl<'a, R: Runtime> Controller<'a, R> {
 
     /// POST /close_ctx {ctx?} — SIGTERM the instance; watcher teardown follows.
     pub fn close_ctx(&mut self, body: &Value) -> Result<Value, String> {
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
         let (_, inst) = self
-            .alive_instance_for(&ctx)
+            .alive_instance_for(&ctx)?
             .ok_or(format!("ctx {ctx:?} not running"))?;
         self.rt.kill(inst.pid)?;
         Ok(json!({"closed": ctx}))
@@ -367,7 +394,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// in the store; bump notifies the panel header).
     pub fn set_ctx(&mut self, body: &Value) -> Result<Value, String> {
         let ctx = body.get("ctx").and_then(Value::as_str).unwrap_or_default();
-        match self.store.set_context(ctx) {
+        match self.store.set_context(ctx).map_err(serr)? {
             Some(epoch) => {
                 self.rt.notify(epoch);
                 Ok(json!({"ctx": ctx}))
@@ -385,27 +412,29 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let url = body.get("url").and_then(Value::as_str).unwrap_or_default();
         let tab_id = tab_text(body.get("tabId"));
         let ctx = self
-            .ctx_for_tab(&tab_id, if url.is_empty() { None } else { Some(url) })
+            .ctx_for_tab(&tab_id, if url.is_empty() { None } else { Some(url) })?
             .ok_or("need tabId and url to resolve page")?;
         let (tk, _) = self
             .store
             .tag_by_name(tag_name)
+            .map_err(serr)?
             .into_iter()
             .next()
             .ok_or(format!("tag not found: {tag_name}"))?;
         let (k, _) = self
-            .alive_instance_for(&ctx)
+            .alive_instance_for(&ctx)?
             .ok_or(format!("no instance for ctx {ctx}"))?;
         let prefix = url.split('#').next().unwrap_or(url);
         let (pk, _) = self
             .store
             .pages_of_instance(k.id, false)
+            .map_err(serr)?
             .into_iter()
             .filter(|(_, p)| p.closed_at == 0 && p.url.starts_with(prefix))
             .max_by_key(|(k, _)| k.id)
             .ok_or("page not open in this ctx")?;
-        let added = self.store.page_tag_toggle(&pk, &tk, crate::watch::now_ms());
-        self.rt.notify(self.store.epoch());
+        let added = self.store.page_tag_toggle(&pk, &tk, crate::watch::now_ms()).map_err(serr)?;
+        self.rt.notify(self.store.epoch().map_err(serr)?);
         Ok(json!({"tag": tag_name, "action": if added { "added" } else { "removed" }}))
     }
 
@@ -413,14 +442,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn tags(&mut self, body: &Value) -> Result<Value, String> {
         let parent = body.get("parent").and_then(Value::as_str);
         let children = match parent {
-            Some(name) => self
-                .store
-                .tag_by_name(name)
-                .into_iter()
-                .next()
-                .map(|(k, _)| self.store.tag_children(k.id as i32))
-                .unwrap_or_default(),
-            None => self.store.tag_children(-1),
+            Some(name) => match self.store.tag_by_name(name).map_err(serr)?.into_iter().next() {
+                Some((k, _)) => self.store.tag_children(k.id as i32).map_err(serr)?,
+                None => Vec::new(),
+            },
+            None => self.store.tag_children(-1).map_err(serr)?,
         };
         Ok(json!({"tags": children.into_iter().map(|(_, t)| t.name).collect::<Vec<_>>()}))
     }
@@ -429,11 +455,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn pages(&mut self, body: &Value) -> Result<Value, String> {
         let ctx = body.get("ctx").and_then(Value::as_str);
         let mut out = Vec::new();
-        for (k, inst) in self.running_instances() {
+        for (k, inst) in self.running_instances()? {
             if ctx.is_some_and(|c| c != inst.profile) {
                 continue;
             }
-            for (pk, p) in self.store.pages_of_instance(k.id, false) {
+            for (pk, p) in self.store.pages_of_instance(k.id, false).map_err(serr)? {
                 if p.closed_at == 0 {
                     out.push(json!({"id": pk.id, "title": p.title, "url": p.url, "ctx": inst.profile}));
                 }
@@ -452,12 +478,14 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .store
             .pages
             .get(&pk)
+            .map_err(serr)?
             .filter(|p| p.closed_at == 0 && p.deleted_at == 0)
             .ok_or(format!("page {page_id} not found"))?;
         let inst = self
             .store
             .instances
             .get(&mudra_store::InstanceKey { id: page.instance_id })
+            .map_err(serr)?
             .filter(|i| i.running == 1 && spawn::pid_alive(i.pid))
             .ok_or("instance down")?;
         self.rt.activate_target(inst.port as u16, &page.target_id)?;
@@ -477,22 +505,25 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if role == "console" {
             return Ok(json!({"ctx": Value::Null, "tags": [], "capsules": "", "role": role}));
         }
-        let ctx = self
-            .ctx_for_tab(&tab_id, if url.is_empty() { None } else { Some(&url) })
-            .or_else(|| self.ctx_for_url(&url));
+        let by_tab = self.ctx_for_tab(&tab_id, if url.is_empty() { None } else { Some(&url) })?;
+        let ctx = match by_tab {
+            Some(c) => Some(c),
+            None => self.ctx_for_url(&url)?,
+        };
         let mut tags: Vec<String> = Vec::new();
         let prefix = url.split('#').next().unwrap_or(&url);
         if let Some(ref c) = ctx
-            && let Some((k, _)) = self.store.instance_for_context(c)
+            && let Some((k, _)) = self.store.instance_for_context(c).map_err(serr)?
             && let Some((pk, _)) = self
                 .store
                 .pages_of_instance(k.id, false)
+                .map_err(serr)?
                 .into_iter()
                 .filter(|(_, p)| p.closed_at == 0 && p.url.starts_with(prefix))
                 .max_by_key(|(k, _)| k.id)
         {
-            for tk in self.store.tags_of_page(&pk) {
-                tags.push(self.store.tag_path_string(&tk));
+            for tk in self.store.tags_of_page(&pk).map_err(serr)? {
+                tags.push(self.store.tag_path_string(&tk).map_err(serr)?);
             }
         }
         // SSR capsules: the bar drops this string in verbatim (the tag
@@ -522,13 +553,14 @@ impl<'a, R: Runtime> Controller<'a, R> {
 
         // all live rows, id-ordered (Python's ORDER BY id: children keep
         // insertion order, not rank order — the rank sort is the panel's)
-        let mut rows: Vec<(mudra_store::TagKey, mudra_store::Tag)> = self
-            .store
-            .tags
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.store.tags.get(&k).filter(|t| t.deleted == 0).map(|t| (k, t)))
-            .collect();
+        let mut rows: Vec<(mudra_store::TagKey, mudra_store::Tag)> = Vec::new();
+        for k in self.store.tags.scan_keys().map_err(serr)? {
+            if let Some(t) = self.store.tags.get(&k).map_err(serr)?
+                && t.deleted == 0
+            {
+                rows.push((k, t));
+            }
+        }
         rows.sort_by_key(|(k, _)| k.id);
 
         let mut by_parent: KidMap = std::collections::HashMap::new();
@@ -593,7 +625,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         Ok(json!({
             "forest": roots,
             "contexts": contexts,
-            "current": self.current_ctx(),
+            "current": self.current_ctx()?,
         }))
     }
 
@@ -625,19 +657,20 @@ impl<'a, R: Runtime> Controller<'a, R> {
             Some(
                 self.store
                     .pages_by_fragment(&q)
+                    .map_err(serr)?
                     .into_iter()
                     .map(|(k, _)| k.id)
                     .collect(),
             )
         };
         let insts = match &ctx {
-            Some(c) => self.store.instance_by_profile(c),
-            None => self.all_instances(),
+            Some(c) => self.store.instance_by_profile(c).map_err(serr)?,
+            None => self.all_instances()?,
         };
         let mut out = Vec::new();
         for (ik, inst) in insts {
             let mut pages: Vec<(mudra_store::PageKey, mudra_store::Page)> =
-                self.store.pages_of_instance(ik.id, false);
+                self.store.pages_of_instance(ik.id, false).map_err(serr)?;
             pages.sort_by_key(|(_, p)| p.position);
             for (pk, p) in pages {
                 if keep.as_ref().is_some_and(|k| !k.contains(&pk.id)) {
@@ -646,6 +679,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let tag_ids: Vec<u32> = self
                     .store
                     .tags_of_page(&pk)
+                    .map_err(serr)?
                     .into_iter()
                     .map(|tk| tk.id)
                     .collect();
@@ -676,6 +710,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         self.store
             .pages
             .get(&pk)
+            .map_err(serr)?
             .filter(|p| p.deleted_at == 0)
             .ok_or(format!("page {page_id} not found"))?;
         let ids: Vec<u32> = body
@@ -683,7 +718,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
             .unwrap_or_default();
-        let epoch = self.store.page_tag_replace(&pk, &ids, crate::watch::now_ms());
+        let epoch = self.store.page_tag_replace(&pk, &ids, crate::watch::now_ms()).map_err(serr)?;
         self.rt.notify(epoch);
         Ok(json!({"page_id": page_id, "tag_ids": ids}))
     }
@@ -700,11 +735,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
             return Err("tag name required".into());
         }
         let parent_id = body.get("parent_id").and_then(Value::as_i64).unwrap_or(-1) as i32;
-        let (k, created) = self.store.create_tag(parent_id, name);
+        let (k, created) = self.store.create_tag(parent_id, name).map_err(serr)?;
         // idempotent-found is a no-op: silent, like every other verb
         // (the store only bumps when it writes)
         if created {
-            self.rt.notify(self.store.epoch());
+            self.rt.notify(self.store.epoch().map_err(serr)?);
         }
         Ok(json!({"id": k.id}))
     }
@@ -724,7 +759,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if name.is_empty() {
             return Err("hook name required".into());
         }
-        let existing = self.store.hook_by_name(name).map(|(_, h)| h);
+        let existing = self.store.hook_by_name(name).map_err(serr)?.map(|(_, h)| h);
         let code = body
             .get("code")
             .and_then(Value::as_str)
@@ -745,8 +780,8 @@ impl<'a, R: Runtime> Controller<'a, R> {
             None => existing.as_ref().map(|h| h.enabled).unwrap_or(1),
         };
         let (id, created) =
-            self.store.hook_upsert(name, &matches, &code, enabled, crate::watch::now_ms());
-        let injected = self.reinject_hooks();
+            self.store.hook_upsert(name, &matches, &code, enabled, crate::watch::now_ms()).map_err(serr)?;
+        let injected = self.reinject_hooks()?;
         Ok(json!({ "id": id, "created": created, "enabled": enabled, "injected": injected }))
     }
 
@@ -756,6 +791,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let hooks: Vec<Value> = self
             .store
             .hooks_all()
+            .map_err(serr)?
             .into_iter()
             .map(|(k, h)| {
                 json!({
@@ -784,25 +820,26 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if name.is_empty() {
             return Err("hook name required".into());
         }
-        Ok(json!({ "deleted": self.store.hook_delete_by_name(name), "name": name }))
+        Ok(json!({ "deleted": self.store.hook_delete_by_name(name).map_err(serr)?, "name": name }))
     }
 
     /// Push every enabled hook into the live pages of every running instance.
     /// Best effort by construction (a vanished instance or target is skipped):
     /// the durable arming is `inject_pages`, which covers every new document.
     /// Returns the number of page targets that got the sources.
-    fn reinject_hooks(&mut self) -> u32 {
+    fn reinject_hooks(&mut self) -> Result<u32, String> {
         let sources: Vec<String> = self
             .store
             .hooks_enabled()
+            .map_err(serr)?
             .iter()
             .map(crate::daemon::hook_source)
             .collect();
         if sources.is_empty() {
-            return 0;
+            return Ok(0);
         }
         let mut injected = 0u32;
-        for (_k, inst) in self.running_instances() {
+        for (_k, inst) in self.running_instances()? {
             let port = inst.port as u16;
             let Ok(targets) = self.rt.list_targets(port) else { continue };
             for t in targets {
@@ -827,7 +864,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 injected += 1;
             }
         }
-        injected
+        Ok(injected)
     }
 
     /// POST /close {page_id} — set closed_at AND close the target
@@ -838,22 +875,25 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let pk = mudra_store::PageKey { id: page_id };
         // ops.close_page raised on a missing row — keep that; a row that
         // is already closed is a legitimate no-op (double ⨯ click).
-        if self.store.pages.get(&pk).is_none() {
+        if self.store.pages.get(&pk).map_err(serr)?.is_none() {
             return Err(format!("page {page_id} not found"));
         }
         // port order: closed_at first (Python UPDATEs, then closes the
         // target) — a live port/target is best effort like Python's guard
-        if let Some((target_id, _epoch)) = self.store.close_page(&pk, crate::watch::now_ms()) {
-            let live = self
-                .store
-                .pages
-                .get(&pk)
-                .and_then(|p| self.store.instances.get(&mudra_store::InstanceKey { id: p.instance_id }))
-                .filter(|i| i.running == 1 && spawn::pid_alive(i.pid));
+        if let Some((target_id, _epoch)) = self.store.close_page(&pk, crate::watch::now_ms()).map_err(serr)? {
+            let live = match self.store.pages.get(&pk).map_err(serr)? {
+                Some(p) => self
+                    .store
+                    .instances
+                    .get(&mudra_store::InstanceKey { id: p.instance_id })
+                    .map_err(serr)?
+                    .filter(|i| i.running == 1 && spawn::pid_alive(i.pid)),
+                None => None,
+            };
             if let Some(inst) = live {
                 let _ = self.rt.close_target(inst.port as u16, &target_id);
             }
-            self.rt.notify(self.store.epoch());
+            self.rt.notify(self.store.epoch().map_err(serr)?);
         }
         Ok(json!({"closed": page_id}))
     }
@@ -868,6 +908,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .store
             .pages
             .get(&pk)
+            .map_err(serr)?
             .ok_or(format!("page {page_id} not found"))?;
         if page.deleted_at != 0 {
             return Err("page is deleted".into());
@@ -876,6 +917,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .store
             .instances
             .get(&mudra_store::InstanceKey { id: page.instance_id })
+            .map_err(serr)?
             .map(|i| i.profile)
             .filter(|c| !c.is_empty())
             .ok_or(format!("page {page_id} has no context instance"))?;
@@ -890,7 +932,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn delete(&mut self, body: &Value) -> Result<Value, String> {
         let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
         let pk = mudra_store::PageKey { id: page_id };
-        let epoch = self.store.delete_page(&pk, crate::watch::now_ms())?;
+        let epoch = self.store.delete_page(&pk, crate::watch::now_ms()).map_err(serr)?;
         self.rt.notify(epoch);
         Ok(json!({"deleted": page_id}))
     }
@@ -901,19 +943,23 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn shot(&mut self, body: &Value) -> Result<Value, String> {
         let page_id = body.get("page_id").and_then(Value::as_u64).unwrap_or(0);
         let pk = mudra_store::PageKey { id: page_id };
-        let data = match self
+        let live = self
             .store
             .pages
             .get(&pk)
-            .filter(|p| p.closed_at == 0 && p.deleted_at == 0 && !p.target_id.is_empty())
-            .and_then(|p| {
-                self.store
-                    .instances
-                    .get(&mudra_store::InstanceKey { id: p.instance_id })
-                    .filter(|i| i.port > 0 && i.running == 1)
-                    .map(|i| (i.port as u16, p.target_id.clone()))
-            })
-        {
+            .map_err(serr)?
+            .filter(|p| p.closed_at == 0 && p.deleted_at == 0 && !p.target_id.is_empty());
+        let target = match live {
+            None => None,
+            Some(p) => self
+                .store
+                .instances
+                .get(&mudra_store::InstanceKey { id: p.instance_id })
+                .map_err(serr)?
+                .filter(|i| i.port > 0 && i.running == 1)
+                .map(|i| (i.port as u16, p.target_id.clone())),
+        };
+        let data = match target {
             Some((port, target)) => self.rt.screenshot(port, &target)?,
             None => None,
         };
@@ -929,27 +975,29 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let sit = self
             .store
             .tag_by_name("situation")
+            .map_err(serr)?
             .into_iter()
             .find(|(_, t)| t.parent_id == -1)
             .map(|(k, _)| k.id);
-        let leaves = sit.map(|id| self.store.tag_children(id as i32)).unwrap_or_default();
-        let current = self.current_ctx();
+        let leaves = match sit {
+            Some(id) => self.store.tag_children(id as i32).map_err(serr)?,
+            None => Vec::new(),
+        };
+        let current = self.current_ctx()?;
         let mut out = Vec::new();
         for (k, t) in leaves {
             let _ = k;
-            let n = self
-                .store
-                .instance_by_profile(&t.name)
-                .into_iter()
-                .map(|(ik, _)| {
-                    self.store
-                        .pages_of_instance(ik.id, false)
-                        .into_iter()
-                        .filter(|(_, p)| p.closed_at == 0)
-                        .count()
-                })
-                .max()
-                .unwrap_or(0);
+            let mut n = 0usize;
+            for (ik, _) in self.store.instance_by_profile(&t.name).map_err(serr)? {
+                let open = self
+                    .store
+                    .pages_of_instance(ik.id, false)
+                    .map_err(serr)?
+                    .into_iter()
+                    .filter(|(_, p)| p.closed_at == 0)
+                    .count();
+                n = n.max(open);
+            }
             out.push(json!({"leaf": t.name, "pages": n, "current": t.name == current}));
         }
         Ok(json!({"contexts": out}))
@@ -959,8 +1007,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// passthrough, port of `mudra targets`; no DB read — the answer is
     /// whatever chromium says right now).
     pub fn targets(&mut self, body: &Value) -> Result<Value, String> {
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
-        let (_, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
+        let (_, inst) = self.alive_instance_for(&ctx)?.ok_or(format!("ctx {ctx:?} not running"))?;
         let rows = self.rt.list_targets(inst.port as u16)?;
         Ok(json!({"targets": rows.iter().map(|t| json!({
             "targetId": t["id"], "title": t["title"], "url": t["url"],
@@ -977,8 +1028,11 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if query.is_empty() {
             return Err("need query".into());
         }
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
-        let (ik, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
+        let (ik, inst) = self.alive_instance_for(&ctx)?.ok_or(format!("ctx {ctx:?} not running"))?;
         let port = inst.port as u16;
         // the two filters the caller owns sit on top of the ranking: this
         // ctx's open rows, and targets that are still live. The ranking
@@ -988,7 +1042,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         // depth: the budget is on probes, not on the ranking.
         let mut hit = None;
         let mut probes = 0;
-        for (pk, p) in self.store.pages_by_fragment(query) {
+        for (pk, p) in self.store.pages_by_fragment(query).map_err(serr)? {
             if p.instance_id != ik.id
                 || p.closed_at != 0
                 || p.deleted_at != 0
@@ -1031,11 +1085,15 @@ impl<'a, R: Runtime> Controller<'a, R> {
             "reload" => ("Page.reload", json!({"ignoreCache": false})),
             other => return Err(format!("unknown nav cmd {other:?}")),
         };
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
-        let (ik, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
+        let (ik, inst) = self.alive_instance_for(&ctx)?.ok_or(format!("ctx {ctx:?} not running"))?;
         let page = self
             .store
             .pages_of_instance(ik.id, false)
+            .map_err(serr)?
             .into_iter()
             .filter(|(_, p)| p.closed_at == 0 && !p.target_id.is_empty())
             .max_by_key(|(_, p)| p.position)
@@ -1083,14 +1141,18 @@ impl<'a, R: Runtime> Controller<'a, R> {
     pub fn page_action(&mut self, body: &Value) -> Result<Value, String> {
         let op = body.get("op").and_then(Value::as_str).unwrap_or_default();
         let url = body.get("url").and_then(Value::as_str).unwrap_or_default();
-        let ctx = body.get("ctx").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.current_ctx());
+        let ctx = match body.get("ctx").and_then(Value::as_str) {
+            Some(c) => c.to_string(),
+            None => self.current_ctx()?,
+        };
         if op == "close" {
             return self.close_page(&json!({"ctx": ctx, "query": url}));
         }
-        let (ik, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
+        let (ik, inst) = self.alive_instance_for(&ctx)?.ok_or(format!("ctx {ctx:?} not running"))?;
         let page = self
             .store
             .pages_of_instance(ik.id, false)
+            .map_err(serr)?
             .into_iter()
             .find(|(_, p)| p.closed_at == 0 && p.url == url)
             .map(|(_, p)| p)
@@ -1144,7 +1206,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if workspace.is_empty() {
             return Err("need workspace".into());
         }
-        let (_, inst) = self.alive_instance_for(&ctx).ok_or(format!("ctx {ctx:?} not running"))?;
+        let (_, inst) = self.alive_instance_for(&ctx)?.ok_or(format!("ctx {ctx:?} not running"))?;
         let snap = self.rt.niri_snapshot()?;
         let wids: Vec<u64> = snap
             .windows
@@ -1173,6 +1235,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             let rows: Vec<Value> = self
                 .store
                 .site_widths_all()
+                .map_err(serr)?
                 .into_iter()
                 .filter(|r| needle.is_empty() || r.site.contains(needle))
                 .map(|r| {
@@ -1189,14 +1252,17 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let snap = self.rt.niri_snapshot()?;
         let win = snap.focused_window().ok_or("no focused window")?;
         let pid = win["pid"].as_u64().ok_or("window has no pid")? as u32;
-        let inst = self
-            .store
-            .instances
-            .scan_keys()
-            .into_iter()
-            .filter_map(|k| self.store.instances.get(&k).filter(|i| i.running == 1 && i.pid == pid).map(|i| (k, i)))
-            .max_by_key(|(k, _)| k.id)
-            .ok_or("focused window is not a running mudra instance")?;
+        let mut inst = None;
+        for k in self.store.instances.scan_keys().map_err(serr)? {
+            if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+                && i.running == 1
+                && i.pid == pid
+                && inst.as_ref().is_none_or(|(ik, _): &(mudra_store::InstanceKey, mudra_store::Instance)| k.id > ik.id)
+            {
+                inst = Some((k, i));
+            }
+        }
+        let inst = inst.ok_or("focused window is not a running mudra instance")?;
         let title = win["title"].as_str().unwrap_or_default();
         let page = self
             .rt
@@ -1216,9 +1282,9 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .ok_or("window has no layout.tile_size")?;
         let prop = tile / snap.output_width;
         let (band, frac) = snap_column_width(prop);
-        let epoch = self.store.site_width_put(&domain, band);
+        let epoch = self.store.site_width_put(&domain, band).map_err(serr)?;
         if epoch.is_some() {
-            self.rt.notify(self.store.epoch());
+            self.rt.notify(self.store.epoch().map_err(serr)?);
         }
         // `measured` = the raw ratio: `mudra col remember` prints both
         // ("remembered site: 0.498 -> 1/2"), the row keeps the band
@@ -1234,21 +1300,33 @@ impl<'a, R: Runtime> Controller<'a, R> {
             return Err("need ctx".into());
         }
         // situation-leaf check mirrors Python: refuse a non-leaf ctx
-        let leaf = self
+        let mut leaf = false;
+        for (k, _) in self
             .store
             .tag_by_name("situation")
+            .map_err(serr)?
             .into_iter()
             .filter(|(_, t)| t.parent_id == -1)
-            .flat_map(|(k, _)| self.store.tag_children(k.id as i32))
-            .any(|(_, t)| t.name == ctx);
+        {
+            if self
+                .store
+                .tag_children(k.id as i32)
+                .map_err(serr)?
+                .into_iter()
+                .any(|(_, t)| t.name == ctx)
+            {
+                leaf = true;
+                break;
+            }
+        }
         if !leaf {
             return Err(format!("not a situation leaf: {ctx:?}"));
         }
         let proxy = body.get("proxy").and_then(Value::as_str);
         let extensions = body.get("extensions").and_then(Value::as_str);
-        let k = self.store.config_row(ctx);
-        self.store.instance_set_config(&k, proxy, extensions);
-        let row = self.store.instances.get(&k).ok_or("row vanished")?;
+        let k = self.store.config_row(ctx).map_err(serr)?;
+        self.store.instance_set_config(&k, proxy, extensions).map_err(serr)?;
+        let row = self.store.instances.get(&k).map_err(serr)?.ok_or("row vanished")?;
         Ok(json!({
             "ctx": ctx,
             "proxy": or_none(&row.proxy).map(Value::from).unwrap_or(Value::Null),
@@ -1263,19 +1341,23 @@ impl<'a, R: Runtime> Controller<'a, R> {
         match body.get("on") {
             Some(v) => {
                 let on = v.as_bool().unwrap_or_else(|| v.as_str().is_some_and(|s| matches!(s, "1" | "on" | "true")));
-                self.store.put_state_text(mudra_store::state::DEV_MODE, if on { "1" } else { "0" });
+                self.store
+                    .put_state_text(mudra_store::state::DEV_MODE, if on { "1" } else { "0" })
+                    .map_err(serr)?;
                 self.rt.set_dev_mode(on);
                 Ok(json!({"dev": on}))
             }
-            None => Ok(json!({"dev": self.store.state_text(mudra_store::state::DEV_MODE) == "1"})),
+            None => Ok(json!({
+                "dev": self.store.state_text(mudra_store::state::DEV_MODE).map_err(serr)? == "1"
+            })),
         }
     }
 
     /// POST /tag_seed {} — the initial forest, idempotent (mudra tag init).
     pub fn tag_seed(&mut self) -> Result<Value, String> {
-        let n = self.store.seed_tags();
+        let n = self.store.seed_tags().map_err(serr)?;
         if n > 0 {
-            self.rt.notify(self.store.bump_epoch());
+            self.rt.notify(self.store.bump_epoch().map_err(serr)?);
         }
         Ok(json!({"seeded": n}))
     }
@@ -1294,6 +1376,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             .store
             .tags
             .get(&tk)
+            .map_err(serr)?
             .filter(|t| t.deleted == 0)
             .ok_or(format!("tag {tag_id} not found"))?;
         let (pk, page) = match body.get("page_id").and_then(Value::as_u64) {
@@ -1303,6 +1386,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                     .store
                     .pages
                     .get(&pk)
+                    .map_err(serr)?
                     .filter(|p| p.deleted_at == 0)
                     .ok_or(format!("page {id} not found"))?;
                 (pk, p)
@@ -1312,20 +1396,17 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let win = snap.focused_window().ok_or("no focused window")?;
                 let pid = win["pid"].as_u64().ok_or("window has no pid")? as u32;
                 let title = win["title"].as_str().unwrap_or_default().to_string();
-                let inst = self
-                    .store
-                    .instances
-                    .scan_keys()
-                    .into_iter()
-                    .filter_map(|k| {
-                        self.store
-                            .instances
-                            .get(&k)
-                            .filter(|i| i.running == 1 && i.pid == pid)
-                            .map(|i| (k, i))
-                    })
-                    .max_by_key(|(k, _)| k.id)
-                    .ok_or("focused window is not a running mudra instance")?;
+                let mut inst = None;
+                for k in self.store.instances.scan_keys().map_err(serr)? {
+                    if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+                        && i.running == 1
+                        && i.pid == pid
+                        && inst.as_ref().is_none_or(|(ik, _): &(mudra_store::InstanceKey, mudra_store::Instance)| k.id > ik.id)
+                    {
+                        inst = Some((k, i));
+                    }
+                }
+                let inst = inst.ok_or("focused window is not a running mudra instance")?;
                 let target = self
                     .rt
                     .list_targets(inst.1.port as u16)?
@@ -1335,16 +1416,17 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let tid = target["id"].as_str().unwrap_or_default();
                 self.store
                     .page_by_target(tid)
+                    .map_err(serr)?
                     .ok_or_else(|| "focused page not recorded (sync pending?)".to_string())?
             }
         };
-        let current = self.store.tags_of_page(&pk).contains(&tk);
+        let current = self.store.tags_of_page(&pk).map_err(serr)?.contains(&tk);
         if on && !current {
-            self.store.link_page_tag(&pk, &tk);
-            self.rt.notify(self.store.bump_epoch());
+            self.store.link_page_tag(&pk, &tk).map_err(serr)?;
+            self.rt.notify(self.store.bump_epoch().map_err(serr)?);
         } else if !on && current {
-            self.store.unlink_page_tag(&pk, &tk);
-            self.rt.notify(self.store.bump_epoch());
+            self.store.unlink_page_tag(&pk, &tk).map_err(serr)?;
+            self.rt.notify(self.store.bump_epoch().map_err(serr)?);
         }
         let label = if page.title.is_empty() { page.url.clone() } else { page.title.clone() };
         Ok(json!({
@@ -1360,7 +1442,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         if !matches!(kind, "mru" | "mtime" | "rating") {
             return Err(format!("unknown sort kind {kind:?}"));
         }
-        self.store.put_state_text(mudra_store::state::SORT, kind);
+        self.store.put_state_text(mudra_store::state::SORT, kind).map_err(serr)?;
         Ok(json!({"sort": kind}))
     }
 
@@ -1383,7 +1465,9 @@ impl<'a, R: Runtime> Controller<'a, R> {
             }
             "spawn" => {
                 let pid = self.rt.launch_panel()?;
-                self.store.put_state_text(mudra_store::state::PANEL_PID, &pid.to_string());
+                self.store
+                    .put_state_text(mudra_store::state::PANEL_PID, &pid.to_string())
+                    .map_err(serr)?;
                 Ok(json!({"spawned": pid}))
             }
             "focus" => {
@@ -1403,7 +1487,9 @@ impl<'a, R: Runtime> Controller<'a, R> {
                     // fresh (pid persisted for diagnostics only)
                     None => {
                         let pid = self.rt.launch_panel()?;
-                        self.store.put_state_text(mudra_store::state::PANEL_PID, &pid.to_string());
+                        self.store
+                            .put_state_text(mudra_store::state::PANEL_PID, &pid.to_string())
+                            .map_err(serr)?;
                         Ok(json!({"spawned": pid}))
                     }
                 }
@@ -1423,6 +1509,14 @@ pub fn snap_column_width(ratio: f64) -> (f64, &'static str) {
         // The table is a non-empty literal, and the fallback names the widest
         // band, so the function stays total without an `unwrap` on `min_by`.
         .unwrap_or((1.0, "1"))
+}
+
+/// The store's typed refusal becomes the verb layer's sentence: the HTTP
+/// shell answers `Err(String)`, and the engine's own words ARE the message
+/// (ADR-0037 — a refusal names what refused). The error is never folded
+/// into an absence: a failed read is `Err` here, an empty row is `None`.
+fn serr(e: mudra_store::StoreError) -> String {
+    e.to_string()
 }
 
 fn or_none(s: &str) -> Option<&str> {
