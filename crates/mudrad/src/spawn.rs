@@ -175,6 +175,14 @@ fn base_args(app_url: &str, profile_dir: &Path) -> Vec<String> {
         // a content script landing on chrome://version. The manifest needs the
         // matching "chrome://*/*" entry: <all_urls> does not cover the scheme.
         "--extensions-on-chrome-urls".into(),
+        // Paired with the switch above, which sits on chromium's bad-flag list
+        // (it does hand extensions more power): without this every window wears
+        // the "unsupported command-line flag … stability and security will
+        // suffer" infobar, permanently, on top of the page. --test-type
+        // suppresses exactly that startup prompt and the flag stays honoured
+        // (crbug 40205764, 41109334) — the keyboard mode needs the power, the
+        // warning is noise the user cannot dismiss for the session.
+        "--test-type".into(),
     ]
 }
 
@@ -205,10 +213,25 @@ pub fn build_command(
     cmd.args(args);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        // stderr is NOT devnull here: the Python tree swallowed it and every
-        // spawn failure was silent. Kept for the log pump in daemon wiring.
-        .stderr(std::process::Stdio::piped());
+        // inherit, not piped: every launch path here is `spawn_detached*`,
+        // which hands the Child to nobody — a piped stderr has no reader, so
+        // chromium's own FATAL lines (the ones that explain a window that never
+        // appeared) are dropped on the floor. Inherited goes to the daemon's
+        // stderr, i.e. the systemd journal, where they can be read.
+        .stderr(std::process::Stdio::inherit());
     cmd
+}
+
+/// One line per launch in the daemon's journal: pid plus the exact argv.
+/// A window that dies at startup otherwise leaves nothing to read, and the
+/// command line is the first thing anyone needs to reproduce the launch by
+/// hand — chromium's complaints about a flag are useless without it.
+fn log_spawn(pid: u32, cmd: &std::process::Command) {
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    eprintln!("[mudrad] spawn {pid}: chromium {}", args.join(" "));
 }
 
 /// Detach a launch from the daemon's lifecycle while keeping it waitable:
@@ -232,6 +255,7 @@ pub fn spawn_detached(cmd: &mut std::process::Command) -> io::Result<u32> {
         })
         .spawn()?
     };
+    log_spawn(child.id(), cmd);
     Ok(child.id())
 }
 
@@ -269,6 +293,7 @@ pub fn spawn_detached_session(cmd: &mut std::process::Command) -> io::Result<u32
         })
         .spawn()?
     };
+    log_spawn(child.id(), cmd);
     Ok(child.id())
 }
 

@@ -285,8 +285,13 @@ fn new_instance_command_carries_debug_port_and_extension_defaults() {
     // chrome:// pages get the keyboard mode too; the switch is what the
     // content script's "chrome://*/*" match pattern needs to be honoured.
     assert!(args.iter().any(|a| a == "--extensions-on-chrome-urls"));
+    // …and the bad-flag infobar it earns is suppressed by --test-type: the
+    // switch is honoured either way, but without this every window carries a
+    // permanent "Stability and security will suffer" bar over the page.
+    assert!(args.iter().any(|a| a == "--test-type"));
     // (stderr policy is fixed inside build_command — std exposes no Stdio
-    // query; the piped-not-null choice is a code fact, not a data fact.)
+    // query. It is inherited, so a chromium FATAL reaches the daemon's journal
+    // instead of dying in a pipe with no reader.)
 }
 
 #[test]
