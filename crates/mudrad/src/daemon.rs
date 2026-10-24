@@ -406,8 +406,10 @@ async fn handle_ws_conn(sock: TcpStream, d: Arc<Daemon>) {
                 let Some(Ok(m)) = msg else { break };
                 match m {
                     Message::Binary(bytes) => {
-                        // transport-free intake: apply answers Some only
-                        // for query ops (WS-CHANNEL shape A)
+                        // transport-free intake: every decodable frame answers
+                        // exactly once — a write's answer is the empty ack — so
+                        // a client pairing answers by position stays aligned
+                        // (okm ADR-0021 / WS-CHANNEL; None = undecodable only)
                         let resp = d.nest.apply(&bytes);
                         if let Some(resp) = resp
                             && sink.send(Message::Binary(resp.encode().into())).await.is_err()
