@@ -384,7 +384,11 @@
       d.textContent = seqs[i];
       d.setAttribute(HINT_ATTR, seqs[i]);
       d.style.cssText = [
-        "position:fixed", `left:${Math.max(0, r.left)}px`, `top:${Math.max(0, r.top)}px`,
+        // centred on the element: the half-extent shift comes from the span's
+        // own box, so no text measuring is needed
+        "position:fixed",
+        `left:${Math.max(0, r.left + r.width / 2)}px`, `top:${Math.max(0, r.top + r.height / 2)}px`,
+        "transform:translate(-50%,-50%)",
         `font:${c.hintFontSize}px monospace`, `color:${MudraConfig.fgFor(c.hintBg, c.hintFg)}`, `background:${c.hintBg}`,
         "padding:0 2px", "border-radius:2px", "white-space:pre",
       ].join(";");
@@ -462,7 +466,9 @@
       const d = document.createElement("span");
       d.textContent = seqs[i];
       d.style.cssText = [
-        "position:fixed", `left:${Math.max(0, r.left)}px`, `top:${Math.max(0, r.top)}px`,
+        "position:fixed",
+        `left:${Math.max(0, r.left + r.width / 2)}px`, `top:${Math.max(0, r.top + r.height / 2)}px`,
+        "transform:translate(-50%,-50%)",
         `font:${c.hintFontSize}px monospace`, `color:${c.hintFg}`, `background:#7ec8ff`,
         "padding:0 2px", "border-radius:2px", "white-space:pre",
       ].join(";");
