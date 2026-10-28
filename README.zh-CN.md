@@ -5,7 +5,7 @@
 > 对多数人来说，浏览器是**信息的主要流入途径**。`mudra` 不止是用键盘驱动浏览器——它把浏览器入口变成一条
 > **信息流管道**：**捕获 → 属性化 → 精炼 → 消费**。
 >
-> **设计理由不在本文**：`~/.hermes/wiki/keyboard-wm-browser-mode.md`（中文主文档，英文版 `~/.hermes/wiki/keyboard-wm-browser-mode-en.md`）讲为什么——定位、硬约束、选型、层边界、被否决的路。本文是实现面：命令、存储布局、CDP 映射、协议形状、状态台账。通用 tag 森林模型见 `~/.hermes/wiki/tag-forest.md`。
+> **设计理由不在本文**：`https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md`（中文主文档，英文版 `https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode-en.md`）讲为什么——定位、硬约束、选型、层边界、被否决的路。本文是实现面：命令、存储布局、CDP 映射、协议形状、状态台账。通用 tag 森林模型见 `https://github.com/orbsh/wiki/blob/main/tag-forest.md`。
 
 通过 **CDP** 从外部驱动 **`chromium --app`** 窗口，底层是内嵌的 **okm/fjall KV 存储**，跑在平铺 WM（`niri`）下，全程键盘。页面按 **tag 森林**组织（多轴，取代 session），并带重要 / 紧急评分——浏览器因此先替你分拣，而不只是显示网页。
 
@@ -166,8 +166,8 @@ mudra ui                          # web 控制台
 
 | 文档 | 角色 |
 |---|---|
-| `~/.hermes/wiki/keyboard-wm-browser-mode.md`（+ `-en.md`） | **为什么**——定位、硬约束、选型、层边界、被否决的路、开放问题 |
-| `~/.hermes/wiki/tag-forest.md` | 通用多轴内容模型 |
+| `https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md`（+ `-en.md`） | **为什么**——定位、硬约束、选型、层边界、被否决的路、开放问题 |
+| `https://github.com/orbsh/wiki/blob/main/tag-forest.md` | 通用多轴内容模型 |
 | `docs/SCHEMA.md`（+ `.zh-CN.md`） | 存储布局契约（store 改动的验收门） |
 | `docs/KEYS.md` | 键位与扩展配置 |
 | `docs/PANEL.md` | 控制台架构与 tag 森林抽象路线 |

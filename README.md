@@ -6,11 +6,11 @@
 > just a way to drive the browser from the keyboard — it turns the browser entry point
 > into an **information-flow pipeline**: **capture → attribute → refine → consume**.
 >
-> **Design rationale lives elsewhere**: `~/.hermes/wiki/keyboard-wm-browser-mode.md`
+> **Design rationale lives elsewhere**: `https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md`
 > (Chinese) carries the *why* — positioning, hard constraints, selection, layer
 > boundaries, rejected paths. This README is the implementation surface: commands, storage
 > layout, CDP mapping, protocol shapes, status ledger. Generic tag-forest model:
-> `~/.hermes/wiki/tag-forest.md`.
+> `https://github.com/orbsh/wiki/blob/main/tag-forest.md`.
 
 Drives **`chromium --app`** windows externally over **CDP**, backed by an embedded
 **okm/fjall KV store**, under a tiling WM (`niri`), fully keyboard-driven. Pages are
@@ -320,8 +320,8 @@ refinement phases (P8–P12).
 
 | document | role |
 |---|---|
-| `~/.hermes/wiki/keyboard-wm-browser-mode.md` (+ `-en.md`) | **why** — positioning, hard constraints, selection, layer boundaries, rejected paths, open design questions (Chinese primary, English twin) |
-| `~/.hermes/wiki/tag-forest.md` | the generic multi-axis content model |
+| `https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md` (+ `-en.md`) | **why** — positioning, hard constraints, selection, layer boundaries, rejected paths, open design questions (Chinese primary, English twin) |
+| `https://github.com/orbsh/wiki/blob/main/tag-forest.md` | the generic multi-axis content model |
 | `README.zh-CN.md` | Chinese translation of this file |
 | `docs/SCHEMA.md` (+ `.zh-CN.md`) | storage layout contract (the acceptance gate for store changes) |
 | `docs/KEYS.md` | keymap and extension config |

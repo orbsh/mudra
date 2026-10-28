@@ -1,7 +1,7 @@
 # mudra 管理面板（panel）与 tag-forest 抽象化
 
 > 定位：本文是 **mudra 工程向**的面板设计 + tag-forest 抽象化需求文档。通用 tag
-> forest 模型在 `~/.hermes/wiki/tag-forest.md`（不在此仓）。两者分工：wiki 讲"模型
+> forest 模型在 `https://github.com/orbsh/wiki/blob/main/tag-forest.md`（不在此仓）。两者分工：wiki 讲"模型
 > 是什么"，本文讲"mudra 如何实现它、以及如何把它抽成可复用库"。
 
 ## 一、为什么从 launcher 走向面板
@@ -81,7 +81,7 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
 - **概括性（知识本体覆盖宽度）**：内容本身覆盖范围的广度——这是**独立正交的第三轴**，与受众和时间都无关。
   - `quality` 落在这根轴上：一篇水平差但此刻极必要的资料，quality 低但 importance 高——两者可以分离。
 
-一句话：`importance / urgency` 同源（相关性的两轴投影），`quality` 正交独立。评分时别把三个当并列的三个"重要性"。这与 [tag-forest](~/.hermes/wiki/tag-forest.md) 的 rank 语义一致。
+一句话：`importance / urgency` 同源（相关性的两轴投影），`quality` 正交独立。评分时别把三个当并列的三个"重要性"。这与 [tag-forest](https://github.com/orbsh/wiki/blob/main/tag-forest.md) 的 rank 语义一致。
 - **胶囊（普通 tag）**：每段一级路径，点击段 → 同级切换菜单（切换后深路径取消）；
   头 ✕ 删此 tag、尾 ＋ 加子级；行尾 ＋ 指派已有 tag。
 
@@ -149,7 +149,7 @@ configure({
 
 ## 四、相关工作
 
-- 通用 tag-forest 模型：`~/.hermes/wiki/tag-forest.md`（含五条递归 CTE 查询、rank 树
+- 通用 tag-forest 模型：`https://github.com/orbsh/wiki/blob/main/tag-forest.md`（含五条递归 CTE 查询、rank 树
   设计、isolated 隔离、信息流）。
-- 浏览器使用模式：`~/.hermes/wiki/keyboard-wm-browser-mode.md`。
+- 浏览器使用模式：`https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md`。
 - 扩展集成（WmExt 可插拔先例）：本仓 `docs/EXTENSIONS.md`。

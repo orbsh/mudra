@@ -4,7 +4,7 @@
 > original plan record — Python + sqlite + the session model + the launcher layer, all
 > since superseded
 > **Date**: 2026-08-28
-> **Design source**: `~/.hermes/wiki/keyboard-wm-browser-mode.md` (the authoritative design; keep in sync)
+> **Design source**: `https://github.com/orbsh/wiki/blob/main/keyboard-wm-browser-mode.md` (the authoritative design; keep in sync)
 
 ## 1. Goal
 
