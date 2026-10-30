@@ -223,10 +223,11 @@ impl Real {
         // silently half-lands: the page's content script is re-read while the
         // service worker relaying its messages comes from the cache — which is
         // what "the key does nothing" looks like (the send never happens).
-        // Clear them on a COLD start only (port == Some): on a join the
-        // browser is already running this profile, and deleting the script
-        // cache out from under a live service worker breaks it outright.
-        if port.is_some() {
+        // Clear them on a COLD start only (port == Some). A profile with a live
+        // browser in it is a JOIN whatever the port says — and clearing the
+        // service worker's script cache under a running worker is what kills it
+        // for the rest of that process (see `profile_in_use`).
+        if port.is_some() && !crate::spawn::profile_in_use(&profile) {
             crate::spawn::clear_extension_script_caches(&profile);
             if self.dev_mode {
                 crate::spawn::clear_extension_caches(&profile);
@@ -448,9 +449,16 @@ impl Runtime for Real {
         std::fs::create_dir_all(&dir).map_err(|e| format!("panel profile dir: {e}"))?;
         let url = format!("http://127.0.0.1:{}/", crate::control::PANEL_PORT);
         let exts = self.default_extensions.clone();
-        // Always: the panel outlives daemon restarts, so a stale script cache
-        // would keep handing it older extension code (see the fn's docs).
-        crate::spawn::clear_extension_script_caches(&dir);
+        // The panel outlives daemon restarts, so a stale script cache would keep
+        // handing it older extension code (see the fn's docs). But launching
+        // into a profile that is ALREADY running is a join: the extension is
+        // loaded there, its service worker is live, and deleting the cache under
+        // it breaks that worker for the life of the process — every later
+        // message then fails with "Receiving end does not exist". So clear only
+        // when no browser holds the profile.
+        if !crate::spawn::profile_in_use(&dir) {
+            crate::spawn::clear_extension_script_caches(&dir);
+        }
         let mut cmd = crate::spawn::build_command(&url, &dir, None, None, Some(&exts), &exts);
         crate::spawn::spawn_detached_session(&mut cmd).map_err(|e| format!("panel spawn: {e}"))
     }

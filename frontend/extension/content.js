@@ -14,15 +14,86 @@
   // answers resolves to `undefined` — which used to read as success (`r.ok`
   // undefined is not false) and printed "opened in a new window" for a window
   // that never existed. No answer is a failure, and it has to say so.
-  const send = (msg) =>
-    new Promise((res) => {
-      try {
-        chrome.runtime.sendMessage(msg, (r) => {
-          if (r) res(r.ok === undefined ? { ...r, ok: !r.err } : r);
-          else res({ ok: false, err: `no answer from the service worker (${msg.type})` });
-        });
-      } catch (e) { res({ ok: false, err: String(e) }); }
+  // ---- transport: one port to the extension worker ----
+  // A content script cannot reach 127.0.0.1 itself on an https page: the page's
+  // mixed-content / private-network rules block both fetch and a socket
+  // (measured on github.com: fetch → TypeError, ws → error in 2ms), and MV3
+  // gives content scripts no cross-origin privilege. The extension's own
+  // context is the only exempt one, so every verb rides this port.
+  //
+  // The port is also the keepalive. A service worker is terminated after ~30s
+  // idle and should be woken by the next message; the failure that kills the
+  // bar is different — a worker whose script cache was evicted under it never
+  // comes back, and every message then answers "Receiving end does not exist"
+  // for the rest of the page's life. Two defenses, one on each side:
+  //   - this side pings every 20s, so a worker with a page open never idles out;
+  //   - `mudrad` no longer deletes a profile's extension caches while a browser
+  //     holds that profile (that deletion is exactly how the script vanishes).
+  const PORT_NAME = "mudra";
+  const HEARTBEAT_MS = 20000;
+  const CALL_TIMEOUT_MS = 2500;
+  let workerPort = null;
+  let portSeq = 0;
+  const portWaiting = new Map(); // id -> resolve(reply)
+
+  function portOpen() {
+    if (workerPort) return workerPort;
+    let port;
+    try {
+      port = chrome.runtime.connect({ name: PORT_NAME });
+    } catch (e) {
+      return null;
+    }
+    port.onMessage.addListener((r) => {
+      const done = portWaiting.get(r && r.id);
+      if (!done) return;
+      portWaiting.delete(r.id);
+      done(r);
     });
+    port.onDisconnect.addListener(() => {
+      void chrome.runtime.lastError; // the disconnect itself is the message
+      if (workerPort === port) workerPort = null;
+      // fail what is in flight now instead of letting each call sit out its
+      // timeout: the worker closed the link, so nothing is coming
+      for (const [id, done] of portWaiting) done({ ok: false, err: "extension worker closed the link" });
+      portWaiting.clear();
+    });
+    workerPort = port;
+    return port;
+  }
+
+  if (typeof setInterval === "function") {
+    setInterval(() => {
+      if (!workerPort) return;
+      try {
+        workerPort.postMessage({ id: 0, type: "ping" });
+      } catch {
+        workerPort = null; // a dead port must not be pinged forever
+      }
+    }, HEARTBEAT_MS);
+  }
+
+  // One call, one reply, paired by id. No answer is a failure and says so.
+  function send(msg) {
+    const port = portOpen();
+    if (!port) return Promise.resolve({ ok: false, err: `no link to the extension worker (${msg.type})` });
+    const id = ++portSeq;
+    return new Promise((res) => {
+      const timer = setTimeout(() => {
+        portWaiting.delete(id);
+        res({ ok: false, err: `extension worker timeout (${msg.type})` });
+      }, CALL_TIMEOUT_MS);
+      portWaiting.set(id, (r) => { clearTimeout(timer); res(r); });
+      try {
+        port.postMessage({ ...msg, id });
+      } catch (e) {
+        portWaiting.delete(id);
+        clearTimeout(timer);
+        workerPort = null;
+        res({ ok: false, err: String(e) });
+      }
+    });
+  }
 
   // ---- state ----
   let mode = "normal";      // state machine: normal / hint / insert / command
@@ -156,7 +227,7 @@
     if (!text) return flashBar("usage: :open <url>");
     // The console page is the UI: it never navigates itself away.
     if (isConsolePage()) {
-      const r = await send({ type: "new", url: text, from: location.href });
+      const r = await send({ type: "new", url: text, from: location.href, ctx });
       return flashBar(r.ok === false ? r.err || "open failed" : "open ok");
     }
     // /visit resolves the input and writes the History row — an in-place
@@ -172,7 +243,7 @@
   async function openNew(url) {
     const text = (url || "").trim();
     if (!text) return flashBar("usage: :new <url>");
-    const r = await send({ type: "new", url: text, from: location.href });
+    const r = await send({ type: "new", url: text, from: location.href, ctx });
     return flashBar(r.ok === false ? r.err || "open failed" : "opened in a new window");
   }
 
@@ -597,7 +668,7 @@
       location.hash = a.hash; // same-page anchor jump in place, no new page
     } else if (href && /^https?:/.test(href)) {
       // f = open (this page navigates in place), F = new (a separate --app window)
-      if (newWindow) send({ type: "new", url: href, from: location.href });
+      if (newWindow) send({ type: "new", url: href, from: location.href, ctx });
       else openCurrent(href);
     } else {
       el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

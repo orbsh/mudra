@@ -219,6 +219,18 @@ scoring (2026-10-14):
   times the display depth, since the list scrolls. One query per keystroke was what made
   typing feel slow: the requests queued on the daemon's single store lock, so a six-letter
   word meant six passes end to end.
+- **Transport**: every verb rides one Port per page to the extension's service worker, which
+  forwards it to mudrad over `POST :8899`. A content script cannot reach `127.0.0.1` itself on
+  an https page (measured: `fetch` → `TypeError: Failed to fetch`, socket → error in 2 ms) and
+  MV3 gives it no cross-origin privilege, so the extension context is the only exempt one. The
+  port pairs replies by `id` and the page pings it every 20 s: a worker with a page open never
+  idles out.
+- **A worker that dies stays dead** — and that was this daemon's own doing: clearing a
+  profile's `Default/Service Worker/…` under a LIVE browser evicts the worker's script, after
+  which every message answers `Receiving end does not exist` until the browser exits. Reproduced
+  in a clean profile (answer, wipe the five cache points, 45 s later: dead). mudrad now clears
+  those caches only when nothing holds the profile (`spawn::profile_in_use` — the panel outlives
+  daemon restarts, so its second spawn was joining a live browser).
 
 ## Extension plane
 

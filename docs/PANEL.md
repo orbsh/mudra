@@ -42,6 +42,11 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
   `/reopen {page_id}`、`/delete {page_id}`、`/shot {page_id}`、`/ctx`、`/focus {page_id}`、
   `/events {tail}`（事件日志，见下）、`/hook_list` `/hook_set` `/hook_delete`（钩子面，见下）、
   `/config`（`ui.thumbnails` 开关）。响应均带 `Access-Control-Allow-Origin: *`。
+- **扩展的地址栏不直连 `:8899`**：https 页上浏览器禁止页面自身访问 127.0.0.1（mixed content /
+  private network：实测 fetch 直接 TypeError、ws 2ms 内报错），而 MV3 也不再给 content
+  script 跨域权限 —— 扩展自己的 context 是唯一豁免者。所以每个页面对 service worker 开一条
+  **Port**（`{id, type, ...}` 进、`{id, ok, ...}` 出），worker 再 `POST` 上面这些动词。
+  Port 同时是心跳：页面每 20s 发一次 ping，有页面开着 worker 就不会因空闲被回收。
 
 ### 视图（三个面共用一个壳）
 

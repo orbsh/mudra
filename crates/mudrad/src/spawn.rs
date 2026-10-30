@@ -126,11 +126,30 @@ pub fn pid_alive(pid: u32) -> bool {
 /// target is `hostname-pid`; mudrad may only launch into a profile whose
 /// lock is absent or stale-cleared.
 pub fn stale_singleton_lock(profile_dir: &Path) -> Option<u32> {
+    singleton_pid(profile_dir).filter(|pid| !pid_alive(*pid))
+}
+
+/// The pid named by a profile's `SingletonLock`, live or not.
+fn singleton_pid(profile_dir: &Path) -> Option<u32> {
     let link = profile_dir.join("SingletonLock");
     let target = std::fs::read_link(&link).ok()?;
     let name = target.file_name()?.to_str()?;
-    let pid: u32 = name.rsplit('-').next()?.parse().ok()?;
-    (!pid_alive(pid)).then_some(pid)
+    name.rsplit('-').next()?.parse().ok()
+}
+
+/// Is a browser process holding this profile right now?
+///
+/// Load-bearing before any cache clear: deleting `Default/Service Worker/…`
+/// under a LIVE browser is not a refresh, it is a kill. The running service
+/// worker loses the script it would need to restart, and from that moment every
+/// extension message fails with `Receiving end does not exist` — permanently,
+/// for the life of that process. Reproduced: a worker answers fine, the five
+/// cache points are removed underneath it, and 45s later every call fails.
+///
+/// The panel is the case that matters: it outlives daemon restarts, so a
+/// second `launch_panel` joins a live browser in the same profile.
+pub fn profile_in_use(profile_dir: &Path) -> bool {
+    singleton_pid(profile_dir).is_some_and(pid_alive)
 }
 
 /// Remove the extension cache points under a profile dir (dev_mode: source

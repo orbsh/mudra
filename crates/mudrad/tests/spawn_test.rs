@@ -7,6 +7,30 @@ use mudrad::spawn::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+/// Contract: "in use" is the question a cache clear must ask first. Deleting a
+/// profile's extension caches under a live browser evicts the service worker's
+/// script and kills it for the life of that process, so the live case must be
+/// distinguishable from the stale one before anything is removed.
+#[test]
+fn a_live_browser_makes_the_profile_in_use() {
+    let dir = std::env::temp_dir().join(format!("mudra-inuse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // absent lock: nobody holds it (fresh profile, safe to clear)
+    assert!(!profile_in_use(&dir));
+    // live pid: this test process
+    std::os::unix::fs::symlink(
+        format!("testhost-{}", std::process::id()),
+        dir.join("SingletonLock"),
+    )
+    .unwrap();
+    assert!(profile_in_use(&dir), "a live pid means the browser holds the profile");
+    // dead pid: the lock is stale, the profile is free
+    std::fs::remove_file(dir.join("SingletonLock")).unwrap();
+    std::os::unix::fs::symlink(format!("testhost-{}", u32::MAX), dir.join("SingletonLock")).unwrap();
+    assert!(!profile_in_use(&dir), "a dead pid is stale, not in use");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ================= zombie liveness (the /proc lesson) =================
 
 #[test]

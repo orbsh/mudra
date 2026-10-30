@@ -125,6 +125,8 @@ mudra ui                          # web 控制台
 - 两条召回腿都不命中的地址，无论访问多少次都不出现在非空查询里。空查询不是搜索：它答的是最近打开的若干行（新的在前）——地址栏是空行打开的，那时问的是"我刚才在哪"。
 - `by_addr` / `by_title` 已退役：子序列没有索引可答，召回就是一次全读，索引失去了剪枝对象。这一趟跑在常驻语料（`HistoryIndex`：指称文本已折好，由两条写路径同步维护）上，不跑在表上——拿表读来付是 60k 行上每查询 490ms，语料上 10-40ms，空查询约 1ms（`docs/SCHEMA.zh-CN.md` History 节）。
 - 地址栏**每段打字停顿问一次**（120ms 去抖）、**取 30 条候选**（显示深度的三倍，列表可滚）。每按键一次查询才是"打字卡"的真凶：请求在 daemon 那把 store 锁上排队，一个六字母的词就是六趟端到端。
+- **传输**：每个动词都走"页面 → service worker 的一条 Port → `POST :8899`"。content script 在 https 页上够不到 `127.0.0.1`（实测：`fetch` → `TypeError: Failed to fetch`，socket → 2ms 内报错），MV3 也不给它跨域权限，扩展 context 是唯一豁免者。Port 按 `id` 配对回答，页面每 20s 发一次 ping：有页面开着，worker 不会因空闲被回收。
+- **worker 一旦真死就再也活不过来**——而这事是 mudrad 自己干的：在浏览器**正在跑**该 profile 时清 `Default/Service Worker/…`，worker 的脚本就没了，之后每条消息都是 `Receiving end does not exist` 直到该浏览器退出。已在干净 profile 里复现（先能答，抹掉五个缓存点，45s 后全死）。现在只有"没人占着这个 profile"时才清缓存（`spawn::profile_in_use`——面板是跨 daemon 重启存活的，它第二次 spawn 其实是 join 一个活着的浏览器）。
 
 ## 扩展面
 
