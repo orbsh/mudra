@@ -9,7 +9,7 @@
 
 通过 **CDP** 从外部驱动 **`chromium --app`** 窗口，底层是内嵌的 **okm/fjall KV 存储**，跑在平铺 WM（`niri`）下，全程键盘。页面按 **tag 森林**组织（多轴，取代 session），并带重要 / 紧急评分——浏览器因此先替你分拣，而不只是显示网页。
 
-**状态**：全栈 Rust——`mudra`（CLI）/ `mudrad`（daemon）+ okm/fjall 存储 + leptos wasm 控制台；Python 树已删除（2026-09-29）。核心（拉起 / 实时 CDP 同步 / 导航 / niri 窗口映射与移动 / 代理与扩展 / 列宽记忆）可用。**tag 森林**与 **wasm 控制台**（`mudra ui`）是管理面，所有生命周期操作都走 `mudrad` 控制 API。**扩展面**已落地：生命周期落进只追加的事件日志，常驻子进程扩展经 stdio 按 Induction 契约被托管，声明了 `mudra:before_navigate` 的 guest 在导航前拿到判决（allow / deny / redirect），预算内失败放行；页面侧**钩子**（ns 9）承载"JS 作为数据"。已验证 / 待验证台账见文末 *Status & known issues*。
+**状态**：全栈 Rust——`mudra`（CLI）/ `mudrad`（daemon）+ okm/fjall 存储 + leptos wasm 控制台；Python 树已删除（2026-09-29）。核心（拉起 / 实时 CDP 同步 / 导航 / niri 窗口映射与移动 / 代理与扩展 / 列宽记忆）可用。**tag 森林**与 **wasm 控制台**（`mudra ui`）是管理面，所有生命周期操作都走 `mudrad` 控制 API。**扩展面**已落地：生命周期落进只追加的事件日志，子进程扩展经 stdio 按 Induction 契约被托管——按需起、空闲窗口后自退，不在开机就把进程摆好；声明了 `mudra:before_navigate` 的 guest 在导航前拿到判决（allow / deny / redirect），预算内失败放行；事件可以带回答回到触发方（`mudra:fill_password`：地址栏的 `b` 让 guest 经 `rbw` 取 Bitwarden 密码）；页面侧**钩子**（ns 9）承载"JS 作为数据"。已验证 / 待验证台账见文末 *Status & known issues*。
 
 **前提**：需要一个既有精细 IPC、又有无上限 workspace 的 WM——只有 niri 两条都满足；论证在 wiki 文档里，不在这里。
 

@@ -54,6 +54,28 @@ scroll {
     overlapLines 5              // lines kept when paging a whole page (pageDown/pageUp)
 }
 
+extensions {
+    // name is what the session logs call it; the schema (what it listens to)
+    // comes from the script's own hello. Two spellings:
+    //   name "path/to/guest"                                    defaults
+    //   name {
+    //       cmd "path/to/guest"
+    //       idle_ttl 60          // seconds; 0 = never reap
+    //       resident true        // start at boot, never reap
+    //   }
+    // `cmd` may be absolute, `~/…` (against HOME), or RELATIVE — a relative one
+    // is resolved against the directory of the config file that declares it.
+    // Nothing is started at boot unless it says `resident true`: a delivery
+    // (an event, a verdict) starts the guest, and `idle_ttl` seconds after the
+    // last one it reaps itself. `resident` is for a guest the 200ms navigation
+    // verdict has to consult — that budget cannot pay for a cold start. A guest
+    // that declares the verdict event is kept warm regardless.
+    bwfill {
+        cmd "scripts/guests/bw_fill.py"
+        idle_ttl 60
+    }
+}
+
 // Placeholder: parsed but not consumed; the port is still decided by mudrad startup args
 server {
     port 8899

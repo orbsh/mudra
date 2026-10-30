@@ -1,4 +1,4 @@
-# ADR: 扩展协议——mudra 以 stdio 承载常驻子进程（Induction 线契约）
+# ADR: 扩展协议——mudra 以 stdio 承载扩展子进程（Induction 线契约）
 
 > **Languages:** [English](ADR-extension-protocol.md)（主文档） · [中文](ADR-extension-protocol.zh-CN.md)
 
@@ -42,19 +42,40 @@ prism 为一条本机、单消费者的链路额外引入一个进程依赖和�
 单是唯一求交集的机制。mudra 扩展是单向的：宿主提供能力，扩展自行决定用
 不用；线词汇表是静态的、双方天然知道（同机、同版纪律，decode 失败本身就是
 版本错配信号——不需要一个协商面预先消除它）。这正是 aura 已经命名并落地
-的形状——**BGI**（Booth Gateway Interface），FastCGI 血统的常驻桥：类型
+的形状——**BGI**（Booth Gateway Interface），FastCGI 血统的进程桥：类型
 化 host 帧、逐 target 静态应答语义（`Tier::Hot/Cold`）、每语言一个包装器
 作为可移植面——后抽取为独立的 **Induction** 协议 crates（`~/world/induction`）。
 mudra 经这些 crates 采用该契约，不发明第二种线格式。
 
 ## 决策
 
-### 1. 扩展是常驻子进程（induction 形态）
+### 1. 扩展是管道上的子进程（induction 形态）
 
-在 `config.kdl` 声明（`[extensions]` 组：名字 → 可执行文件路径——只是路
-由元数据：跑哪些进程，与它们监听什么无关）。mudrad 负责 spawn 与守护：
-`PDEATHSIG`、读 `/proc` state 探僵尸、带退避的重启——既有 spawn 纪律整
-体复用。扩展永不绑端口；它唯一的 socket 就是管道。
+在 `config.kdl` 声明（`extensions` 组：名字 → 可执行文件路径，或
+`{ cmd; idle_ttl; resident }`——只是路由元数据：跑哪些进程，与它们监听什么
+无关）。mudrad 负责 spawn 与守护：`PDEATHSIG`、读 `/proc` state 探僵尸、带
+退避的重启——既有 spawn 纪律整体复用。扩展永不绑端口；它唯一的 socket
+就是管道。
+
+### 1b. 留存由投递预算决定
+
+本文第一版说「常驻子进程」，而且真的是这个意思：`supervise` 开机读配置、
+把每条声明都拉起来，然后一直挂着。那是 FastCGI 的条件反射，对一个一小时
+才被问一次的 guest 是错的——induction 的形状是**按需冷起 + 留存窗口**
+（aura 的 `lifecycle.idle_ttl` + evictor），mudra 现在也是：
+
+- **开机什么都不起**，除非声明里写了 `resident true`。
+- 有东西要投递（一行事件、一次判决调用）才起：`ensure` 负责 spawn、握手、
+  注册——**注册之后**调用方才能写它想得到回答的那一行，因为 session 在握手
+  时就把 cursor 拍下来了，先写行会被当成历史跳过。
+- 每投递一帧 `last_activity` 就前进；超过 `idle_ttl` 秒 session 自己退掉，
+  下一次投递再冷起。默认 60 秒，`0` = 永不回收。
+- **例外，且不可配置：** 声明了 Hot 事件的 session 永不回收。200ms 的判决
+  预算付不起 spawn + 握手，被回收的 Hot guest 只会让闸门一直静默放行。
+  留存由预算裁决，声明只表达 guest 想要什么。
+
+这次换回来的冷起成本实测：`python3` 解释器 16ms（20 次中位），而下面那个
+guest 一次 `rbw list` 是 138ms——spawn 相对真正的工作是噪声。
 
 ### 2. 运输：Induction 帧，仅 json-lines codec
 
@@ -109,6 +130,33 @@ schema 里 `Tier`/deadline 的位置是预留，但还没有任何一方携带�
 beacon、控制台、CLI）与 `/nav` 的 `cmd: goto`——刻意**不挂** `run_verb`：
 guest 自己的 `host:invoke` 不能被它正在执行的那个判决拦住。所有失败面
 （无声明会话、预算到期、通道断、队列满、应答不可解析）一律放行。
+
+### 4b. 事件可以带回答（ask 面）
+
+§4 说一个处理器要么 Hot（判决）要么 Cold（投递即完），没有既此又彼的帧。
+后来发现需要第三种形状，而它不需要新词汇：**日志行号就是调用 id**。调用方
+写一行事件，声明了该 kind 的 guest 回 `{id: <行号>, result}`，mudrad 把值
+交给等在这个 id 上的调用方。
+
+- `POST /fill_password {url, ctx?, user_hint?}` → mudrad 先冷起候选 guest，
+  写一行 `mudra:fill_password`，等 `ASK_BUDGET`（15 秒），返回
+  `{ok, event_id, answer}`。它不是 Controller 动词：等的这 15 秒里不持
+  store 锁（否则唯一的 store 互斥被停 15 秒），所以它挂在 `run_verb` 之前的
+  HTTP 外壳上。
+- 调用方通常是地址栏（`b`、`:fill-password`），拿到值后用原型上的 setter
+  加一对 `input`/`change` 事件填进聚焦的密码框——裸写 `el.value =` 对任何带
+  value tracker 的框架都不可见。
+- 失败是 fail-**CLOSED**（与判决相反）：没有 guest 声明、预算内没答、库里有
+  多条候选，都变成状态栏上的一行字。迟到的密码没有价值，填错的更糟。
+- 日志顺带留一条请求，控制台 `events` 面板能看到每次填充尝试。单写一行事件
+  不移动 epoch（日志是面板不可见 collection），所以这条路径自己 bump 一次——
+  那个 bump 就是扇出等待的唤醒信号。
+
+**随附 guest：** `scripts/guests/bw_fill.py`——手写 Induction guest（不引客户端
+库），经 `rbw` 从 Bitwarden 库取密码。只按 **URI host** 匹配，绝不按条目名
+（这个库里 `rbw get github` 会答 "multiple entries found"：有五个）；用页面上
+已经填好的用户名收窄，仍多义就报错而不是猜。库锁着就如实报错（`rbw` 没有
+可弹提示的终端——stdin 是线路）。
 
 ### 5. 效应在 mudra 执行，永不在扩展内
 

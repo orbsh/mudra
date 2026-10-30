@@ -22,10 +22,13 @@ leptos wasm console; the Python tree is gone (2026-09-29). Core (spawn / realtim
 sync / navigation / niri window mapping+move / proxy+extensions / column-width memory)
 works. The **tag forest** and the **wasm console** (`mudra ui`) are the management
 surface; every lifecycle op goes through the `mudrad` control API. The **extension
-plane** is live: lifecycle lands in an append-only event log, resident subprocess
-extensions are hosted over stdio on the Induction contract, a guest declaring
+plane** is live: lifecycle lands in an append-only event log, subprocess
+extensions are hosted over stdio on the Induction contract — started on demand and
+reaped after an idle window, not parked at boot — a guest declaring
 `mudra:before_navigate` gets a pre-navigation verdict (allow / deny / redirect) under a
-fail-open budget, and page-side **hooks** (ns 9) carry JS-as-data. Verified/pending
+fail-open budget, and an event can carry an answer back to its trigger
+(`mudra:fill_password`: the address bar's `b` asks a guest for a Bitwarden password
+through `rbw`). Page-side **hooks** (ns 9) carry JS-as-data. Verified/pending
 ledger: *Status & known issues* below.
 
 **Requires** a WM with fine-grained IPC *and* unbounded workspaces — niri is the only

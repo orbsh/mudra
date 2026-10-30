@@ -32,6 +32,13 @@
   const PORT_NAME = "mudra";
   const HEARTBEAT_MS = 20000;
   const CALL_TIMEOUT_MS = 2500;
+  // A call that starts a process has its own budget: the first one after the
+  // extension loads into a cold profile pays the worker's boot too, and the
+  // fill path pays a guest spawn plus `rbw` (measured 158ms cold / 95ms warm once
+  // the worker is up, but seconds when it is not). The daemon's own budget for
+  // this verb is 15s; give the wire the whole of it rather than inventing a
+  // shorter one that turns a real answer into "timeout".
+  const SLOW_CALL_TIMEOUT_MS = 20000;
   let workerPort = null;
   let portSeq = 0;
   const portWaiting = new Map(); // id -> resolve(reply)
@@ -74,7 +81,7 @@
   }
 
   // One call, one reply, paired by id. No answer is a failure and says so.
-  function send(msg) {
+  function send(msg, budget = CALL_TIMEOUT_MS) {
     const port = portOpen();
     if (!port) return Promise.resolve({ ok: false, err: `no link to the extension worker (${msg.type})` });
     const id = ++portSeq;
@@ -82,7 +89,7 @@
       const timer = setTimeout(() => {
         portWaiting.delete(id);
         res({ ok: false, err: `extension worker timeout (${msg.type})` });
-      }, CALL_TIMEOUT_MS);
+      }, budget);
       portWaiting.set(id, (r) => { clearTimeout(timer); res(r); });
       try {
         port.postMessage({ ...msg, id });
@@ -346,6 +353,57 @@
     await flashBar(ok ? `copied ${what}: ${short}` : `copy failed: ${what}`);
   }
 
+  // ---- fill-password: the guest reads the secret, the page types it ----------
+  // Nothing here knows about Bitwarden: the page asks mudrad to fire
+  // `mudra:fill_password` and a declared guest answers it (bw-fill → rbw). The
+  // value crosses this script once and is never stored anywhere.
+  const isShown = (el) => {
+    const r = el.getBoundingClientRect();
+    const st = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== "hidden" && st.display !== "none";
+  };
+  // Every framework with a value tracker (React first among them) ignores a plain
+  // `el.value = x`: the write has to go through the prototype's own setter, and
+  // then announce itself the way a keystroke would.
+  function setValueLikeTyping(el, value) {
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(el, value);
+    else el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  function passwordField() {
+    const fields = deepQueryAll('input[type="password"]').filter(isShown);
+    // the focused one wins: a form can carry several (login + confirm)
+    return fields.find((el) => el === document.activeElement) || fields[0] || null;
+  }
+  function usernameField(pw) {
+    const inputs = deepQueryAll('input[type="text"], input[type="email"], input:not([type])').filter(isShown);
+    if (!inputs.length) return null;
+    // the closest text input BEFORE the password field: that is the login form's
+    const before = inputs.filter((el) => pw.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING);
+    return before[before.length - 1] || null;
+  }
+  async function fillPassword() {
+    const pw = passwordField();
+    if (!pw) return flashBar("no password field on this page");
+    const user = usernameField(pw);
+    // a filled-in username is the only disambiguator a keyboard has when the vault
+    // holds several entries for one host
+    const res = await send({ type: "fill_password", url: location.href, ctx, user_hint: (user && user.value) || "" },
+      SLOW_CALL_TIMEOUT_MS);
+    if (res.ok === false) return flashBar(res.err || "fill failed");
+    const answer = res.answer || {};
+    if (answer.ok === false) return flashBar(answer.err || "fill failed");
+    if (!answer.password) return flashBar("no password in the answer");
+    setValueLikeTyping(pw, answer.password);
+    if (answer.user && user && !user.value) setValueLikeTyping(user, answer.user);
+    pw.focus();
+    const extra = answer.matched > 1 ? ` (${answer.matched} entries, took ${answer.user || "?"})` : "";
+    flashBar(`filled ${answer.name || answer.user || "password"}${extra}`);
+  }
+
   // ---- key sequences ---------------------------------------------------------
   // A key that starts a sequence does nothing on its own: it opens a menu above
   // the status bar and waits seqTimeout ms for the second key. The menu is the
@@ -395,6 +453,7 @@
     new:     { defaultKey: "A", aliases: ["O"], desc: "open url in a new window",
                run: (arg) => (arg.trim() ? openNew(arg) : enterCommand("new ")) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
+    fillPassword: { defaultKey: "b", desc: "fill password from bitwarden (guest)", run: () => fillPassword() },
     q:       { defaultKey: null, desc: "close this page", run: () => closeSelf() },
     set:     { defaultKey: null, desc: ":set <key> <value> (e.g. set scrollStepLines 5)", run: (arg) => runSet(arg) },
   };
@@ -504,11 +563,16 @@
     // it can take you, not command names.
     if (URL_VERBS.has(name) && text.includes(" ")) return filterAddress(name, arg);
     historySeq++; // an address filter may still be in flight; it must not repaint this list
+    // Command names are camelCase (`fillPassword`); the line also matches their
+    // kebab spelling (`fill-password`) — a command line is typed, and an inner
+    // capital costs a shift mid-word.
     const items = Object.entries(COMMANDS)
-      .filter(([n]) => !name || n.startsWith(name))
+      .filter(([n]) => !name || n.startsWith(name) || kebab(n).startsWith(name))
       .map(([n, c]) => ({ label: n, desc: c.desc, value: n }));
     cmdApi.setItems(items);
   }
+
+  const kebab = (n) => n.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
 
   async function pickCmd(cand, raw, api, reason) {
     const q = (raw || "").replace(/^:/, "").trim();

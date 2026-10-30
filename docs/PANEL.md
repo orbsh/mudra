@@ -48,6 +48,16 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
   **Port**（`{id, type, ...}` 进、`{id, ok, ...}` 出），worker 再 `POST` 上面这些动词。
   Port 同时是心跳：页面每 20s 发一次 ping，有页面开着 worker 就不会因空闲被回收。
 
+### 面板窗口的调试口（9480）
+
+面板窗口带 `--remote-debugging-port=9480`（`MUDRA_PANEL_CDP` 可改）。mudrad 从不用 CDP 驱动它，
+这个口只为诊断：面板"卡死、关不掉"时，从外面连上去问一个整数就能把两种卡死分开——
+
+- `Runtime.evaluate 1+1` 有回答 ⇒ 页面主线程没被挡，卡在页面**下面**（GPU / 合成器 / WM）；
+- 没回答 ⇒ 是 wasm 应用本身，`Debugger.pause` 拿栈。
+
+9480 故意放在实例 `free_port(9200, 200)` 范围之外，页面窗口永远不会占用它。
+
 ### 视图（三个面共用一个壳）
 
 头部第一行是面切换钮 `pages | events | hooks`（默认页面树）。ctx 选择器 / 时间排序 /

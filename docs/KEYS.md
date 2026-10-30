@@ -61,6 +61,7 @@ Tab 走选中、Enter 取高亮的那条 URL，
 | `r` | refresh | 重载 |
 | `t` | tag | 打 tag（弹 tag 输入） |
 | `P` | pages | 切页（mudrad） |
+| `b` | fillPassword | 从 Bitwarden 填密码（见下） |
 | `y` `y` | — | 复制当前页地址到剪贴板 |
 | `y` `t` | — | 复制当前页标题到剪贴板 |
 | `?` | — | 键位表（在状态条上方弹出，超出高度可滚动） |
@@ -76,6 +77,20 @@ Tab 走选中、Enter 取高亮的那条 URL，
 不做 URL 匹配（mudrad 的 `/close_page` 收的是子串，会认错页），所以控制台也能 `:q`（它只是
 另一个 tab）。mudrad 的 watcher 收到 `Target.targetDestroyed` 自己把 page 行标 closed，
 不需要扩展回报。
+
+## 填密码（`b` / `:fill-password`）
+
+`b` 不读任何密码：它把 `mudra:fill_password` 事件发给 mudrad，由**声明了该事件的 guest**
+（`scripts/guests/bw_fill.py`，经 `rbw` 读 Bitwarden）作答，值再回到页面，由内容脚本用原型
+setter + `input`/`change` 事件填进聚焦的密码框（用户名框空着就一起填）。地址栏里也不写仓库
+路径：guest 的名字和留存策略在 `config.kdl` 的 `extensions` 组。
+
+匹配只按 **URI host**，绝不按条目名——这个库里 `rbw get github` 会答 "multiple entries found"
+（五个 github 账号）。多条候选时用页面上**已填的用户名**收窄；仍然多义就报错，不猜（填错密码
+比不填糟得多）。没有 guest 声明、15 秒内没答、库里没这条，都在状态栏上落一行字。
+
+guest 不常驻：按 `b` 时才起（`python3` 冷起 16ms，一次 `rbw list` 138ms），答完 60 秒无人
+再问就自己退。命令行同样接受驼峰与短横线两种写法（`:fillPassword` ≡ `:fill-password`）。
 
 ## 键序列与键位表
 

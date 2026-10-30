@@ -23,8 +23,13 @@ async function post(path, body) {
     headers: { "Content-Type": "text/plain" },
     body: JSON.stringify(body || {}),
   });
-  if (!r.ok) throw new Error(`mudrad ${path}: HTTP ${r.status}`);
-  return r.json();
+  const text = await r.text();
+  let out = null;
+  try { out = JSON.parse(text); } catch { /* not JSON: the status line is all we have */ }
+  // the daemon's own `err` is the useful sentence ("no bitwarden entry for …"),
+  // so it must survive a non-200 instead of being replaced by the status code
+  if (!r.ok) throw new Error((out && out.err) || `mudrad ${path}: HTTP ${r.status}`);
+  return out || {};
 }
 
 const tabIdOf = (sender) => (sender && sender.tab ? sender.tab.id : undefined);
@@ -88,6 +93,11 @@ async function handle(msg, tabId) {
     case "history": {
       // address-bar completion: ranked open-history candidates
       return post("/history", { query: msg.query, limit: msg.limit });
+    }
+    case "fill_password": {
+      // answered by a guest, not by mudrad: `/fill_password` writes the event row
+      // and waits for a declared extension (bw-fill → rbw) to reply
+      return post("/fill_password", { url: msg.url, ctx: msg.ctx, user_hint: msg.user_hint });
     }
     case "focus_page": {
       // switch to another page via mudrad (CDP activate + WM raise)

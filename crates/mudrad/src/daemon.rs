@@ -41,6 +41,10 @@ use crate::watch::WatchSession;
 pub const CONTROL_PORT: u16 = 8899;
 pub const PANEL_PORT: u16 = crate::control::PANEL_PORT;
 pub const WS_PORT: u16 = PANEL_PORT + 1; // 9300, same layout as Python
+/// The panel window's CDP port. Outside `free_port(9200, 200)` on purpose: that
+/// range is where page windows pick theirs, and a freeze in the panel has to be
+/// observable (see `runtime::Real::launch_panel`).
+pub const PANEL_CDP_PORT: u16 = 9480;
 
 /// Page-injection script (new-window interception): forwards window.open
 /// and every left-click `<a href>` navigation to mudrad /open, so no
@@ -98,7 +102,7 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    fn publish_epoch(&self, epoch: u64) {
+    pub(crate) fn publish_epoch(&self, epoch: u64) {
         let _ = self.epoch_tx.send(epoch);
     }
 }
@@ -218,6 +222,24 @@ async fn handle_control_conn(mut sock: TcpStream, d: Arc<Daemon>) -> std::io::Re
     let (req, blocked) = crate::host::intercept(&d, &path, req).await;
     if let Some(reply) = blocked {
         return http_response(&mut sock, 200, reply.to_string().as_bytes(), "application/json").await;
+    }
+    // The ask face is not a Controller verb: it holds no store lock, it WRITES to
+    // one (the event row) and then waits on a guest, for up to the ask budget.
+    // Running it inside run_verb would park the store mutex for that whole wait.
+    if path == "/fill_password" {
+        let (status, payload) = match crate::host::fill_password(&d, &req).await {
+            Ok(mut out) => {
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("ok".into(), json!(true));
+                }
+                (200, out)
+            }
+            Err(err) => {
+                eprintln!("[mudrad] fill_password: {err}");
+                (400, json!({ "ok": false, "err": err }))
+            }
+        };
+        return http_response(&mut sock, status, payload.to_string().as_bytes(), "application/json").await;
     }
     let outcome = run_verb(&d, &path, req).await;
     let (status, payload) = match outcome {

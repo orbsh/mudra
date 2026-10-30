@@ -1,4 +1,4 @@
-# ADR: Extension protocol — mudra hosts resident subprocesses over stdio (the Induction wire contract)
+# ADR: Extension protocol — mudra hosts extension subprocesses over stdio (the Induction wire contract)
 
 > **Languages:** [English](ADR-extension-protocol.md) (primary) · [中文](ADR-extension-protocol.zh-CN.md)
 
@@ -17,6 +17,15 @@ stay mudra's). The intercept (`Hot`) face landed 2026-10-13 (§4 below):
 call ids, a fail-open budget, gated at `/open` and `/nav goto`. Both the log
 and the hook set got their console views the same day (`events` / `hooks`
 tabs; the log reads `{tail: N}` and every response carries `head`).
+
+**Update 2026-10-30 — residency, and an event that answers.** Two corrections to
+what this document first decided. (a) Residency is a **budget** question, not a
+launch setting: nothing is started at boot unless it declares `resident true`, a
+delivery cold-starts the guest, and the session reaps itself `idle_ttl` seconds
+after its last one (§1b). A guest that declares the Hot event is never reaped,
+whatever its declaration says — the 200 ms verdict cannot pay for a cold start.
+(b) An event can carry an answer: the row id IS the call id, so a trigger can
+return a value (§4b, `mudra:fill_password` — the address bar's `b`).
 
 **Supersedes**: [ADR-aura-probe-federation](ADR-aura-probe-federation.md)
 (v3, proposal) — the prism transport leg and the effector-invoke leg are both
@@ -57,7 +66,7 @@ what to use; the wire vocabulary is static and known by both sides (same
 machine, same-version discipline, decode failure *is* the version-mismatch
 signal — it does not need a negotiation to pre-empt it). This is exactly the
 shape aura already named and shipped — **BGI** (Booth Gateway Interface), a
-FastCGI-lineage resident bridge with typed host frames, per-target static
+FastCGI-lineage process bridge with typed host frames, per-target static
 reply semantics (`Tier::Hot/Cold`), and one per-language wrapper as the
 portability surface — since extracted into the standalone **Induction**
 protocol crates (`~/world/induction`). mudra adopts the contract through
@@ -65,13 +74,43 @@ those crates; it does not invent a second wire.
 
 ## Decision
 
-### 1. An extension is a resident subprocess (the induction shape)
+### 1. An extension is a subprocess on a pipe (the induction shape)
 
-Declared in `config.kdl` (`[extensions]` group: name → executable path —
-routing metadata only: which processes to run, nothing about what they
-listen to). mudrad spawns and supervises: `PDEATHSIG`, zombie-probing
-`/proc` state, restart with backoff — the existing spawn discipline reused
-wholesale. An extension never binds a port; its only socket is the pipe.
+Declared in `config.kdl` (`extensions` group: name → executable path or
+`{ cmd; idle_ttl; resident }` — routing metadata only: which processes to run,
+nothing about what they listen to). `cmd` may be absolute, `~/…` (against HOME),
+or relative, in which case it resolves against the directory of the config file
+that declares it — the repo's own config names `scripts/guests/bw_fill.py` and
+works wherever the repo is checked out. mudrad spawns and supervises:
+`PDEATHSIG`, zombie-probing `/proc` state, restart with backoff — the existing
+spawn discipline reused wholesale. An extension never binds a port; its only
+socket is the pipe.
+
+### 1b. Residency is decided by the delivery budget
+
+The first version of this document said "resident subprocess" and meant it
+literally: `supervise` read the config at boot and started every declaration,
+which then stayed parked for the life of the daemon. That is a FastCGI reflex,
+and it is wrong for a guest that is asked something once an hour — the induction
+shape is *cold start on demand plus a retention window* (aura's
+`lifecycle.idle_ttl` + evictor), and mudra now does the same:
+
+- **Nothing starts at boot** unless the declaration says `resident true`.
+- A delivery (an event row, a verdict call) starts the guest: `ensure` spawns,
+  handshakes, registers — and only then does the caller write the row it wants
+  answered, because a session snapshots its cursor at the handshake and would
+  otherwise read that row as history.
+- `last_activity` moves on every delivered frame; `idle_ttl` seconds later the
+  session reaps itself, and the next delivery cold-starts it. Default 60 s,
+  `0` means never.
+- **Exception, derived and not configurable:** a session that declares a Hot
+  event is never reaped. A 200 ms verdict cannot pay for a spawn + handshake, so
+  a reaped Hot guest would leave the gate failing open — silently, forever. The
+  budget decides residency; the declaration only says what the guest wants.
+
+Measured cost of the cold start this buys back: `python3` interp 16 ms (median of
+20), against one `rbw list` at 138 ms for the guest below — the spawn is noise
+next to the work.
 
 ### 2. Wire: Induction frames, json-lines codec only
 
@@ -138,6 +177,38 @@ ENTRIES of 8899 — `/open` (link-click beacon, console, CLI) and `/nav` with
 `host:invoke` cannot be gated by the verdict it is carrying out. Every failure
 mode (no declaring session, expired budget, dropped channel, stalled queue,
 unparsable answer) fails open.
+
+### 4b. An event can answer (the ask face)
+
+§4 says a handler is either Hot (a verdict) or Cold (fire-and-forget), with no
+frame that is both. A third shape turned out to be needed, and it costs no new
+vocabulary: **the row id is the call id.** A caller writes an event row, a guest
+that declared that kind answers with `{id: <row id>, result}`, and mudrad hands
+the value back to the caller that is waiting on that id.
+
+- `POST /fill_password {url, ctx?, user_hint?}` → mudrad cold-starts the
+  candidates, writes a `mudra:fill_password` row, waits `ASK_BUDGET` (15 s), and
+  returns `{ok, event_id, answer}`. Not a Controller verb: it holds no store lock
+  while it waits (that would park the single store mutex for 15 s), so it sits in
+  the HTTP shell ahead of `run_verb`.
+- The caller is usually the address bar (`b`, `:fill-password`), which then types
+  the value into the focused password field with the prototype's own setter and
+  an `input`/`change` pair — a plain `el.value =` is invisible to any framework
+  with a value tracker.
+- Failure is fail-CLOSED (unlike a verdict): no declaring guest, no answer within
+  budget, or an ambiguous vault entry is an error string on the status bar. A
+  late password is worth nothing, and a wrong one is worth less.
+- The log keeps the request for free, so the console's `events` tab shows every
+  fill attempt beside the lifecycle events. A standalone row moves no epoch (the
+  log is panel-invisible), so this path bumps it explicitly — that bump is the
+  wake signal the fan-out rides.
+
+**Shipped guest:** `scripts/guests/bw_fill.py` — a hand-written Induction guest
+(no client library) that answers from a Bitwarden vault through `rbw`. It matches
+by **URI host**, never by entry name (`rbw get github` answers "multiple entries
+found" in this vault: five of them), narrows by the username the page already
+carries, and refuses rather than guessing when the entry is still ambiguous. A
+locked vault is reported (`rbw` has nobody to prompt — stdin is the wire).
 
 ### 5. Effects execute in mudra, never in the extension
 

@@ -69,6 +69,23 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPAWN_DELAY: Duration = Duration::from_secs(10);
 /// Rows pulled per epoch change, per session.
 const EVENT_BATCH: usize = 256;
+/// How long a session that is NOT declared `resident` stays after its last
+/// delivery before it reaps itself. Chosen against the cost it pays on the next
+/// one: a python guest cold start measured 16ms (median of 20) — nothing next to
+/// the work a guest like `bw-fill` does (one `rbw list` is 138ms).
+const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(60);
+
+// ================= §4b the ask face: an event that answers =================
+
+/// A user-fired event whose consumer answers it, so the trigger can carry a
+/// value back (the fill-password verb). Names are free strings (§3); this one is
+/// mudra's, like the lifecycle kinds.
+pub const FILL_PASSWORD: &str = "mudra:fill_password";
+/// The ask budget. Generous on purpose: the answer may run a password manager
+/// (unlock, a local DB query), which is seconds, not milliseconds — and unlike a
+/// navigation verdict there is nothing to lose by waiting, since a wrong or
+/// absent password would fill the wrong fields.
+const ASK_BUDGET: Duration = Duration::from_secs(15);
 
 // ================= §4 intercept plane: the Hot face =================
 
@@ -138,12 +155,104 @@ impl Handle {
     }
 }
 
+/// One `extensions` entry: what to run, and how long to keep it alive.
+///
+/// Residency is a BUDGET question, not a preference: a guest that has to be
+/// consulted inside the 200ms verdict budget cannot be cold-started there, so it
+/// is declared `resident` (started at boot, never reaped). Everything else is
+/// started when something must be delivered to it and reaps itself after
+/// `idle_ttl` — the induction shape (aura's `lifecycle.idle_ttl` + evictor), not
+/// a set of daemons parked since login.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decl {
+    pub name: String,
+    pub cmd: String,
+    /// Started at boot and never reaped.
+    pub resident: bool,
+    /// Idle window; ignored when `resident`. `None` = the default window.
+    pub idle_ttl: Option<Duration>,
+    /// The directory of the config file that declared this — a relative `cmd` is
+    /// resolved against it, so a tracked config can name its guest relatively.
+    pub base: Option<std::path::PathBuf>,
+}
+
+impl Decl {
+    /// A declaration with defaults — what a bare `name "path"` means.
+    pub fn new(name: impl Into<String>, cmd: impl Into<String>) -> Self {
+        Self { name: name.into(), cmd: cmd.into(), resident: false, idle_ttl: None, base: None }
+    }
+
+    /// Decode one `config["extensions"]` entry: a bare string is the command, a
+    /// table adds `resident` / `idle_ttl` (seconds).
+    pub fn from_value(name: &str, v: &Value) -> Option<Self> {
+        match v {
+            Value::String(cmd) => Some(Self::new(name, cmd.clone())),
+            Value::Object(m) => Some(Self {
+                name: name.to_string(),
+                cmd: m.get("cmd").and_then(Value::as_str)?.to_string(),
+                resident: m.get("resident").and_then(Value::as_bool).unwrap_or(false),
+                idle_ttl: m.get("idle_ttl").and_then(Value::as_u64).map(Duration::from_secs),
+                base: None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The idle window this session reaps at, or `None` for "never". A resident
+    /// declaration has no window; `0` is the same statement written explicitly.
+    fn ttl(&self) -> Option<Duration> {
+        if self.resident {
+            return None;
+        }
+        match self.idle_ttl {
+            Some(d) if d.is_zero() => None,
+            Some(d) => Some(d),
+            None => Some(DEFAULT_IDLE_TTL),
+        }
+    }
+
+    /// The executable to run. Three spellings, resolved here rather than by the
+    /// kernel: `~/…` against HOME, an absolute path as written, and a relative
+    /// path against the directory of the config file that declared it (so the
+    /// repo's own config names `scripts/guests/bw_fill.py` and works wherever the
+    /// repo is checked out, for whoever checks it out).
+    fn exec(&self) -> std::path::PathBuf {
+        if let Some(rest) = self.cmd.strip_prefix("~/") {
+            return match std::env::var_os("HOME") {
+                Some(home) => std::path::PathBuf::from(home).join(rest),
+                None => std::path::PathBuf::from(&self.cmd),
+            };
+        }
+        let path = std::path::Path::new(&self.cmd);
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        match &self.base {
+            Some(base) => base.join(path),
+            None => path.to_path_buf(),
+        }
+    }
+}
+
 /// The daemon's live sessions, one per declared extension name. A
 /// `std::sync::Mutex`, not tokio's: the critical section is a Vec walk with
 /// no await in it, and the gate must hold nothing across the verdict await.
 #[derive(Default)]
 pub struct Registry {
     sessions: std::sync::Mutex<Vec<Handle>>,
+    /// The config declarations, read once at boot. Kept here because the demand
+    /// path needs them long after `supervise` returned.
+    decls: std::sync::Mutex<Vec<Decl>>,
+    /// Event ids a caller is waiting on: an answer frame whose id is neither a
+    /// pending Hot call nor here is dropped (the guest answered something nobody
+    /// asked for).
+    answers: std::sync::Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    /// Answers that arrived BEFORE the waiter registered. The window is real:
+    /// the row id is assigned by the store write, so the waiter can only
+    /// register after it, and a fast guest can answer in between.
+    late: std::sync::Mutex<HashMap<u64, Value>>,
+    /// Names whose spawn is in flight — one spawn per name, no pile-up.
+    spawning: std::sync::Mutex<std::collections::HashSet<String>>,
     next_id: std::sync::atomic::AtomicU64,
 }
 
@@ -171,6 +280,115 @@ impl Registry {
             .cloned()
             .collect()
     }
+
+    /// Record the config declarations (boot, or a test). They outlive their
+    /// sessions: the demand path re-reads them for every cold start.
+    pub fn set_decls(&self, decls: Vec<Decl>) {
+        *self.decls.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = decls;
+    }
+
+    fn decl(&self, name: &str) -> Option<Decl> {
+        self.decls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|d| d.name == name)
+            .cloned()
+    }
+
+    fn is_spawning(&self, name: &str) -> bool {
+        self.spawning
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(name)
+    }
+
+    /// Every declaration that is not `resident` — the ones the demand path may
+    /// cold-start.
+    fn non_resident(&self) -> Vec<Decl> {
+        self.decls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|d| !d.resident)
+            .cloned()
+            .collect()
+    }
+
+    pub fn is_live(&self, name: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|s| s.name == name)
+    }
+
+    /// Claim the right to spawn `name`. `false` = someone else is already
+    /// spawning it (the caller waits for the handshake instead of a second
+    /// process).
+    fn claim_spawn(&self, name: &str) -> bool {
+        self.spawning
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name.to_string())
+    }
+
+    fn release_spawn(&self, name: &str) {
+        self.spawning
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name);
+    }
+
+    /// Where the answer to event row `id` lands. A value that arrived before this
+    /// call is handed straight back — the waiter can only register after the store
+    /// assigned the id, so "already answered" is a live case, not a defensive one.
+    fn answer_for(&self, id: u64) -> Answer {
+        if let Some(v) = self
+            .late
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
+        {
+            return Answer::Ready(v);
+        }
+        let (tx, rx) = oneshot::channel();
+        self.answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, tx);
+        Answer::Pending(rx)
+    }
+
+    /// Route one guest answer to its waiter. `false` = nobody asked for this id,
+    /// and it is stashed in case the waiter is a moment late.
+    fn deliver(&self, id: u64, value: Value) -> bool {
+        if let Some(tx) = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
+        {
+            let _ = tx.send(value);
+            return true;
+        }
+        // only event-row ids can be answered late (Hot ids are the host's own and
+        // always have a waiter); the cap keeps a chatty guest from growing this
+        let mut late = self.late.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if id < HOT_ID_BASE {
+            if late.len() >= 64 {
+                late.clear();
+            }
+            late.insert(id, value);
+        }
+        false
+    }
+}
+
+/// What `answer_for` produced: a value already in hand, or a receiver to await.
+pub enum Answer {
+    Ready(Value),
+    Pending(oneshot::Receiver<Value>),
 }
 
 /// §4's intercept plane: ask every session that declared the event, in
@@ -278,17 +496,24 @@ impl HostOps for VerbOps<'_> {
     }
 }
 
-/// One session attempt: spawn, handshake, deliver-loop. Returns when
-/// the child dies, or the daemon shuts down (epoch channel closed). A
-/// stalled WRITE ends the session — the supervisor respawns with a fresh
-/// cursor at the log head. The supervisor calls this in a retry loop.
-pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
+/// One session: spawn, handshake, deliver-loop. Returns when the child dies, the
+/// idle window expires, or the daemon shuts down (epoch channel closed). A
+/// stalled WRITE ends the session.
+///
+/// The session is the residency: whoever starts it (`supervise` for a `resident`
+/// declaration, the demand path for everything else) gets the same task, and the
+/// idle window is the only thing that decides when it goes away — a session that
+/// keeps being delivered to does not expire, and one that is not expires without
+/// anyone watching.
+pub async fn session(d: &std::sync::Arc<Daemon>, decl: Decl) {
+    let name = decl.name.clone();
     let mut rx = d.epoch_tx.subscribe();
-    let spec = Spec::executable(name, path);
+    let spec = Spec::executable(&name, decl.exec().to_string_lossy().to_string());
     let mut process: Process = match spawn(&spec) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[host:{name}] spawn failed: {e}");
+            d.host.release_spawn(&name);
             return;
         }
     };
@@ -298,31 +523,48 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
     let Some(hello) = process.session.handshake(HANDSHAKE_TIMEOUT).await else {
         eprintln!("[host:{name}] handshake failed (no/undecodable hello within budget)");
         process.kill();
+        d.host.release_spawn(&name);
         return;
     };
     if hello.name != name {
         eprintln!("[host:{name}] hello name mismatch: {:?}", hello.name);
     }
-    eprintln!("[host:{name}] ready (on: {:?})", hello.schema.on());
+    // The verdict budget decides residency, not the config author: a guest the
+    // intercept plane has to consult cannot be cold-started inside 200ms, so a
+    // session that declares the Hot event never expires — it would fail open on
+    // every request after its first idle window, silently.
+    let declares_hot = hello.schema.receives(BEFORE_NAVIGATE);
+    let ttl = if declares_hot { None } else { decl.ttl() };
+    eprintln!(
+        "[host:{name}] ready (on: {:?}, retention: {})",
+        hello.schema.on(),
+        match ttl {
+            Some(t) => format!("{}s idle", t.as_secs()),
+            None if declares_hot => "resident (Hot face)".to_string(),
+            None => "resident".to_string(),
+        }
+    );
 
     // the dispatch end of the intercept plane: one queue per session plus
     // the handle the gate reaches it by. Registering a same-name handle
     // replaces a predecessor's and closes ITS queue — the old task ends.
     let (hot_tx, mut hot_rx) = mpsc::channel::<HotCall>(HOT_QUEUE);
     d.host.register(Handle {
-        name: name.to_string(),
+        name: name.clone(),
         events: hello.schema.on(),
         tx: hot_tx,
     });
+    // the handshake is done: a second spawn for this name would be a duplicate
+    d.host.release_spawn(&name);
 
-    // per-session cursor starts at the log head (no history replay, v1).
-    // An unreadable head is a store fault: the session ends and the
-    // supervisor respawns it (a cursor guessed from 0 would replay the
-    // whole log into a fresh subscriber).
+    // per-session cursor starts at the log head (no history replay, v1). The
+    // order matters for the demand path: the caller spawns us BEFORE writing the
+    // row it wants answered, so the row is future, not history.
     let mut cursor = match { d.store.lock().await.event_head() } {
         Ok(head) => head,
         Err(e) => {
             eprintln!("[host:{name}] event head read failed: {e}; session ends");
+            d.host.unregister(&name);
             process.kill();
             return;
         }
@@ -330,6 +572,8 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
     // verdicts this host is waiting on: host-assigned id -> the waiter. The
     // table lives here because the answers arrive here.
     let mut pending: HashMap<u64, oneshot::Sender<Value>> = HashMap::new();
+    // last delivery of any kind; the idle window is measured from here
+    let mut last = tokio::time::Instant::now();
 
     // Disjoint read/write borrows — the shape the library's Reader/Writer
     // split exists for: both halves live across one select!.
@@ -353,7 +597,7 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                     Ok(rows) => rows,
                     Err(e) => {
                         eprintln!("[host:{name}] event read failed: {e}; stalling session");
-                        d.host.unregister(name);
+                        d.host.unregister(&name);
                         process.kill();
                         return; // supervisor respawns; cursor = new head
                     }
@@ -369,11 +613,12 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                     let frame = event_row_frame(*id, &e.kind, &e.args, e.at);
                     if !writer.write_line(&frame.to_line(), WRITE_TIMEOUT).await {
                         eprintln!("[host:{name}] write failed at event {id}; stalling session");
-                        d.host.unregister(name);
+                        d.host.unregister(&name);
                         process.kill();
                         return; // supervisor respawns; cursor = new head
                     }
                     cursor = *id;
+                    last = tokio::time::Instant::now();
                 }
             }
             hot = hot_rx.recv() => {
@@ -390,10 +635,11 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                     // the channel close and fails open), end the session
                     pending.remove(&id);
                     eprintln!("[host:{name}] verdict write failed; stalling session");
-                    d.host.unregister(name);
+                    d.host.unregister(&name);
                     process.kill();
                     return; // supervisor respawns; cursor = new head
                 }
+                last = tokio::time::Instant::now();
             }
             line = reader.next_frame() => {
                 let Some(line) = line else { break }; // child closed stdout
@@ -405,10 +651,16 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                 // parser).
                 if let Some(GuestFrame::Result(r)) = parse_guest_line(&line)
                     && let Some(id) = r.id.as_u64()
-                    && let Some(tx) = pending.remove(&id)
                 {
-                    let _ = tx.send(r.result);
-                    continue;
+                    // two id spaces, one decode: a Hot verdict this host is
+                    // waiting on, or the answer to an event row (`ask`)
+                    if let Some(tx) = pending.remove(&id) {
+                        let _ = tx.send(r.result);
+                        continue;
+                    }
+                    if d.host.deliver(id, r.result) {
+                        continue;
+                    }
                 }
                 match route_line(&VerbOps { d }, &line).await {
                     Routed::Reply(reply) => {
@@ -427,39 +679,212 @@ pub async fn session(d: &std::sync::Arc<Daemon>, name: &str, path: &str) {
                     }
                 }
             }
+            // the idle window: nothing delivered for `ttl` ends the session, and
+            // the next delivery cold-starts it. A 1s tick is enough for a window
+            // measured in tens of seconds, and a `None` window ticks to nothing.
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if let Some(ttl) = ttl
+                    && last.elapsed() >= ttl
+                {
+                    eprintln!("[host:{name}] idled out after {}s", ttl.as_secs());
+                    break;
+                }
+            }
         }
     }
-    d.host.unregister(name);
+    d.host.unregister(&name);
     process.kill();
 }
 
-/// The supervisor: keep every declared extension session alive.
-/// `config["extensions"]` = name → executable path (boot-read, v1).
+/// Boot wiring: read the declarations and keep only the `resident` ones warm (a
+/// constant-backoff loop each). Everything else is started when something has to
+/// be delivered to it and reaps itself after its idle window — so a daemon that
+/// nobody uses hosts no guest processes.
 pub async fn supervise(d: std::sync::Arc<Daemon>) {
-    let decls: Vec<(String, String)> = {
-        let user = crate::config::user_config_path().unwrap_or_default();
-        match crate::config::load(&d.config_default, &user) {
-            Ok(cfg) => cfg["extensions"]
-                .as_object()
-                .map(|m| {
-                    m.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|p| (k.clone(), p.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Err(e) => {
-                eprintln!("[host] config load failed, no extensions: {e}");
-                Vec::new()
-            }
-        }
-    };
-    for (name, path) in decls {
+    let decls = load_decls(&d);
+    let resident: Vec<Decl> = decls.iter().filter(|decl| decl.resident).cloned().collect();
+    eprintln!(
+        "[host] {} extension(s) declared, resident: {:?}",
+        decls.len(),
+        resident.iter().map(|d| d.name.as_str()).collect::<Vec<_>>()
+    );
+    d.host.set_decls(decls);
+    for decl in resident {
         let d2 = std::sync::Arc::clone(&d);
         tokio::spawn(async move {
             loop {
-                session(&d2, &name, &path).await;
+                session(&d2, decl.clone()).await;
                 tokio::time::sleep(RESPAWN_DELAY).await;
             }
         });
+    }
+}
+
+/// The declarations, read once at boot. The two layers are parsed SEPARATELY
+/// here — not through `config::load`, which merges into one object and loses
+/// which file an entry came from, and a relative `cmd` has to be resolved
+/// against exactly that file's directory. The user layer wins on a name clash,
+/// same as the merge.
+fn load_decls(d: &Arc<Daemon>) -> Vec<Decl> {
+    let user = crate::config::user_config_path().unwrap_or_default();
+    let mut decls: Vec<Decl> = Vec::new();
+    for path in [&d.config_default, &user] {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let cfg = match crate::config::parse(&text) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("[host] {}: {e}", path.display());
+                continue;
+            }
+        };
+        let Some(entries) = cfg["extensions"].as_object() else { continue };
+        for (name, value) in entries {
+            let Some(mut decl) = Decl::from_value(name, value) else {
+                eprintln!("[host] {name}: needs a `cmd` (string, or `cmd` in a block)");
+                continue;
+            };
+            decl.base = path.parent().map(std::path::Path::to_path_buf);
+            decls.retain(|d| d.name != decl.name);
+            decls.push(decl);
+        }
+    }
+    decls
+}
+
+/// Make sure `name` has a live session, starting one if needed. `false` = no
+/// declaration, or the spawn/handshake failed.
+///
+/// Returns once the handle is registered — which is also the cursor snapshot —
+/// so a caller can write the row it wants answered right after this returns and
+/// know the row is future, not history.
+pub async fn ensure(d: &Arc<Daemon>, name: &str) -> bool {
+    if d.host.is_live(name) {
+        return true;
+    }
+    let Some(decl) = d.host.decl(name) else { return false };
+    if d.host.claim_spawn(name) {
+        let d2 = std::sync::Arc::clone(d);
+        let spawned = decl.clone();
+        tokio::spawn(async move { session(&d2, spawned).await });
+    }
+    // bounded by the handshake budget: either the handle appears, or the spawn
+    // gave up and said so
+    for _ in 0..(HANDSHAKE_TIMEOUT.as_millis() / 20) as usize + 5 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if d.host.is_live(name) {
+            return true;
+        }
+        if !d.host.is_spawning(name) {
+            break;
+        }
+    }
+    d.host.is_live(name)
+}
+
+/// Fire one user event and wait for the first answer that declares it.
+///
+/// The row id IS the call id: a guest answers with a `result` frame carrying it,
+/// so an event can return a value without a second protocol. Order is
+/// load-bearing — a session snapshots its cursor at the handshake, so the guest
+/// must be live BEFORE the row is written, or it would read the row as history.
+pub async fn ask(
+    d: &Arc<Daemon>,
+    kind: &str,
+    args: Value,
+    budget: Duration,
+) -> Result<(u64, Value), String> {
+    let mut askers = d.host.declaring(kind);
+    if askers.is_empty() {
+        // The schema arrives with the hello, so with nothing running the only way
+        // to find who declares this kind is to start the candidates. One that does
+        // not declare it just reaps itself after its idle window.
+        for decl in d.host.non_resident() {
+            ensure(d, &decl.name).await;
+        }
+        askers = d.host.declaring(kind);
+    }
+    if askers.is_empty() {
+        return Err(format!("no extension declares {kind}"));
+    }
+    let id = {
+        let mut store = d.store.lock().await;
+        let id = store
+            .emit_event(kind, args.to_string(), crate::watch::now_ms())
+            .map_err(|e| e.to_string())?;
+        // the fan-out wakes on the epoch; a log-only write moves nothing, so a
+        // standalone event bumps it (the panel re-scans once, harmlessly)
+        let epoch = store.bump_epoch().map_err(|e| e.to_string())?;
+        drop(store);
+        d.publish_epoch(epoch);
+        id
+    };
+    match d.host.answer_for(id) {
+        Answer::Ready(v) => Ok((id, v)),
+        Answer::Pending(rx) => match tokio::time::timeout(budget, rx).await {
+            Ok(Ok(v)) => Ok((id, v)),
+            Ok(Err(_)) => Err(format!("{kind}: the answer channel dropped")),
+            Err(_) => Err(format!("{kind}: no answer within {}s", budget.as_secs())),
+        },
+    }
+}
+
+/// `/fill_password {url, ctx?, user_hint?}` — the address bar's ask. The guest's
+/// answer rides back verbatim under `answer` (`{ok, user, password, …}` for
+/// bw-fill), beside the event id it landed on so the console log and the reply
+/// line up.
+pub async fn fill_password(d: &Arc<Daemon>, req: &Value) -> Result<Value, String> {
+    let url = req.get("url").and_then(Value::as_str).unwrap_or_default();
+    if url.is_empty() {
+        return Err("need url".into());
+    }
+    let args = json!({
+        "kind": FILL_PASSWORD,
+        "url": url,
+        "ctx": req.get("ctx").cloned().unwrap_or(Value::Null),
+        "user_hint": req.get("user_hint").cloned().unwrap_or(Value::Null),
+    });
+    let (event_id, answer) = ask(d, FILL_PASSWORD, args, ASK_BUDGET).await?;
+    Ok(json!({ "event_id": event_id, "answer": answer }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_IDLE_TTL, Decl};
+    use std::time::Duration;
+
+    /// The residency arithmetic, in one place: a declared `resident` never
+    /// expires, an explicit `0` says the same thing, a number is the window, and
+    /// no number means the default. The reap loop only reads this.
+    #[test]
+    fn idle_window_is_the_declaration() {
+        let mut d = Decl::new("x", "/bin/true");
+        assert_eq!(d.ttl(), Some(DEFAULT_IDLE_TTL));
+        d.idle_ttl = Some(Duration::from_secs(5));
+        assert_eq!(d.ttl(), Some(Duration::from_secs(5)));
+        d.idle_ttl = Some(Duration::ZERO);
+        assert_eq!(d.ttl(), None);
+        d.idle_ttl = None;
+        d.resident = true;
+        assert_eq!(d.ttl(), None);
+    }
+
+    /// The three spellings: `~/` against HOME, absolute as written, and relative
+    /// against the declaring config file's directory.
+    #[test]
+    fn cmd_spellings_resolve() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let tilde = Decl::new("x", "~/world/mudra/scripts/guests/bw_fill.py");
+        assert_eq!(
+            tilde.exec().to_string_lossy().to_string(),
+            format!("{home}/world/mudra/scripts/guests/bw_fill.py")
+        );
+        let abs = Decl::new("x", "/usr/bin/true");
+        assert_eq!(abs.exec().to_string_lossy().to_string(), "/usr/bin/true");
+        let mut rel = Decl::new("x", "scripts/guests/bw_fill.py");
+        rel.base = Some(std::path::PathBuf::from("/repo/world/mudra"));
+        assert_eq!(
+            rel.exec().to_string_lossy().to_string(),
+            "/repo/world/mudra/scripts/guests/bw_fill.py"
+        );
     }
 }

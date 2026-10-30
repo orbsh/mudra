@@ -35,6 +35,7 @@ fn main() {
         [
             "mudra:page_open".to_string(),
             "mudra:before_navigate".to_string(),
+            "mudra:fill_password".to_string(),
         ],
     );
     println!("{}", hello.to_line());
@@ -67,6 +68,20 @@ fn main() {
                 serde_json::json!({ "verdict": "allow" })
             };
             let result = induction_protocol::ResultFrame::new(v["id"].clone(), verdict);
+            println!("{}", result.to_line());
+            std::io::stdout().flush().ok();
+            continue;
+        }
+        // §4b the ask face: an event whose consumer answers it. The row id IS
+        // the call id, so echoing `id` is the whole contract.
+        if v["event"] == "mudra:fill_password" {
+            let answer = serde_json::json!({
+                "ok": true,
+                "user": "probe-user",
+                "password": "probe-pass",
+                "matched": 1,
+            });
+            let result = induction_protocol::ResultFrame::new(v["id"].clone(), answer);
             println!("{}", result.to_line());
             std::io::stdout().flush().ok();
             continue;

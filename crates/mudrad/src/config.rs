@@ -132,9 +132,13 @@ pub fn parse(text: &str) -> Result<Value, String> {
                 out.insert(key.to_string(), to_json(value, INT_KEYS.contains(&key)));
             }
         } else if gname == "extensions" {
-            // ADR-extension-protocol §1: name -> executable path.
-            // Routing metadata only — which processes to run; what they
-            // listen to lives in the script's schema (hello-carried).
+            // ADR-extension-protocol §1: name -> what to run. Routing metadata
+            // only — which processes to run; what they listen to lives in the
+            // script's schema (hello-carried).
+            //
+            // Two spellings: a bare string is the executable path (defaults
+            // apply), a block adds the residency options
+            // (`{ cmd "…"; idle_ttl 60; resident true }`).
             let ex = out
                 .entry("extensions")
                 .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -142,9 +146,18 @@ pub fn parse(text: &str) -> Result<Value, String> {
             // one; `continue` states that without an unwrap.
             let Some(ex) = ex.as_object_mut() else { continue };
             for child in children(group) {
-                if let Some(value) = first_arg(child) {
-                    ex.insert(child.name().value().to_string(), to_json(value, false));
-                }
+                let value = if let Some(arg) = first_arg(child) {
+                    to_json(arg, false)
+                } else {
+                    let mut options = serde_json::Map::new();
+                    for opt in children(child) {
+                        let Some(arg) = first_arg(opt) else { continue };
+                        let key = opt.name().value().to_string();
+                        options.insert(key.clone(), to_json(arg, INT_KEYS.contains(&key.as_str())));
+                    }
+                    Value::Object(options)
+                };
+                ex.insert(child.name().value().to_string(), value);
             }
         } else if gname == "keys" {
             // per-key entries: child name = key, first arg = command name
@@ -416,5 +429,9 @@ scroll { stepLines 4 }
             "shipped config must not override keys"
         );
         assert!(cfg.get("port").is_none(), "server group must not leak");
+        // the guest declaration: a RELATIVE cmd (the host resolves it against
+        // this file's directory) and the block spelling's options
+        assert_eq!(cfg["extensions"]["bwfill"]["cmd"], json!("scripts/guests/bw_fill.py"));
+        assert_eq!(cfg["extensions"]["bwfill"]["idle_ttl"], json!(60));
     }
 }

@@ -1,8 +1,8 @@
 # mudra extensions — WM & launcher integration
 
 > **Scope**: this document covers *integration modules* — the WM seam behind `WmExt`
-> (P7). It is **not** the extension plane: resident subprocess extensions hosted over
-> stdio are specified in `docs/ADR-extension-protocol.md`. The launcher half was dropped
+> (P7). It is **not** the extension plane: subprocess extensions hosted over stdio
+> are specified in `docs/ADR-extension-protocol.md`. The launcher half was dropped
 > in 2026-09 (the console is the whole management surface), so the walker / elephant
 > sections below are history kept for reference, and the Python paths they mention
 > (`mudralib/wm.py`, `scripts/mudra_menus.py`, `mudra.sqlite`) belong to the deleted tree.

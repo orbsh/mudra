@@ -460,6 +460,21 @@ impl Runtime for Real {
             crate::spawn::clear_extension_script_caches(&dir);
         }
         let mut cmd = crate::spawn::build_command(&url, &dir, None, None, Some(&exts), &exts);
+        // A debug port on the panel, on purpose: mudrad never drives this window
+        // over CDP, but a panel that is "frozen and hard to close" can only be
+        // diagnosed from outside — attaching and asking the page for one integer
+        // splits the two possible stalls. If the main thread answers, the hang is
+        // below the page (GPU / compositor / WM); if it does not, it is the wasm
+        // app and `Debugger.pause` gets the stack.
+        //
+        // 9480 is outside the instance range `free_port(9200, 200)` so a page
+        // window can never take it; the env var exists for the odd host that has
+        // 9480 taken.
+        let cdp = std::env::var("MUDRA_PANEL_CDP")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| crate::daemon::PANEL_CDP_PORT.to_string());
+        cmd.arg(format!("--remote-debugging-port={cdp}"));
         crate::spawn::spawn_detached_session(&mut cmd).map_err(|e| format!("panel spawn: {e}"))
     }
 

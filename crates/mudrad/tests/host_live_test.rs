@@ -100,8 +100,9 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
     // the session under test: spawn → handshake → deliver loop
     let d2 = Arc::clone(&d);
     let path = fixture_guest().to_string();
-    let session_task =
-        tokio::spawn(async move { mudrad::host::session(&d2, "probe", &path).await });
+    let session_task = tokio::spawn(async move {
+        mudrad::host::session(&d2, mudrad::host::Decl::new("probe", path)).await
+    });
     // let the handshake complete and the cursor snapshot at the head
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -205,4 +206,113 @@ async fn a_real_extension_handshakes_receives_fanout_and_invokes_a_verb() {
 
     // the session ends on its own: the child exited after answering
     let _ = tokio::time::timeout(Duration::from_secs(5), session_task).await;
+}
+
+// ================= §4b: an event that answers (the ask face) =================
+
+/// The whole ask path against a real child: no session is running, `ask` cold-
+/// starts the declaration, the row is written AFTER the cursor snapshot (so it is
+/// future, not history), the guest answers with the row id, and the answer comes
+/// back to the caller.
+#[tokio::test]
+async fn ask_starts_the_guest_writes_the_row_and_returns_its_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = test_daemon(dir.path()).await;
+    d.host.set_decls(vec![mudrad::host::Decl::new("probe", fixture_guest())]);
+
+    let began = std::time::Instant::now();
+    let (id, answer) = mudrad::host::ask(
+        &d,
+        mudrad::host::FILL_PASSWORD,
+        json!({ "url": "https://example.test/login", "ctx": "work" }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("the guest answers");
+
+    assert_eq!(answer["password"], json!("probe-pass"));
+    assert_eq!(answer["user"], json!("probe-user"));
+    assert!(id > 0, "the answer rides the event row id");
+    // the row is in the log under the same id (the console's view of it)
+    let row = {
+        let store = d.store.lock().await;
+        store.events_since(id - 1, 1).unwrap()
+    };
+    assert_eq!(row[0].0, id);
+    assert_eq!(row[0].1.kind, mudrad::host::FILL_PASSWORD);
+    // and it was a cold start: nothing was live before the call
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the cold start fits in the ask budget"
+    );
+}
+
+/// Residency is decided by the budget: a guest that answers the intercept plane
+/// is never reaped, no matter what `idle_ttl` says — otherwise the gate would
+/// silently start failing open after the first window.
+#[tokio::test]
+async fn a_hot_guest_is_never_reaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = test_daemon(dir.path()).await;
+    let mut decl = mudrad::host::Decl::new("probe", fixture_guest());
+    decl.idle_ttl = Some(Duration::from_secs(1));
+    d.host.set_decls(vec![decl]);
+
+    assert!(mudrad::host::ensure(&d, "probe").await);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        d.host.is_live("probe"),
+        "the fixture declares mudra:before_navigate, so it must stay warm"
+    );
+}
+
+/// ... and a guest that does not is reaped, then started again on demand. The
+/// guest here is a five-line script that handshakes and then waits forever.
+#[tokio::test]
+async fn an_idle_guest_reaps_and_cold_starts_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let guest = dir.path().join("idler.py");
+    std::fs::write(
+        &guest,
+        r#"#!/usr/bin/env python3
+import json, sys
+print(json.dumps({"type": "hello", "name": "idler", "schema": {"on": []}}), flush=True)
+for _ in sys.stdin:
+    pass
+"#,
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&guest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let d = test_daemon(dir.path()).await;
+    let mut decl = mudrad::host::Decl::new("idler", guest.to_string_lossy().to_string());
+    decl.idle_ttl = Some(Duration::from_secs(1));
+    d.host.set_decls(vec![decl]);
+
+    assert!(mudrad::host::ensure(&d, "idler").await, "cold start works");
+    assert!(d.host.is_live("idler"));
+    tokio::time::sleep(Duration::from_millis(2600)).await;
+    assert!(!d.host.is_live("idler"), "the idle window reaps it");
+    assert!(mudrad::host::ensure(&d, "idler").await, "and demand brings it back");
+}
+
+/// A relative `cmd` is resolved against the directory of the config file that
+/// declared it — not against the daemon's cwd. The guest here is the real
+/// bw-fill script, named relatively, with its base set to the repo root.
+#[tokio::test]
+async fn a_relative_cmd_resolves_against_the_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = test_daemon(dir.path()).await;
+    let mut decl = mudrad::host::Decl::new("bwfill", "scripts/guests/bw_fill.py");
+    decl.base = Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    decl.idle_ttl = Some(Duration::from_secs(1));
+    d.host.set_decls(vec![decl]);
+
+    assert!(
+        mudrad::host::ensure(&d, "bwfill").await,
+        "the relative path resolved to the repo's script and it handshook"
+    );
+    assert!(d.host.is_live("bwfill"));
 }
