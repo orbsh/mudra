@@ -337,8 +337,8 @@ fn history_search_ranks_text_fuzzy_visits_and_recency() {
     // "ycombinat" reaches the ycombinator address and "ghb" reaches
     // github. Visits and recency rank whatever recall found; a row
     // recalled by both recall legs leads; an address matching neither
-    // stays out however often it was opened; and the empty query is the
-    // pure visits order (the bar's first state).
+    // stays out however often it was opened; and the empty query is not a
+    // search at all — it is recency (the bar's first state).
     let (_d, mut s) = open_tmp();
     s.history_bump("https://news.ycombinator.com", "Hacker News", 100).unwrap();
     for _ in 0..4 {
@@ -374,9 +374,18 @@ fn history_search_ranks_text_fuzzy_visits_and_recency() {
     assert_eq!(notes.len(), 1, "only the row whose TITLE matches");
     assert_eq!(notes[0].url, "https://example.com/x");
 
-    // empty query = visits order (no recall legs at all), limit respected
+    // empty query = recency, newest first — no recall legs at all
     let all = s.history_search("", 10).unwrap();
-    assert_eq!(all[0].url, "https://news.ycombinator.com"); // 5 opens
+    assert_eq!(
+        all.iter().map(|h| h.url.as_str()).collect::<Vec<_>>(),
+        vec![
+            "https://rust-lang.org",          // 200
+            "https://github.com/orbsh",      // 130
+            "https://rustup.rs",             // 120
+            "https://example.com/x",         // 110
+            "https://news.ycombinator.com",  // 101, however often it was opened
+        ]
+    );
     assert_eq!(s.history_search("", 2).unwrap().len(), 2);
 }
 

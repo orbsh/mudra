@@ -30,10 +30,13 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
 
 ### 数据面（两通道分工）
 
-- **WS `:9300`** = okm 线协议裸帧（`okm-wire`，一帧=一条消息）：只读 KV 查询
-  （get/scan，RemoteStore over WS，查询帧 FIFO 配对）+ epoch 失效提示文本帧
-  （唯一 push；收到即重拉）。写操作**不走 WS**——直写引擎会绕过 okm 的索引/epoch
-  维护。
+- **WS `:9300`** = epoch 失效提示文本帧（`{"epoch":N}`，唯一 push；收到即重拉）。
+  **这条 socket 不承载数据**：slice 1 的 okm 裸帧 KV 查询面（get/scan，查询帧 FIFO
+  配对）在 slice 2b 撤除——一切读改成 shaped read 走 8899，所以它现在只剩提示与
+  15s keepalive ping。也没有初始快照帧：提示只在 epoch **变化**时推，连上后静默等待
+  第一次写是正常现象（History 这类面板不可见 collection 的写不 bump epoch，故打字查询
+  不会在这里出现任何帧）。写操作**不走 WS**——直写引擎会绕过 okm 的索引/epoch 维护。
+  浏览器内 KV 消费方的起点是 okm 的 `WireClient`（ADR-0028），不是这条 socket。
 - **HTTP `:8899`** = 一切写 + shaped reads（面板契约动词）：`/forest`、`/ctx_pages`、
   `/set_tags {page_id, tag_ids[]}`、`/create_tag {name, parent_id?}`、`/close {page_id}`、
   `/reopen {page_id}`、`/delete {page_id}`、`/shot {page_id}`、`/ctx`、`/focus {page_id}`、

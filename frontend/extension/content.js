@@ -197,26 +197,45 @@
   const URL_VERBS = new Set(["open", "new"]);
   let livePages = [];   // console role: jump targets inside this instance
   let historySeq = 0;   // filters await the SW; only the newest answer may land
+  let historyTimer = 0; // the pending keystroke's query (see HISTORY_DEBOUNCE_MS)
+  // One round trip per typing pause, not per keystroke. The daemon answers in
+  // tens of ms now that its ranking is resident, but a keypress every 30ms
+  // would still queue one query per key, each holding the store for its own
+  // pass. 120ms is below the point where the list reads as late, and it
+  // collapses a whole word into one query.
+  const HISTORY_DEBOUNCE_MS = 120;
+  // Candidates to fetch: display depth x 3. The list scrolls, and the row being
+  // scanned for often sits a few entries below the top — depth costs one bigger
+  // response, not another round trip.
+  const HISTORY_LIMIT = 30;
 
   async function filterAddress(verb, arg) {
     const mine = ++historySeq;
+    clearTimeout(historyTimer);
     const s = (arg || "").toLowerCase();
     const pageC = verb === "open" && role === "console"
       ? livePages
           .filter((p) => !s || (p.title + " " + p.url + " " + p.ctx).toLowerCase().includes(s))
           .map((p) => ({ label: `[${p.ctx}] ${p.title.slice(0, 60)}`, value: p.id, kind: "page" }))
       : [];
-    const hr = await send({ type: "history", query: arg || "", limit: 10 });
-    if (mine !== historySeq || !cmdApi) return; // a newer keystroke already asked
-    if (hr.ok === false) {
-      // An empty list would read as "nothing matches what you typed"; the truth
-      // is the bridge is down (dead service worker, mudrad restart). Say which.
-      return cmdApi.setItems([{ label: `! ${hr.err || "history failed"}`, value: "", kind: "error" }]);
-    }
-    const hist = (hr.candidates || [])
-      .filter((h) => !livePages.some((p) => p.url === h.url)) // a live page wins over its history row
-      .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "url" }));
-    cmdApi.setItems([...pageC, ...hist]);
+    // live pages are local state: they paint on the keystroke, no round trip
+    if (pageC.length && cmdApi) cmdApi.setItems(pageC);
+    const fire = async () => {
+      const hr = await send({ type: "history", query: arg || "", limit: HISTORY_LIMIT });
+      if (mine !== historySeq || !cmdApi) return; // a newer keystroke already asked
+      if (hr.ok === false) {
+        // An empty list would read as "nothing matches what you typed"; the truth
+        // is the bridge is down (dead service worker, mudrad restart). Say which.
+        return cmdApi.setItems([{ label: `! ${hr.err || "history failed"}`, value: "", kind: "error" }]);
+      }
+      const hist = (hr.candidates || [])
+        .filter((h) => !livePages.some((p) => p.url === h.url)) // a live page wins over its history row
+        .map((h) => ({ label: h.url, desc: h.title, value: h.url, kind: "url" }));
+      cmdApi.setItems([...pageC, ...hist]);
+    };
+    // the bar's first state (an empty line) has no next keystroke coming: ask now
+    if (!(arg || "").trim()) await fire();
+    else historyTimer = setTimeout(fire, HISTORY_DEBOUNCE_MS);
   }
 
   // ---- clipboard -----------------------------------------------------------------

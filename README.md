@@ -208,11 +208,17 @@ scoring (2026-10-14):
   URLs from recall) + visit count + recency → four equal-weight RRF legs. The scan that
   recalls is also the census, so the BM25 statistics are exact.
 - Addresses hit by neither recall leg never appear under a non-empty query, however often
-  they were visited; the empty query keeps the old rule (whole table, by visit count).
-- `by_addr` / `by_title` are retired: a subsequence has no index to answer from, recall is
-  one full scan, and the index lost its pruning target. History holds one row per address
-  (not per visit); the whole table is ~108 KB on this machine, and the empty query scanned
-  it anyway.
+  they were visited. The empty query is not a search: it answers the most recently opened
+  rows, newest first (the bar opens on an empty line and asks "where was I").
+- `by_addr` / `by_title` are retired: a subsequence has no index to answer from, so recall
+  is one full pass, and the index lost its pruning target. The pass runs over a resident
+  corpus (`HistoryIndex`, folded addressing text, kept in step by the two write paths), not
+  over the table: a table read per query measured 490 ms on the 60k-row store, the corpus
+  answers in 10-40 ms and the empty query in ~1 ms (`docs/SCHEMA.md`, History).
+- The bar asks **once per typing pause** (120 ms debounce) and **30 candidates deep** — three
+  times the display depth, since the list scrolls. One query per keystroke was what made
+  typing feel slow: the requests queued on the daemon's single store lock, so a six-letter
+  word meant six passes end to end.
 
 ## Extension plane
 

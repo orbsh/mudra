@@ -173,27 +173,29 @@ fn query_tokens(query: &str) -> Vec<String> {
 /// usual BM25 shape — how rare the token is (idf), how often it occurs
 /// (tf), how long the text is.
 ///
-/// `rows` is `(id, addr, title)`; the result is `(id, score)` ordered by
-/// score desc, id asc (an explicit tiebreak — a caller walking the
-/// ranking must not have its first hit depend on scan order), and rows
-/// containing no token are absent: a candidate no leg recalled
+/// `rows` is `(id, addr, title, addressing length)` — the length rides in the
+/// row because both callers already have it (the history corpus stores it, the
+/// page path measures it once) and the law needs it twice; the result is
+/// `(id, score)` ordered by score desc, id asc (an explicit tiebreak — a caller
+/// walking the ranking must not have its first hit depend on scan order), and
+/// rows containing no token are absent: a candidate no leg recalled
 /// contributes nothing to the fusion.
-fn token_bm25(rows: &[(u64, String, String)], tokens: &[String]) -> Vec<(u64, f64)> {
+fn token_bm25(rows: &[(u64, &str, &str, f64)], tokens: &[String]) -> Vec<(u64, f64)> {
     let n = rows.len() as f64;
+    // each row carries its addressing-text length: the corpus stores it, and
+    // the page path measures it once per call — measuring it twice inside the
+    // score pass walked every character of the corpus twice per query
     let avgdl = if rows.is_empty() {
         1.0
     } else {
-        rows.iter()
-            .map(|(_, a, t)| (a.chars().count() + t.chars().count()) as f64)
-            .sum::<f64>()
-            / n
+        rows.iter().map(|(_, _, _, dl)| *dl).sum::<f64>() / n
     };
     // one pass per token: tf is this row's occurrence count, df the corpus
     let mut by_token: Vec<(f64, Vec<f64>)> = Vec::with_capacity(tokens.len());
     for tok in tokens {
         let mut counts = Vec::with_capacity(rows.len());
         let mut df = 0.0;
-        for (_, addr, title) in rows {
+        for (_, addr, title, _) in rows {
             let tf = (addr.matches(tok.as_str()).count() + title.matches(tok.as_str()).count()) as f64;
             if tf > 0.0 {
                 df += 1.0;
@@ -205,12 +207,11 @@ fn token_bm25(rows: &[(u64, String, String)], tokens: &[String]) -> Vec<(u64, f6
     let mut scored: Vec<(u64, f64)> = rows
         .iter()
         .enumerate()
-        .filter_map(|(i, (id, addr, title))| {
-            let dl = (addr.chars().count() + title.chars().count()) as f64;
+        .filter_map(|(i, (id, _, _, dl))| {
             let mut score = 0.0;
             for (df, counts) in &by_token {
                 if counts[i] > 0.0 {
-                    score += okm_ngram::bm25_score(counts[i], dl, avgdl, *df, n);
+                    score += okm_ngram::bm25_score(counts[i], *dl, avgdl, *df, n);
                 }
             }
             (score > 0.0).then_some((*id, score))
@@ -352,8 +353,9 @@ fn history_url(h: &History) -> String {
 /// candidate labels. One access method: `by_url` (keyed, variable length,
 /// never key materialized) lets the write path find the row to bump by
 /// exact url without a scan. The ranked read (`history_search`) has no
-/// index on either half of its addressing text, and cannot have one — see
-/// there.
+/// index on either half of its addressing text and cannot have one — see
+/// [`HistoryIndex`], which is how that scan is paid for without touching
+/// the engine per query.
 #[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
 #[ok_ref(HistoryKey)]
 #[ok_ns(7)]
@@ -363,6 +365,187 @@ pub struct History {
     pub title: String,
     pub visits: u64,
     pub last_at: u64,
+}
+
+// ================= History read model =================
+
+/// One history row with its addressing text precomputed.
+///
+/// The precomputation is the point: `addressing_parts` folds and allocates,
+/// and the bar asks once per typing pause — doing it per query meant two
+/// `String`s per row per keystroke. `dl` is the BM25 length kept beside them
+/// because the law reads that number twice (corpus average, then the row).
+struct HistoryText {
+    id: u64,
+    url: String,
+    title: String,
+    /// `typing_surface(url)`: scheme and `www.` stripped, lowercased.
+    addr: String,
+    /// The lowercased title, kept apart from `addr` on purpose: the
+    /// subsequence leg must not hand a title match the address's head anchor.
+    title_lc: String,
+    /// `addr` + `title_lc` character count — the BM25 document length.
+    dl: f64,
+    visits: u64,
+    last_at: u64,
+}
+
+impl HistoryText {
+    fn of(id: u64, h: &History) -> Self {
+        let (addr, title_lc) = addressing_parts(&h.url, &h.title);
+        let dl = (addr.chars().count() + title_lc.chars().count()) as f64;
+        Self {
+            id,
+            url: h.url.clone(),
+            title: h.title.clone(),
+            addr,
+            title_lc,
+            dl,
+            visits: h.visits,
+            last_at: h.last_at,
+        }
+    }
+
+    fn history(&self) -> History {
+        History {
+            url: self.url.clone(),
+            title: self.title.clone(),
+            visits: self.visits,
+            last_at: self.last_at,
+        }
+    }
+}
+
+/// The address bar's corpus: every History row, resident, addressing text
+/// already folded (see [`HistoryText`]).
+///
+/// Why resident: the ranked read is a full-corpus pass by construction — the
+/// fuzzy leg is a subsequence test and no index answers "ghb" (SCHEMA.md,
+/// History). Paying that pass with a table read cost one point read and one
+/// payload decode per row on top of the per-row folding the law used to
+/// repeat; on a 60k-row store that measured 490ms per query, and the bar
+/// issues one per keystroke. Over resident rows the same law reads borrowed
+/// text: no engine access, no per-row allocation.
+///
+/// Coherence is structural, not conventional: the daemon is the store's only
+/// writer, so the two write paths (`history_bump`, `history_absorb`) update
+/// the row here in the same call, and History has no delete path (ids are
+/// never reused), so the corpus only grows. Built on the first read rather
+/// than in `open`: a store that never shows the bar pays nothing.
+#[derive(Default)]
+struct HistoryIndex {
+    rows: Vec<HistoryText>,
+    /// id -> position in `rows`: the write path's O(1) update.
+    at: std::collections::HashMap<u64, usize>,
+}
+
+impl HistoryIndex {
+    fn upsert(&mut self, id: u64, h: &History) {
+        match self.at.get(&id).copied() {
+            Some(i) => self.rows[i] = HistoryText::of(id, h),
+            None => {
+                self.at.insert(id, self.rows.len());
+                self.rows.push(HistoryText::of(id, h));
+            }
+        }
+    }
+
+    /// The empty query's answer: the most recently opened rows, newest first.
+    ///
+    /// No recall leg runs. The bar opens on an empty line, and that state asks
+    /// "where was I", not "what matches" — so recency alone answers it, and it
+    /// answers with a bounded heap: one pass, `limit` memory, no sort.
+    fn recent(&self, limit: usize) -> Vec<History> {
+        use std::cmp::Reverse;
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut top: std::collections::BinaryHeap<Reverse<(u64, u64, u64)>> =
+            std::collections::BinaryHeap::with_capacity(limit + 1);
+        for r in &self.rows {
+            top.push(Reverse((r.last_at, r.visits, r.id)));
+            if top.len() > limit {
+                top.pop();
+            }
+        }
+        // sorted ascending by `Reverse`, i.e. newest first
+        top.into_sorted_vec()
+            .into_iter()
+            .map(|Reverse((_, _, id))| self.rows[self.at[&id]].history())
+            .collect()
+    }
+
+    /// The four-leg ranking over the resident corpus — the law
+    /// [`MudraStore::history_search`] documents.
+    fn search(&self, q: &str, limit: usize) -> Vec<History> {
+        let rows = &self.rows;
+        let texts: Vec<(u64, &str, &str, f64)> = rows
+            .iter()
+            .map(|r| (r.id, r.addr.as_str(), r.title_lc.as_str(), r.dl))
+            .collect();
+        // ---- leg 1: the addressing text (tokens, BM25) ----
+        let text_rank: std::collections::HashMap<u64, usize> =
+            token_bm25(&texts, &query_tokens(q))
+                .into_iter()
+                .enumerate()
+                .map(|(r, (id, _))| (id, r))
+                .collect();
+        // ---- leg 2: the fuzzy leg (subsequence over address or title) ----
+        // the query is the only side collected: the halves are already folded
+        let qc: Vec<char> = q.chars().collect();
+        let mut fuzzy: Vec<(u64, f64)> = rows
+            .iter()
+            .filter_map(|r| {
+                let s = sim_chars(&qc, &r.addr).max(sim_chars(&qc, &r.title_lc));
+                (s > 0.0).then_some((r.id, s))
+            })
+            .collect();
+        fuzzy.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
+        });
+        let fuzzy_rank: std::collections::HashMap<u64, usize> =
+            fuzzy.iter().enumerate().map(|(r, (id, _))| (*id, r)).collect();
+        // the candidates are what the recall legs found — nothing else is
+        // ranked (visits and recency order the recalled set, they do not put
+        // rows into it)
+        let cands: Vec<&HistoryText> = rows
+            .iter()
+            .filter(|r| text_rank.contains_key(&r.id) || fuzzy_rank.contains_key(&r.id))
+            .collect();
+        if cands.is_empty() {
+            return Vec::new();
+        }
+        // ---- per-leg orders (rank 0 = best), stable tiebreaks ----
+        let mut visits_order: Vec<usize> = (0..cands.len()).collect();
+        visits_order.sort_by_cached_key(|&i| {
+            (std::cmp::Reverse(cands[i].visits), std::cmp::Reverse(cands[i].last_at), cands[i].id)
+        });
+        let mut recency_order: Vec<usize> = (0..cands.len()).collect();
+        recency_order.sort_by_cached_key(|&i| {
+            (std::cmp::Reverse(cands[i].last_at), std::cmp::Reverse(cands[i].visits), cands[i].id)
+        });
+        let rank_of = |order: &[usize]| -> std::collections::HashMap<u64, usize> {
+            order.iter().enumerate().map(|(r, &i)| (cands[i].id, r)).collect()
+        };
+        let (visits_rank, recency_rank) = (rank_of(&visits_order), rank_of(&recency_order));
+        let mut scored: Vec<(f64, u64)> = cands
+            .iter()
+            .map(|r| {
+                let legs = [
+                    text_rank.get(&r.id).copied(),
+                    fuzzy_rank.get(&r.id).copied(),
+                    visits_rank.get(&r.id).copied(),
+                    recency_rank.get(&r.id).copied(),
+                ];
+                (rrf_legs(&legs, RRF_K), r.id)
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+        });
+        scored.truncate(limit);
+        scored.iter().map(|(_, id)| self.rows[self.at[id]].history()).collect()
+    }
 }
 
 // ================= Event (ns 8) =================
@@ -425,11 +608,23 @@ pub struct Hook {
 /// the one leg that has to be paid for with a scan.
 pub fn sim_score(query: &str, target: &str) -> f64 {
     let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-    let t: Vec<char> = target.chars().flat_map(char::to_lowercase).collect();
+    let t: String = target.chars().flat_map(char::to_lowercase).collect();
+    sim_chars(&q, &t)
+}
+
+/// The law behind [`sim_score`], over an already-folded target.
+///
+/// The ranked read needs it this way: the corpus halves are folded once
+/// when the row enters the corpus (`addressing_parts`), so a query must
+/// not fold them again — the per-row `Vec<char>` was the read's dominant
+/// allocation (2 halves x 2 allocs x N rows per keystroke). Folding an
+/// already-folded string is the identity, so the two entry points agree
+/// on every input.
+fn sim_chars(q: &[char], target: &str) -> f64 {
     if q.is_empty() {
         return 0.0;
     }
-    if t.is_empty() {
+    if target.is_empty() {
         return 0.0;
     }
     // greedy scan with run/position accounting: find q[] in t[] left-to-
@@ -439,8 +634,8 @@ pub fn sim_score(query: &str, target: &str) -> f64 {
     let mut qi = 0usize;
     let mut score = 0.0f64;
     let mut prev_match: Option<usize> = None;
-    for (ti, tc) in t.iter().enumerate() {
-        if qi < q.len() && tc == &q[qi] {
+    for (ti, tc) in target.chars().enumerate() {
+        if qi < q.len() && tc == q[qi] {
             let mut s = 1.0;
             if ti > 0 && prev_match == Some(ti - 1) {
                 s += 1.0; // contiguous run bonus
@@ -538,6 +733,12 @@ pub struct MudraStore {
     pub events: Collection<FjallStore, EventKey, Event>,
     pub hooks: Collection<FjallStore, HookKey, Hook>,
     db: FjallStore,
+    /// The bar's resident corpus, built on first read and kept in step by the
+    /// two history write paths (see [`HistoryIndex`]). Interior mutability
+    /// because a read populates it: the store lives behind one mutex and has
+    /// one writer, so no borrow is ever concurrent.
+    history_index: std::cell::RefCell<HistoryIndex>,
+    history_index_built: std::cell::Cell<bool>,
 }
 
 #[cfg(feature = "engine")]
@@ -555,6 +756,8 @@ impl MudraStore {
             events: Collection::new(store.clone()),
             hooks: Collection::new(store.clone()),
             db: store,
+            history_index: std::cell::RefCell::new(HistoryIndex::default()),
+            history_index_built: std::cell::Cell::new(false),
         })
     }
 
@@ -745,9 +948,15 @@ impl MudraStore {
                 (k.id, addr, title)
             })
             .collect();
+        let view: Vec<(u64, &str, &str, f64)> = texts
+            .iter()
+            .map(|(id, addr, title)| {
+                (*id, addr.as_str(), title.as_str(), (addr.chars().count() + title.chars().count()) as f64)
+            })
+            .collect();
         let at: std::collections::HashMap<u64, usize> =
             rows.iter().enumerate().map(|(i, (k, _))| (k.id, i)).collect();
-        Ok(token_bm25(&texts, &tokens)
+        Ok(token_bm25(&view, &tokens)
             .into_iter()
             .map(|(id, _)| rows[at[&id]].clone())
             .collect())
@@ -824,15 +1033,18 @@ impl MudraStore {
                     row.title = title.to_string();
                 }
                 self.history.put(&k, &row)?;
+                self.sync_history_index(k.id, &row);
             }
             None => {
                 let k = HistoryKey { id: self.next_id(state::HISTORY_ID)? };
-                self.history.put(&k, &History {
+                let row = History {
                     url: url.to_string(),
                     title: title.to_string(),
                     visits: 1,
                     last_at: ts,
-                })?;
+                };
+                self.history.put(&k, &row)?;
+                self.sync_history_index(k.id, &row);
             }
         }
         Ok(())
@@ -866,16 +1078,19 @@ impl MudraStore {
                     row.title = title.to_string();
                 }
                 self.history.put(&k, &row)?;
+                self.sync_history_index(k.id, &row);
                 Ok(false)
             }
             None => {
                 let k = HistoryKey { id: self.next_id(state::HISTORY_ID)? };
-                self.history.put(&k, &History {
+                let row = History {
                     url: url.to_string(),
                     title: title.to_string(),
                     visits: visits.max(1),
                     last_at,
-                })?;
+                };
+                self.history.put(&k, &row)?;
+                self.sync_history_index(k.id, &row);
                 Ok(true)
             }
         }
@@ -890,6 +1105,35 @@ impl MudraStore {
             }
         }
         Ok(rows)
+    }
+
+    /// The resident corpus, built from the table on first use.
+    ///
+    /// Built here rather than in `open` so a store that never serves the bar
+    /// pays nothing. This is the table's only scan left: point reads +
+    /// payload decodes, once, instead of once per keystroke.
+    fn ensure_history_index(&self) -> StoreResult<()> {
+        if self.history_index_built.get() {
+            return Ok(());
+        }
+        let mut idx = HistoryIndex::default();
+        for k in self.history.scan_keys()? {
+            if let Some(h) = self.history.get(&k)? {
+                idx.upsert(k.id, &h);
+            }
+        }
+        *self.history_index.borrow_mut() = idx;
+        self.history_index_built.set(true);
+        Ok(())
+    }
+
+    /// Keep the corpus in step with a write. An index that was never built has
+    /// nothing to keep: its first build reads the table, which already carries
+    /// the row.
+    fn sync_history_index(&mut self, id: u64, row: &History) {
+        if self.history_index_built.get() {
+            self.history_index.get_mut().upsert(id, row);
+        }
     }
 
     /// The address bar's ranking over the History log. Four legs, fused
@@ -909,105 +1153,29 @@ impl MudraStore {
     /// and what keeps a heavily visited but unmatched address out of a
     /// non-empty query's list.
     ///
-    /// Why the scan, when History grows without bound: the fuzzy leg is
-    /// what forces it. A subsequence is not a substring of anything, so no
-    /// index can answer "ghb" — a character-set index answers it by
-    /// recalling most of the log, which is the scan with worse locality —
-    /// and once the rows are in hand the text leg's statistics (N, df,
-    /// avgdl) are the corpus census instead of an estimate. The two read
-    /// indexes this replaces (`by_addr`, `by_title`) are gone for the same
-    /// reason: with the scan being the recall, there was nothing left for
-    /// them to prune. If the log ever grows enough to hurt, an index comes
-    /// back in front of this as a pruner — never as the definition of what
-    /// recall means.
+    /// Recall is still a pass over every row — the fuzzy leg is what forces
+    /// it, and a subsequence is not a substring of anything, so no index can
+    /// answer "ghb" (a character-set index answers by recalling most of the
+    /// log: the same pass with worse locality). What makes the pass affordable
+    /// is where it runs: over the resident corpus ([`HistoryIndex`]), with the
+    /// addressing text already folded — not over the table. That is also why
+    /// the two read indexes this law once had (`by_addr`, `by_title`) stay
+    /// gone: they had nothing left to prune once the pass became the recall,
+    /// and a `by_last_at` index would only serve the empty query, which the
+    /// corpus answers from memory.
     ///
-    /// The empty query keeps the old rule: every row, in visits order —
-    /// the bar's first state wants the most-opened addresses.
+    /// The empty query is not a search: it answers the most recently opened
+    /// rows, newest first — the bar's first state asks where you were, not
+    /// what matches.
     pub fn history_search(&self, query: &str, limit: usize) -> StoreResult<Vec<History>> {
+        self.ensure_history_index()?;
         let q = query.trim().to_lowercase();
-        // one census per query: the scan is the recall, so the rows, their
-        // keys and the corpus statistics all come from this pass
-        let mut rows: Vec<(HistoryKey, History)> = Vec::new();
-        for k in self.history.scan_keys()? {
-            if let Some(h) = self.history.get(&k)? {
-                rows.push((k, h));
-            }
-        }
-        if q.is_empty() {
-            let mut all: Vec<History> = rows.into_iter().map(|(_, h)| h).collect();
-            all.sort_by(|a, b| b.visits.cmp(&a.visits).then(b.last_at.cmp(&a.last_at)));
-            all.truncate(limit);
-            return Ok(all);
-        }
-        let texts: Vec<(u64, String, String)> = rows
-            .iter()
-            .map(|(k, h)| {
-                let (addr, title) = addressing_parts(&h.url, &h.title);
-                (k.id, addr, title)
-            })
-            .collect();
-        // ---- leg 1: the addressing text (tokens, BM25) ----
-        let text_rank: std::collections::HashMap<u64, usize> = token_bm25(&texts, &query_tokens(&q))
-            .into_iter()
-            .enumerate()
-            .map(|(r, (id, _))| (id, r))
-            .collect();
-        // ---- leg 2: the fuzzy leg (subsequence over address or title) ----
-        let mut fuzzy: Vec<(u64, f64)> = texts
-            .iter()
-            .filter_map(|(id, addr, title)| {
-                let s = sim_score(&q, addr).max(sim_score(&q, title));
-                (s > 0.0).then_some((*id, s))
-            })
-            .collect();
-        fuzzy.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0))
-        });
-        let fuzzy_rank: std::collections::HashMap<u64, usize> =
-            fuzzy.iter().enumerate().map(|(r, (id, _))| (*id, r)).collect();
-        // the candidates are what the recall legs found — nothing else is
-        // ranked (visits and recency order the recalled set, they do not
-        // put rows into it)
-        let at: std::collections::HashMap<u64, usize> =
-            rows.iter().enumerate().map(|(i, (k, _))| (k.id, i)).collect();
-        let mut cands: std::collections::HashMap<u64, History> =
-            std::collections::HashMap::new();
-        for id in text_rank.keys().chain(fuzzy_rank.keys()) {
-            cands.entry(*id).or_insert_with(|| rows[at[id]].1.clone());
-        }
-        if cands.is_empty() {
-            return Ok(Vec::new());
-        }
-        // ---- per-leg orders (rank 0 = best), stable tiebreaks ----
-        let mut visits_order: Vec<u64> = cands.keys().copied().collect();
-        visits_order.sort_by_cached_key(|id| {
-            (std::cmp::Reverse(cands[id].visits), std::cmp::Reverse(cands[id].last_at), *id)
-        });
-        let mut recency_order: Vec<u64> = cands.keys().copied().collect();
-        recency_order.sort_by_cached_key(|id| {
-            (std::cmp::Reverse(cands[id].last_at), std::cmp::Reverse(cands[id].visits), *id)
-        });
-        let rank_of = |order: &[u64]| -> std::collections::HashMap<u64, usize> {
-            order.iter().enumerate().map(|(r, id)| (*id, r)).collect()
-        };
-        let (visits_rank, recency_rank) = (rank_of(&visits_order), rank_of(&recency_order));
-        let mut scored: Vec<(f64, u64)> = cands
-            .keys()
-            .map(|id| {
-                let legs = [
-                    text_rank.get(id).copied(),
-                    fuzzy_rank.get(id).copied(),
-                    visits_rank.get(id).copied(),
-                    recency_rank.get(id).copied(),
-                ];
-                (rrf_legs(&legs, RRF_K), *id)
-            })
-            .collect();
-        scored.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
-        });
-        scored.truncate(limit);
-        Ok(scored.iter().map(|(_, id)| cands[id].clone()).collect())
+        let idx = self.history_index.borrow();
+        Ok(if q.is_empty() {
+            idx.recent(limit)
+        } else {
+            idx.search(&q, limit)
+        })
     }
 
     /// Append one event to the log; returns the assigned id (the live

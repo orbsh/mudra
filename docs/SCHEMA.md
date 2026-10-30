@@ -147,26 +147,38 @@ hole per the no-reuse rule (ADR-0002).
      github);
   3. visits and 4. recency. These two order the recalled set; they never
      put a row into it.
-  Recall is a scan of the log, and that scan is also the census: N, df and
+  Recall is a pass over every row, and that pass is also the census: N, df and
   avgdl are the corpus's own numbers, not a counter stand-in or an average
-  over the recalled set. Leg 2 is what forces the scan — a subsequence is
-  not a substring of anything, so no index can answer "ghb", and the one
-  index that could (a character set) answers by recalling most of the log,
-  which is the same scan with worse locality. The two read indexes this
-  replaced are gone for that reason: `by_addr` (the head-anchored prefix
+  over the recalled set. Leg 2 is what forces it — a subsequence is not a
+  substring of anything, so no index can answer "ghb", and the one index that
+  could (a character set) answers by recalling most of the log, which is the
+  same pass with worse locality. The two read indexes this replaced are gone
+  for that reason: `by_addr` (the head-anchored prefix
   leg — the least useful half of "the URL as text" once the whole address
   is text again) and `by_title` (the title-only lexical leg) had nothing
-  left to prune once the scan became the recall. Layout note: the retired
+  left to prune once the pass became the recall. Layout note: the retired
   slots keep their entries as dead bytes that nothing reads, so an existing
   store keeps working with no rebuild; since slots are declaration order
   (okm ADR-0005), nothing may be declared in those positions again without
   keeping the retired indexes as `deprecated` placeholders (slot reserved,
   writes stopped, `prune_deprecated_slots()` reclaims the entries).
+  WHERE that pass runs is the read's entire cost story: it runs over a
+  resident corpus (`HistoryIndex`), not over the table — every row with its
+  addressing text folded once, kept in step by the two write paths, built on
+  the first read. Paying it with a table read meant one point read, one
+  payload decode and two folded strings per row per query: 490 ms on the
+  60k-row store, issued once per keystroke. Over the corpus the same law
+  answers in 10-40 ms (41 ms for a one-letter query, where nearly every row
+  is a candidate), and the empty query in ~1 ms.
   If the log ever grows enough to hurt, an index comes back in front of the
-  scan as a pruner — never as the definition of recall.
+  pass as a pruner — never as the definition of recall.
   A row absent from a leg collects nothing from it, so an address matching
   neither recall leg never appears for a non-empty query however often it
-  was opened. The empty query keeps the old rule: every row, visits order.
+  was opened. The empty query is not a search at all: it answers the most
+  recently opened rows, newest first, from a bounded heap over the corpus —
+  the bar's first state asks "where was I", not "what matches". No
+  `by_last_at` index exists: nothing else would read one, and the corpus
+  already answers that question in memory.
 
 ### Event (ns 8)
 
