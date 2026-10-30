@@ -39,23 +39,19 @@ sequence {
 }
 
 keys {
-    // value = command name (content.js COMMANDS); kdl-py 1.2.0 requires quoted string values
-    j "scrollDown"
-    k "scrollUp"
-    h "scrollLeft"
-    l "scrollRight"
-    w "scrollPageUp"
-    s "scrollPageDown"
-    gg "scrollToTop"
-    G "scrollToBottom"
-    f "hints"
-    a "back"
-    d "forward"
+    // value = command name (content.js COMMANDS); kdl-py 1.2.0 requires quoted string values.
+    // ONLY what differs from the built-in layout belongs here. That layout keeps the
+    // hands on the home row: e/d half page (WASD column shifted one key right), s/f
+    // history back/forward, h/j/k/l one line, w/W hints, a/A the address picker
+    // (o/O aliases), g/G top/bottom, r reload, t tag, P pages. A whole page and
+    // "close" have no default key — bind them here when you want them:
+    // u "pageUp"
+    // o "pageDown"     (o is a free alias slot only if you do not want the address picker on it)
 }
 
 scroll {
-    stepLines 3                // lines per j/k scroll
-    overlapLines 5             // lines kept when paging with w/s (overlap)
+    stepLines 1                 // lines per scroll key (h/j/k/l)
+    overlapLines 5              // lines kept when paging a whole page (pageDown/pageUp)
 }
 
 // Placeholder: parsed but not consumed; the port is still decided by mudrad startup args

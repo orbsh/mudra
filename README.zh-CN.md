@@ -111,7 +111,7 @@ mudra ui                          # web 控制台
 ## 键盘：一条地址行、两个打开动词、一个关闭
 
 - **地址栏就是命令行**（2026-10-22，三轮裁决）。`o` / `O` 只是把 `open ` / `new ` 打进同一行。出现空格后候选换成*活页（仅 console 角色）+ 打开历史*；Tab 在多候选间移选中，唯一候选补全到行里，Enter 取高亮那条（无匹配则用敲进去的文本）。**没有第二层 picker**——两种情形都只有一次回车，`:open ` 之后也没有死键（空行 Backspace 退出命令模式）。
-- **两个动词**：`open` 就地导航（`location.href`；hint 的 `f` 与 picker 的 Enter 用它），`new` 另开一个 `--app` 页窗口（hint 的 `F`，即 mudrad 的 `/open`）。控制台页永不就地导航——一律 `new`。
+- **两个动词**：`open` 就地导航（`location.href`；hint 的 `w` 与 picker 的 Enter 用它），`new` 另开一个 `--app` 页窗口（hint 的 `W`，即 mudrad 的 `/open`）。控制台页永不就地导航——一律 `new`。
 - **地址归一化只有一处**（`spawn::normalize_url`）：缺 scheme 补 `https://`；单标签裸词补 `.com`（`bing` → `bing.com`），而 `localhost`、带端口的 host、带 userinfo 或带点的 host 原样保留。两个动词都走它，所以地址行里的裸词不会是死域名 `https://bing`。
 - **`:q`** 关掉"说这句话的那个页"（2026-10-22，无默认键）：service worker 直接 `chrome.tabs.remove(sender.tab.id)`，**不走** mudrad 的 `/close_page`（它按 url/title 子串匹配，会认错页）。控制台也能 `:q`——它只是另一个标签。daemon 侧不需要配合：watcher 收到 `Target.targetDestroyed` 就把该行标 `closed_at`。
 - 命令行那一行、它上方的候选浮层与状态栏共用一套外观（`bg` 色相 + `bar.opacity` + `statusBlur` + `fg`）。键位与配置键见 `docs/KEYS.md`。

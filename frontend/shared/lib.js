@@ -25,8 +25,8 @@ const MudraConfig = {
     progressColors: "#fb4934 #fe8019 #fabd2f #b8bb26 #83a598 #d3869b", // multi-stop gradient, left to right
     keybindings: null,               // {key: command}; null = use COMMANDS defaultKey
     seqTimeout: 1200,                // ms a key waits for its sequence partner (y → yy / yt)
-    scrollStepLines: 3,              // lines per j/k scroll
-    pageOverlapLines: 5,             // lines kept when paging with w/s (overlap)
+    scrollStepLines: 1,              // lines per scroll key (h/j/k/l)
+    pageOverlapLines: 5,             // lines kept when paging with pageDown/pageUp (overlap)
   },
   storage: chrome.storage.local,
 

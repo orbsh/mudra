@@ -180,8 +180,8 @@ acceptance criteria: **`docs/SCHEMA.md`** (Chinese twin: `docs/SCHEMA.zh-CN.md`)
   (no match = the typed text is used). **There is no second-level picker** — one Enter
   either way, and no dead keystroke after `:open ` (an empty line + Backspace leaves
   command mode).
-- **Two verbs**: `open` navigates in place (`location.href`; hint `f` and the picker's
-  Enter use it), `new` opens another `--app` page window (hint `F`, i.e. mudrad `/open`).
+- **Two verbs**: `open` navigates in place (`location.href`; hint `w` and the picker's
+  Enter use it), `new` opens another `--app` page window (hint `W`, i.e. mudrad `/open`).
   The console never navigates in place — always `new`.
 - **URL normalization lives in one place** (`spawn::normalize_url`): a missing scheme
   becomes `https://`; a single-label bare word gets `.com` (`bing` → `bing.com`), while

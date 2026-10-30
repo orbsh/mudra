@@ -218,8 +218,8 @@
   };
 
   // ---- the two opening verbs ----
-  // open = navigate THIS page in place (Enter in the address picker, hints `f`);
-  // new  = a separate page/window (hints `F`). The daemon resolves the address
+  // open = navigate THIS page in place (Enter in the address picker, hints `w`);
+  // new  = a separate page/window (hints `W`). The daemon resolves the address
   // for both (`/visit`, `/open` share spawn::normalize_url), so "bing" means
   // bing.com whichever verb carries it.
   async function openCurrent(url) {
@@ -362,28 +362,37 @@
 
   // ---- commands ----
   // run(arg, opts): opts = {count} (numeric prefix), {newTab} (F variant)
+  //
+  // The layout keeps the hands on the home row: the vertical pair sits one key
+  // right of WASD (w→e, s→d), so the fingers that type also scroll, and the
+  // freed `s`/`f` take the browser's left/right — history back and forward.
+  // `aliases` are a second key for the same verb (o/O are the mnemonic twins of
+  // a/A); an explicit `keybindings` entry always beats both.
   const COMMANDS = {
-    hint:    { defaultKey: "f", desc: "link hints — open (this page)", run: (_a, o) => startHints(false, o) },
-    hintNew: { defaultKey: "F", desc: "link hints — new (another page)", run: (_a, o) => startHints(true, o) },
-    back:    { defaultKey: "a", desc: "history back", run: () => history.go(-1) },
-    forward: { defaultKey: "d", desc: "history forward", run: () => history.go(1) },
+    hint:    { defaultKey: "w", desc: "link hints — open (this page)", run: (_a, o) => startHints(false, o) },
+    hintNew: { defaultKey: "W", desc: "link hints — new (another page)", run: (_a, o) => startHints(true, o) },
+    halfPageUp:  { defaultKey: "e", desc: "scroll up half a page", run: (_a, o) => scrollHalfPage(-1, o) },
+    halfPageDown: { defaultKey: "d", desc: "scroll down half a page", run: (_a, o) => scrollHalfPage(1, o) },
+    back:    { defaultKey: "s", desc: "history back", run: () => history.go(-1) },
+    forward: { defaultKey: "f", desc: "history forward", run: () => history.go(1) },
     insert:  { defaultKey: "i", desc: "insert mode (focus input)", run: () => startInsert() },
-    scrollDown:  { defaultKey: "j", desc: "scroll down", run: (_a, o) => scrollLines(1, o) },
-    scrollUp:    { defaultKey: "k", desc: "scroll up", run: (_a, o) => scrollLines(-1, o) },
+    scrollDown:  { defaultKey: "j", desc: "scroll down one line", run: (_a, o) => scrollLines(1, o) },
+    scrollUp:    { defaultKey: "k", desc: "scroll up one line", run: (_a, o) => scrollLines(-1, o) },
     scrollLeft:  { defaultKey: "h", desc: "scroll left", run: (_a, o) => scrollCols(-1, o) },
     scrollRight: { defaultKey: "l", desc: "scroll right", run: (_a, o) => scrollCols(1, o) },
-    pageDown:    { defaultKey: "w", desc: "page down", run: (_a, o) => scrollPage(1, o) },
-    pageUp:      { defaultKey: "s", desc: "page up", run: (_a, o) => scrollPage(-1, o) },
+    // A whole page lost its keys to the half page; still bindable
+    pageDown:    { defaultKey: null, desc: "page down (bindable)", run: (_a, o) => scrollPage(1, o) },
+    pageUp:      { defaultKey: null, desc: "page up (bindable)", run: (_a, o) => scrollPage(-1, o) },
     scrollTop:   { defaultKey: "g", desc: "scroll to top / <N>% of page", run: (_a, o) => scrollToPctOrTop(o) },
     scrollBottom:{ defaultKey: "G", desc: "scroll to bottom", run: () => scrollToBottom() },
     refresh: { defaultKey: "r", desc: "reload page", run: () => location.reload() },
     tag:     { defaultKey: "t", desc: "toggle tag on this page", run: () => showTagPrompt() },
     // Both verbs have two entry points: the key types the verb into the line
-    // (`o` ≡ `:open `, which is why completion and the key share one surface),
+    // (`a` ≡ `:open `, which is why completion and the key share one surface),
     // and pickCmd fires the verb once the line carries an address.
-    open:    { defaultKey: "o", desc: "open url / filter pages + history",
+    open:    { defaultKey: "a", aliases: ["o"], desc: "open url / filter pages + history",
                run: (arg) => (arg.trim() ? openCurrent(arg) : enterCommand("open ")) },
-    new:     { defaultKey: "O", desc: "open url in a new window",
+    new:     { defaultKey: "A", aliases: ["O"], desc: "open url in a new window",
                run: (arg) => (arg.trim() ? openNew(arg) : enterCommand("new ")) },
     pages:   { defaultKey: "P", desc: "switch page (mudrad)", run: () => showPages() },
     q:       { defaultKey: null, desc: "close this page", run: () => closeSelf() },
@@ -424,13 +433,16 @@
     return flashBar(`${key} = ${JSON.stringify(val)}`);
   }
 
-  // Keybinding resolution: config JSON keybindings[key]=commandName overrides defaultKey
+  // Keybinding resolution: config JSON keybindings[key]=commandName overrides
+  // defaultKey; `aliases` are the command's extra keys (a second home-row key
+  // for one verb), and an explicit keybinding beats both.
   async function keyToCommand(key) {
     const cfg = await MudraConfig.all();
     const map = cfg.keybindings || {};
     for (const [name, def] of Object.entries(COMMANDS)) {
       const bound = Object.keys(map).find((k) => map[k] === name);
       if ((bound || def.defaultKey) === key) return name;
+      if (key !== bound && (def.aliases || []).includes(key)) return name;
     }
     return null;
   }
@@ -448,6 +460,14 @@
     const cfg = await MudraConfig.all();
     const t = scrollTarget();
     t.scrollLeft += dir * (o.count || cfg.scrollStepLines) * lineHeight();
+    await refreshBar();
+  }
+  // Half a viewport, and no overlap: `pageOverlapLines` exists so a full page
+  // does not replace all the context at once; half a page already leaves half.
+  // A count multiplies halves (`3e` = one and a half screens).
+  async function scrollHalfPage(dir, o) {
+    const t = scrollTarget();
+    t.scrollTop += dir * (o.count || 1) * ((t.clientHeight || innerHeight) / 2);
     await refreshBar();
   }
   async function scrollPage(dir, o) {
@@ -630,7 +650,7 @@
     });
     document.documentElement.appendChild(overlay);
     hintSession = { overlay, nodes, typed: "", newWindow: !!newWindow, chars: c.hintChars };
-    // `F` is the same hint state machine with a different verb; the bar must
+    // `W` is the same hint state machine with a different verb; the bar must
     // say so, otherwise the two keys are indistinguishable until you click.
     setMode("hint", newWindow ? "hintnew" : "hint");
   }
@@ -908,7 +928,9 @@
     for (const [name, def] of Object.entries(COMMANDS)) {
       const bound = Object.keys(map).find((k) => map[k] === name);
       const k = bound || def.defaultKey;
-      if (k) rows.push({ key: k, desc: def.desc });
+      // a command with aliases shows both keys: one row, so the list stays a map
+      const keys = [k, ...(def.aliases || [])].filter(Boolean).join(" / ");
+      if (keys) rows.push({ key: keys, desc: def.desc });
     }
     for (const [sk, seq] of Object.entries(SEQUENCES))
       for (const it of seq.items) rows.push({ key: `${sk} ${it.key}`, desc: it.desc });

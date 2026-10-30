@@ -9,8 +9,8 @@
 
 - **normal** — 全部键位生效；数字前缀累积（如 `30g`）。前缀与模式名都不再画在条上（见
   「状态栏外观」），累积过程只能从命令效果看出来。
-- **hint** — `f` 标记可见链接，输入 hint 前缀，**唯一候选即激活**（无需敲全），选中
-  走 `open` 动词（本页就地导航）；`F` 同 hint，选中走 `new` 动词（另开一个 page 窗口）。
+- **hint** — `w` 标记可见链接，输入 hint 前缀，**唯一候选即激活**（无需敲全），选中
+  走 `open` 动词（本页就地导航）；`W` 同 hint，选中走 `new` 动词（另开一个 page 窗口）。
   两个键底色相同，条上不再写 `hintnew`——按下之后的区别只剩你选中元素时发生的事。
 - **insert** — `i` 聚焦输入框；页内多个输入框时先进 hint 选择；Esc 失焦回 normal。
 - **command** — `:` 触发；弹出**居中的浮动面板**，位置和大小全按比例：水平居中、上沿在视口
@@ -29,11 +29,12 @@
 
 | 动词 | 语义 | 触发 |
 |---|---|---|
-| `open` | 在**本页**就地导航（`location.href`），并记一次历史 | `f`（hints）、`o`（≡ `:open `）、`:open <url>` 回车 |
-| `new` | 另开一个 `--app` page 窗口（mudrad `/open`，归当前 ctx） | `F`（hints）、`O`（≡ `:new `）、`:new <url>` 回车 |
+| `open` | 在**本页**就地导航（`location.href`），并记一次历史 | `w`（hints）、`a`（≡ `:open `，别名 `o`）、`:open <url>` 回车 |
+| `new` | 另开一个 `--app` page 窗口（mudrad `/open`，归当前 ctx） | `W`（hints）、`A`（≡ `:new `，别名 `O`）、`:new <url>` 回车 |
 
-`o` / `O` 与 `:open` / `:new` 是同一件事：按 `o` 就是把 `open ` 打进命令行（`O` 打
-`new `），候选（活页 + 打开历史）列在同一行上方；Tab 走选中、Enter 取高亮的那条 URL，
+`a` / `A` 与 `:open` / `:new` 是同一件事：按 `a` 就是把 `open ` 打进命令行（`A` 打
+`new `；`o` / `O` 是同两个动词的别名，作用完全一样），候选（活页 + 打开历史）列在同一行上方；
+Tab 走选中、Enter 取高亮的那条 URL，
 没有匹配的候选时 Enter 用敲进去的文本——所以带不带参数都只有一次回车。`new` 不列活页：
 新窗口没有可跳转的目标。
 
@@ -44,25 +45,32 @@
 
 ## 默认键位（均可被 keybindings 覆盖）
 
+键位按"手不离 home row"排：纵向那一对是 WASD 整列**右移一格**后的位置（W→`e`、S→`d`），
+打字的手不用挪就能滚；让出来的 `s` / `f` 正好落在浏览器的左右——历史后退 / 前进。
+单行移动仍用 vim 的 `h` `j` `k` `l`。
+
 | key | command | 行为 |
 |---|---|---|
-| `f` / `F` | hint / hintNew | 链接 hints：`f`=open（本页），`F`=new（另开窗口） |
-| `a` / `d` | back / forward | 历史后退 / 前进 |
-| `i` | insert | insert 模式 |
-| `j` / `k` | scrollDown / scrollUp | 纵向滚 `scrollStepLines` 行 |
-| `h` / `l` | scrollLeft / scrollRight | 横向滚动 |
-| `w` / `s` | pageDown / pageUp | 翻页（保留 `pageOverlapLines` 行重叠） |
+| `w` / `W` | hint / hintNew | 链接 hints：`w`=open（本页），`W`=new（另开窗口） |
+| `e` / `d` | halfPageUp / halfPageDown | 上 / 下半屏（`<N>e` 即 N 个半屏，`2e` = 一屏） |
+| `s` / `f` | back / forward | 历史后退 / 前进 |
+| `h` `j` `k` `l` | scrollLeft / scrollDown / scrollUp / scrollRight | **单行**移动：一行 = `scrollStepLines`（默认 1），`<N>` 前缀乘行数 |
+| `a` / `A` | open / new | 地址栏候选（活页 + 历史）：`a` 本页打开、`A` 另开窗口 |
+| `o` / `O` | open / new（别名） | 同上两个动词的助记别名，行为完全一致 |
 | `g` / `G` | scrollTop / scrollBottom | 顶部 / 底部；`<N>g` 跳页面前 N% |
 | `r` | refresh | 重载 |
 | `t` | tag | 打 tag（弹 tag 输入） |
-| `o` | open | 命令行打 `open `（≡ `:open`），Enter 在本页打开 |
-| `O` | new | 命令行打 `new `（≡ `:new`），Enter 另开窗口 |
 | `P` | pages | 切页（mudrad） |
 | `y` `y` | — | 复制当前页地址到剪贴板 |
 | `y` `t` | — | 复制当前页标题到剪贴板 |
 | `?` | — | 键位表（在状态条上方弹出，超出高度可滚动） |
+| — | pageDown / pageUp | 翻**整**页（保留 `pageOverlapLines` 行重叠）；无默认键，需要时 `:set keybindings.u=pageUp` 之类自己绑 |
 | — | q | 关闭当前页（`:q`，无默认键） |
 | `:` | — | command 模式 |
+
+`f` / `F` 不再是 hint（`f` 现在是前进），整页上下翻也随 `w` / `s` 一起让位——两个命令都还在
+（`hint`/`hintNew`、`pageDown`/`pageUp`），只是没有默认键，`keybindings` 随时能绑回来。
+别名只影响显示与默认键：`keybindings` 里写一条显式绑定，永远压过默认键和别名。
 
 `:q` 关的是**说这句话的那个 tab**：service worker 直接 `chrome.tabs.remove(sender.tab.id)`，
 不做 URL 匹配（mudrad 的 `/close_page` 收的是子串，会认错页），所以控制台也能 `:q`（它只是
@@ -95,7 +103,7 @@ textarea + `execCommand("copy")`。成功与否都在状态条上落一行字（
 `cmdBg`/`cmdFg`/`cmdOpacity`/`cmdScrollbar`（命令面板的色相、文字色、alpha、候选列表滚动条宽度 px）、
 `progressHeight`（默认 2）/`progressColors`（多段渐变色，空格分隔的多色列表）、
 `seqTimeout`（序列等待毫秒数，默认 1200）、
-`keybindings`、`scrollStepLines`（默认 3）、`pageOverlapLines`（默认 5）。
+`keybindings`、`scrollStepLines`（默认 1）、`pageOverlapLines`（默认 5）。
 
 **优先级**：`config.kdl`（仓库层 + `~/.config/mudra/config.kdl` 用户层逐键合并）是源——服务
 worker 每次同步都跟上文件，改文件即改外观；`:set` 写过的键会被钉住（storage 的 `setKeys`），
@@ -121,7 +129,7 @@ alpha 由 `opacity` 单独接管（默认 0.62），`fg` 默认深灰 `#3c3836`�
 chip 隐去（`visibility:hidden`），免得两处读数。`insertBg`/`insertFg` 只影响 insert 模式下的 chip。
 文字色默认深灰 `#666666`；写 `"auto"` 则按背景色算 WCAG 相对亮度、取黑/白里对比度高的
 那个（alpha 不参与判色——半透明下真实底色是网页内容，静态算不出来，所以按配置的色相判）；
-写死别的颜色即锁死。**hint 标签（`f` 的小方块）也是毛玻璃**：底色 `hintBg`（默认 gruvbox
+写死别的颜色即锁死。**hint 标签（`w` 的小方块）也是毛玻璃**：底色 `hintBg`（默认 gruvbox
 淡黄 `#fbf1c7`，同样是色相）、alpha 走 `hint.opacity`（默认 0.65，高于 `bar.opacity` 但
 远低于 1——要能看见桌面上透过来的模糊，同时压得住底下的页面文字），模糊半径同 `statusBlur`；
 文字色按 `hintFg`（`"auto"` 时由 `hintBg` 亮度取黑/白）。insert 模式的多输入框 picker 用同一套。
@@ -135,7 +143,7 @@ chip 隐去（`visibility:hidden`），免得两处读数。`insertBg`/`insertFg
 
 **命令行不是 `<input>`**：`#mudra-cmdinput` 是 `contenteditable="plaintext-only"` 的 div。原因不是审美——Chrome 会在任何它认得出名字的文本控件上方弹自带的补全下拉（autofill / 输入历史），那个菜单正好盖在候选列表上，而没有任何属性组合能长期压住它；contenteditable 根本没有原生 autofill，所以第二个菜单不可能出现。代价是 caret、取值、粘贴都要自己实现（`MudraLine`：`value()` 取 `textContent`、粘贴/拖放只收纯文本、Enter 归宿主用来选候选）。
 
-**元素查询和滚动目标都穿透 shadow root**：`chrome://settings`、`history`、`downloads`、`flags` 这些 WebUI 页把内容放进层层 shadow root（`flags` 实测 655 个），网站也越来越多这么干；`document.querySelectorAll` 只看 light DOM，会报"页面上没有链接"。所以 `f` 的候选集、`i` 的输入框集都走 `deepQueryAll`（递归进 `shadowRoot`）。滚动同理：`window.scrollBy` 在 WebUI 上滚不动任何东西，滚动目标由 `scrollTarget()` 解析——文档自己能滚就用它（绝大多数网站，零成本），否则在视口中心做命中测试、沿 flat tree（`parentElement`，再退到 shadow host）找到第一个真正在滚的容器；结果缓存 500ms，因为状态条每次滚动事件都会重算百分比。状态条的滚动百分比跟的就是同一个目标。
+**元素查询和滚动目标都穿透 shadow root**：`chrome://settings`、`history`、`downloads`、`flags` 这些 WebUI 页把内容放进层层 shadow root（`flags` 实测 655 个），网站也越来越多这么干；`document.querySelectorAll` 只看 light DOM，会报"页面上没有链接"。所以 `w` 的候选集、`i` 的输入框集都走 `deepQueryAll`（递归进 `shadowRoot`）。滚动同理：`window.scrollBy` 在 WebUI 上滚不动任何东西，滚动目标由 `scrollTarget()` 解析——文档自己能滚就用它（绝大多数网站，零成本），否则在视口中心做命中测试、沿 flat tree（`parentElement`，再退到 shadow host）找到第一个真正在滚的容器；结果缓存 500ms，因为状态条每次滚动事件都会重算百分比。状态条的滚动百分比跟的就是同一个目标。
 
 **`chrome://` 页面上的脚本由 SW 注入，不写进 manifest 的 matches**：`content_scripts.matches` 里出现 `"chrome://*/*"` 会让 Chrome 在**没带** `--extensions-on-chrome-urls` 的启动方式下直接拒载整个扩展（`Invalid value for 'content_scripts[0].matches[1]': Invalid scheme.`）——结果是浏览器里没有扩展 + 启动报错气泡。同一个 pattern 写在 `host_permissions` 里是合法的，所以改成：manifest 只声明 `<all_urls>`，SW 监听 `webNavigation.onCommitted`，对 `chrome://` 的主框架用 `chrome.scripting.executeScript` 注入 `shared/lib.js` + `extension/content.js`（顺序不能反，content.js 用 lib.js 定义的全局）。缺开关时只有这一个调用失败并被 catch 成一条日志，扩展照常加载——正常页面不受影响，`chrome://` 页面只是没有键位。
 

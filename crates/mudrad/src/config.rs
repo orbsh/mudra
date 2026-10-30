@@ -256,7 +256,7 @@ scroll { stepLines 3 }
         let cfg = load(&default, &user).unwrap();
         assert_eq!(cfg["statusFont"], json!("12px monospace")); // repo layer survives
         assert_eq!(cfg["statusBg"], json!("#ff0000")); // user layer wins
-        assert_eq!(cfg["scrollStepLines"], json!(3));
+        assert_eq!(cfg["scrollStepLines"], json!(3)); // untouched by the user layer
     }
 
     #[test]
@@ -397,7 +397,7 @@ scroll { stepLines 4 }
         let cfg = load(&repo, std::path::Path::new("/nonexistent-user-config.kdl")).unwrap();
         assert_eq!(cfg["statusHeight"], json!(16));
         assert_eq!(cfg["hintChars"], json!("asdfghjkl;qwertyuiopzxcv"));
-        assert_eq!(cfg["scrollStepLines"], json!(3));
+        assert_eq!(cfg["scrollStepLines"], json!(1));
         assert_eq!(cfg["cmdBg"], json!("#fbf1c7"));
         assert_eq!(cfg["cmdFg"], json!("#3c3836"));
         assert_eq!(cfg["cmdScrollbar"], json!(2));
@@ -409,8 +409,12 @@ scroll { stepLines 4 }
         assert_eq!(cfg["thumbnails"], json!(false));
         // em, and a float must stay a float (the panel multiplies it as one)
         assert_eq!(cfg["indent"], json!(1.4));
-        assert_eq!(cfg["keybindings"]["j"], json!("scrollDown"));
-        assert_eq!(cfg["keybindings"].as_object().unwrap().len(), 11);
+        // the shipped file carries no key overrides on purpose: the layout lives in
+        // content.js COMMANDS, and an entry here would silently shadow a default
+        assert!(
+            cfg["keybindings"].as_object().is_none_or(|m| m.is_empty()),
+            "shipped config must not override keys"
+        );
         assert!(cfg.get("port").is_none(), "server group must not leak");
     }
 }
