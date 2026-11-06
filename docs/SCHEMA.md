@@ -68,17 +68,25 @@ Namespaces are assigned in declaration order.
   open the store at all, and `upsert_target`'s identity order never
   inserts a row for a target that already has one.
 
-### page_tag
+### page_tag (ns 3)
 
-Junction Page↔Tag, double-written edge entries. Cross-tree multi-select =
-multiple rows; within-tree single-select is an app-layer constraint
-(same semantics as the sqlite version).
+A relation table, not a junction (okm ADR-0051). The pair IS the key —
+`{ page: u64, tag: u32 }`, 12 B, `page` first — and the row carries no
+payload: a link exists, or it does not. Cross-tree multi-select = multiple
+rows; within-tree single-select is an app-layer constraint (same semantics
+as the sqlite version).
 
-`JunctionEncode` declares no ns of its own — the entries live one in
-Page's ns 2 and one in Tag's ns 1 (direction is carried by which ns the
-entry lives in; the segment-0x3 discriminator with `#[ok_junction(1)]`
-marks the junction). ns 3 is therefore retired; it stays a permanent
-hole per the no-reuse rule (ADR-0002).
+Two reads, one stored fact:
+
+- **page → tags**: prefix read on the key (`page` leads it), `[ns 3][slot 0]
+  [page][tag…]` — the tag ids come out of the key tail, nothing is fetched;
+- **tag → pages**: the declared lead face `by_tag` (okm ADR-0054), whose
+  segment is the key's own `tag` bytes — so `tag` is never copied into a
+  payload column and cannot disagree with the key.
+
+`put` is idempotent (the pair is the key) and `purge` removes exactly that
+one row; there is no second entry per link and no direction to keep in step.
+ns 3 is the link table's ns — it is no longer a retired hole.
 
 ### Instance (ns 4)
 

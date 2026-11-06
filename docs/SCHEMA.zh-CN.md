@@ -59,14 +59,21 @@ Rust 重写的 mudrad 用单一 fjall store 取代 sqlite 文件，经 okm 静�
   Rust 版不需要库层约束——fjall 的文件锁让第二个写者根本打不开 store，
   且 `upsert_target` 的身份次序对已有 target 永不另起新行。
 
-### page_tag
+### page_tag（ns 3）
 
-Page↔Tag 连接（junction），双端各写一条 entry。跨树多选 = 多行；
+一张关系表，不是 junction（okm ADR-0051）。**对就是键**——`{ page: u64, tag: u32 }`，
+12 B，`page` 在前——行上没有 payload：连接存在，或者不存在。跨树多选 = 多行；
 树内单选 = app 层约束（与 sqlite 版语义一致）。
 
-`JunctionEncode` 不自己声明 ns——entry 分居 Page ns 2 与 Tag ns 1
-（方向由所在 ns 携带，段 0x3 判别符 + `#[ok_junction(1)]`）。
-ns 3 随之弃用；按 ADR-0002（ns 永不复用）永久保留为空位。
+两个读，一份事实：
+
+- **page → tags**：键前缀读（`page` 领位），`[ns 3][slot 0][page][tag…]`——
+  tag id 直接从键尾切出，不回表；
+- **tag → pages**：声明的**前导面** `by_tag`（okm ADR-0054），段就是键自己的 `tag`
+  字节——所以 `tag` 从不复制进负载列，也不可能与键不一致。
+
+`put` 幂等（对就是键），`purge` 只删那一行；每条连接没有第二条 entry，也没有
+需要对齐的方向。ns 3 就是连接表的 ns——不再是空位。
 
 ### Instance（ns 4）
 
