@@ -1,10 +1,10 @@
 //! mudra-store — the okm collection layer for mudrad, implementing the
 //! layout contract in `docs/SCHEMA.md` (R1 acceptance spec).
 //!
-//! Namespaces follow the SCHEMA declaration order. The page_tag junction
-//! carries no ns of its own: its entries live one in Page's ns 2 and one
-//! in Tag's ns 1 (direction = which ns the entry lives in), so ns 3 is a
-//! permanent hole (ADR-0002 no-reuse).
+//! Namespaces follow the SCHEMA declaration order. The page_tag link is a
+//! relation table of its own (ns 3): the pair is the key and the reverse read
+//! is a lead face over the same bytes (okm ADR-0051 + ADR-0054), so neither
+//! direction carries a copy of identity and no row has to be kept in step.
 //!
 //! Payload notes that bind to okm's field whitelist (u8/u16/u32/u64,
 //! i8/i16/i32/i64, String, Bytes, [u8;N], Quant, VarInt, Enum, Offset):
@@ -22,9 +22,9 @@
 //! byte-level fact shared single-source with mudrad, no engine types
 //! (fjall does not compile for wasm32).
 
-use okm_core::{Bytes, DocumentEncode, JunctionEncode, KeyEncode, Quant, Ref};
+use okm_core::{Bytes, DocumentEncode, KeyEncode, Quant};
 #[cfg(feature = "engine")]
-use okm_core::{Collection, FjallStore, Junction};
+use okm_core::{Collection, FjallStore, PrefixProbe};
 
 #[cfg(feature = "engine")]
 use std::path::Path;
@@ -108,8 +108,8 @@ pub struct StateKey {
 
 /// Bare-name addressing is a func index: the query side calls the same
 /// path, so normalization cannot drift between write and read.
-fn tag_name(tag: &Tag) -> String {
-    tag.name.clone()
+fn tag_name(tag: &Tag) -> [String; 1] {
+    [tag.name.clone()]
 }
 
 /// A tag-forest node. `parent_id = -1` is the root sentinel (no real
@@ -227,8 +227,8 @@ fn token_bm25(rows: &[(u64, &str, &str, f64)], tokens: &[String]) -> Vec<(u64, f
 
 /// Target reverse lookup is a func index over the CDP string id
 /// (`/open {tabId}` and `focus_page` resolve rows by it).
-fn page_target(page: &Page) -> String {
-    page.target_id.clone()
+fn page_target(page: &Page) -> [String; 1] {
+    [page.target_id.clone()]
 }
 
 /// Host substring of a URL — the site-width join key.
@@ -260,23 +260,31 @@ pub struct Page {
     pub parent_id: u64,
 }
 
-// ================= page_tag junction =================
+// ================= page_tag relation (ns 3) =================
 
-/// Page↔Tag junction (segment 0x3, discriminator 1). Page side carries
-/// the full PageKey identity; Tag side the full TagKey identity.
+/// Page↔Tag link: the pair IS the key (okm ADR-0051). `page` leads, so "tags
+/// of a page" is one prefix read; the declared lead face orders the same key
+/// bytes by `tag` for the reverse read, so `tag` is never copied into a
+/// payload column and cannot disagree with the key.
 /// Cross-tree multi-select = multiple links; within-tree single-select is
 /// app law.
-#[derive(JunctionEncode, Clone, Debug)]
-#[ok_junction(1)]
-pub struct PageTag {
-    pub page: Ref<Page, PageKey>,
-    pub tag: Ref<Tag, TagKey>,
+#[derive(KeyEncode, Clone, PartialEq, Eq, Debug, Default)]
+pub struct PageTagKey {
+    pub page: u64,
+    pub tag: u32,
 }
+
+/// The link owns no payload: it exists, or it does not.
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(PageTagKey)]
+#[ok_ns(3)]
+#[ok_lead(by_tag { fields(tag) })]
+pub struct PageTag {}
 
 // ================= Instance (ns 4) =================
 
-fn instance_profile(inst: &Instance) -> String {
-    inst.profile.clone()
+fn instance_profile(inst: &Instance) -> [String; 1] {
+    [inst.profile.clone()]
 }
 
 /// A chromium instance bound to one situation leaf. `running` is 0/1;
@@ -296,8 +304,8 @@ pub struct Instance {
 
 // ================= SiteWidth (ns 5) =================
 
-fn site_name(sw: &SiteWidth) -> String {
-    sw.site.clone()
+fn site_name(sw: &SiteWidth) -> [String; 1] {
+    [sw.site.clone()]
 }
 
 /// Remembered window width per site. `site` stays a func index (variable
@@ -344,8 +352,8 @@ pub struct State {
 
 // ================= History (ns 7) =================
 
-fn history_url(h: &History) -> String {
-    h.url.clone()
+fn history_url(h: &History) -> [String; 1] {
+    [h.url.clone()]
 }
 
 /// One open-history entry: an address-bar visit accumulator. `visits`
@@ -569,8 +577,8 @@ pub struct Event {
 
 // ================= Hook (ns 9) =================
 
-fn hook_name(h: &Hook) -> String {
-    h.name.clone()
+fn hook_name(h: &Hook) -> [String; 1] {
+    [h.name.clone()]
 }
 
 /// One page-side hook: JS as *data* — the light-weight rule path of
@@ -717,6 +725,25 @@ pub fn primary_key<R: okm_core::Document>(key: &R::Key) -> Vec<u8> {
     buf
 }
 
+/// Every key in one table, in key order.
+///
+/// `scan_keys` is a prefix read (okm ADR-0049) and takes its probe, so a
+/// whole-table walk is that read with an empty prefix — one helper so the
+/// "empty probe means every primary entry" detail is written once. Public
+/// because mudrad walks its tables the same way.
+#[cfg(feature = "engine")]
+pub fn all_keys<K, R>(col: &Collection<FjallStore, K, R>) -> StoreResult<Vec<K>>
+where
+    K: KeyEncode,
+    R: okm_core::Document<Key = K>,
+{
+    let mut out = Vec::new();
+    for key in col.scan_keys(&PrefixProbe::<K>::empty()) {
+        out.push(key?);
+    }
+    Ok(out)
+}
+
 // ================= store assembly =================
 
 /// One fjall `Database`, every collection handle cloned from it. `put`
@@ -725,7 +752,7 @@ pub fn primary_key<R: okm_core::Document>(key: &R::Key) -> Vec<u8> {
 pub struct MudraStore {
     pub tags: Collection<FjallStore, TagKey, Tag>,
     pub pages: Collection<FjallStore, PageKey, Page>,
-    pub page_tags: Junction<FjallStore, PageTag>,
+    pub page_tags: Collection<FjallStore, PageTagKey, PageTag>,
     pub instances: Collection<FjallStore, InstanceKey, Instance>,
     pub site_widths: Collection<FjallStore, SiteWidthKey, SiteWidth>,
     pub state: Collection<FjallStore, StateKey, State>,
@@ -748,7 +775,7 @@ impl MudraStore {
         Ok(Self {
             tags: Collection::new(store.clone()),
             pages: Collection::new(store.clone()),
-            page_tags: Junction::new(store.clone()),
+            page_tags: Collection::new(store.clone()),
             instances: Collection::new(store.clone()),
             site_widths: Collection::new(store.clone()),
             state: Collection::new(store.clone()),
@@ -933,7 +960,7 @@ impl MudraStore {
             return Ok(Vec::new());
         }
         let mut rows: Vec<(PageKey, Page)> = Vec::new();
-        for k in self.pages.scan_keys()? {
+        for k in all_keys(&self.pages)? {
             // a row that vanished mid-walk is absence, not a shorter corpus
             if let Some(p) = self.pages.get(&k)?
                 && p.deleted_at == 0
@@ -976,7 +1003,7 @@ impl MudraStore {
     /// ORDER BY site; the scan yields id order, so re-sort on the name).
     pub fn site_widths_all(&self) -> StoreResult<Vec<SiteWidth>> {
         let mut rows: Vec<SiteWidth> = Vec::new();
-        for k in self.site_widths.scan_keys()? {
+        for k in all_keys(&self.site_widths)? {
             if let Some(row) = self.site_widths.get(&k)? {
                 rows.push(row);
             }
@@ -1099,7 +1126,7 @@ impl MudraStore {
     /// Every history row (id order; the caller ranks).
     pub fn history_all(&self) -> StoreResult<Vec<History>> {
         let mut rows: Vec<History> = Vec::new();
-        for k in self.history.scan_keys()? {
+        for k in all_keys(&self.history)? {
             if let Some(h) = self.history.get(&k)? {
                 rows.push(h);
             }
@@ -1117,7 +1144,7 @@ impl MudraStore {
             return Ok(());
         }
         let mut idx = HistoryIndex::default();
-        for k in self.history.scan_keys()? {
+        for k in all_keys(&self.history)? {
             if let Some(h) = self.history.get(&k)? {
                 idx.upsert(k.id, &h);
             }
@@ -1196,7 +1223,7 @@ impl MudraStore {
     /// has durably handled.
     pub fn events_since(&self, cursor: u64, limit: usize) -> StoreResult<Vec<(u64, Event)>> {
         let mut out = Vec::new();
-        for k in self.events.scan_keys()?.into_iter().filter(|k| k.id > cursor).take(limit) {
+        for k in all_keys(&self.events)?.into_iter().filter(|k| k.id > cursor).take(limit) {
             if let Some(e) = self.events.get(&k)? {
                 out.push((k.id, e));
             }
@@ -1261,7 +1288,7 @@ impl MudraStore {
     /// Every hook, id order (the operator-facing read).
     pub fn hooks_all(&self) -> StoreResult<Vec<(HookKey, Hook)>> {
         let mut rows: Vec<(HookKey, Hook)> = Vec::new();
-        for k in self.hooks.scan_keys()? {
+        for k in all_keys(&self.hooks)? {
             if let Some(h) = self.hooks.get(&k)? {
                 rows.push((k, h));
             }
@@ -1296,7 +1323,7 @@ impl MudraStore {
     /// at page scale, and this runs inside the verb's short lock anyway.
     pub fn page_title_for_url(&self, url: &str) -> StoreResult<Option<String>> {
         let mut best: Option<Page> = None;
-        for k in self.pages.scan_keys()? {
+        for k in all_keys(&self.pages)? {
             if let Some(p) = self.pages.get(&k)?
                 && p.url == url
                 && p.deleted_at == 0
@@ -1309,26 +1336,49 @@ impl MudraStore {
         Ok(best.map(|p| p.title))
     }
 
-    /// Tag ids linked to a page (junction A side: page → tags).
+    /// Tag ids linked to a page — the forward direction, one prefix read on
+    /// the relation table's own key (`page` leads it).
     pub fn tags_of_page(&self, page: &PageKey) -> StoreResult<Vec<TagKey>> {
-        page.get_tag(&self.page_tags)
+        let probe = PrefixProbe::<PageTagKey>::new(page.id.to_be_bytes().to_vec());
+        let mut out = Vec::new();
+        for key in self.page_tags.scan_keys(&probe) {
+            out.push(TagKey { id: key?.tag });
+        }
+        Ok(out)
     }
 
-    /// Pages carrying a tag (junction B side: tag → pages).
+    /// Pages carrying a tag — the reverse direction, read through the declared
+    /// lead face (`by_tag`). Its segment is the key's own `tag` bytes, so the
+    /// tail is the whole pair and the page id comes straight out of it.
     pub fn pages_of_tag(&self, tag: &TagKey) -> StoreResult<Vec<PageKey>> {
-        Ok(tag
-            .get_page(&self.page_tags)?
+        Ok(self
+            .page_tags
+            .scan::<__OkmLead_PageTag_by_tag>(&tag.id.to_be_bytes()[..])?
             .into_iter()
-            .map(|pk| pk.decoded)
+            .map(|(pk, _)| PageKey {
+                id: pk.decoded.page,
+            })
             .collect())
     }
 
-    /// Link a page to a tag (idempotent: junction entries are keyed).
+    /// Link a page to a tag (idempotent: the pair is the key, so a repeat
+    /// write is the same entry).
     pub fn link_page_tag(&mut self, page: &PageKey, tag: &TagKey) -> StoreResult<()> {
-        self.page_tags.link(page, tag)
+        self.page_tags.put(
+            &PageTagKey {
+                page: page.id,
+                tag: tag.id,
+            },
+            &PageTag {},
+        )?;
+        Ok(())
     }
 
     pub fn unlink_page_tag(&mut self, page: &PageKey, tag: &TagKey) -> StoreResult<()> {
-        self.page_tags.unlink(page, tag)
+        self.page_tags.purge(&PageTagKey {
+            page: page.id,
+            tag: tag.id,
+        })?;
+        Ok(())
     }
 }

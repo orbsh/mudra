@@ -11,7 +11,7 @@
 
 use serde_json::{json, Value};
 
-use mudra_store::{MudraStore, state};
+use mudra_store::{MudraStore, all_keys, state};
 
 use crate::runtime::Runtime;
 use crate::spawn;
@@ -134,7 +134,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
 
     fn running_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
         let mut out = Vec::new();
-        for k in self.store.instances.scan_keys().map_err(serr)? {
+        for k in all_keys(&self.store.instances).map_err(serr)? {
             if let Some(i) = self.store.instances.get(&k).map_err(serr)?
                 && i.running == 1
                 && spawn::pid_alive(i.pid) // zombie-safe
@@ -152,7 +152,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     /// a running-only scan made the list go blank exactly then.
     fn all_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
         let mut out = Vec::new();
-        for k in self.store.instances.scan_keys().map_err(serr)? {
+        for k in all_keys(&self.store.instances).map_err(serr)? {
             if let Some(i) = self.store.instances.get(&k).map_err(serr)? {
                 out.push((k, i));
             }
@@ -587,7 +587,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         // all live rows, id-ordered (Python's ORDER BY id: children keep
         // insertion order, not rank order — the rank sort is the panel's)
         let mut rows: Vec<(mudra_store::TagKey, mudra_store::Tag)> = Vec::new();
-        for k in self.store.tags.scan_keys().map_err(serr)? {
+        for k in all_keys(&self.store.tags).map_err(serr)? {
             if let Some(t) = self.store.tags.get(&k).map_err(serr)?
                 && t.deleted == 0
             {
@@ -1286,7 +1286,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let win = snap.focused_window().ok_or("no focused window")?;
         let pid = win["pid"].as_u64().ok_or("window has no pid")? as u32;
         let mut inst = None;
-        for k in self.store.instances.scan_keys().map_err(serr)? {
+        for k in all_keys(&self.store.instances).map_err(serr)? {
             if let Some(i) = self.store.instances.get(&k).map_err(serr)?
                 && i.running == 1
                 && i.pid == pid
@@ -1430,7 +1430,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let pid = win["pid"].as_u64().ok_or("window has no pid")? as u32;
                 let title = win["title"].as_str().unwrap_or_default().to_string();
                 let mut inst = None;
-                for k in self.store.instances.scan_keys().map_err(serr)? {
+                for k in all_keys(&self.store.instances).map_err(serr)? {
                     if let Some(i) = self.store.instances.get(&k).map_err(serr)?
                         && i.running == 1
                         && i.pid == pid

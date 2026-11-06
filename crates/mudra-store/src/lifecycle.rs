@@ -445,7 +445,7 @@ impl MudraStore {
         }
     }
 
-    /// Toggle a tag on a page (junction link/unlink — port of
+    /// Toggle a tag on a page (relation-table put/purge — port of
     /// `page_tag_toggle` returning "added"/"removed").
     pub fn page_tag_toggle(&mut self, page: &PageKey, tag: &TagKey, ts: u64) -> StoreResult<bool> {
         let linked = self.tags_of_page(page)?.contains(tag);
@@ -454,7 +454,7 @@ impl MudraStore {
         } else {
             self.link_page_tag(page, tag)?;
         }
-        // The tree/tag display reads derive from junction entries, so a
+        // The tree/tag display reads derive from the link rows, so a
         // toggle is a page-data invalidation too.
         self.emit_tag_set(page, ts)?;
         self.bump_epoch()?;
@@ -462,7 +462,7 @@ impl MudraStore {
     }
 
     /// Replace a page's whole tag set (the panel's batch assignment —
-    /// port of ui.py `_set_tags`): delete all junction links, re-link the
+    /// port of ui.py `_set_tags`): drop every link of the page, re-link the
     /// given ids after dropping ids that do not resolve to a live tag
     /// (deleted tags filter out exactly like the Python `deleted=0`
     /// guard). Always bumps: a replace is a write even when the set ends

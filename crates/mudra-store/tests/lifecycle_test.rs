@@ -260,7 +260,7 @@ fn site_width_row_upsert_by_site() {
     s.site_widths.put(&k2, &w).unwrap();
     let (_, w) = s.site_width("a.test").unwrap().unwrap();
     assert_eq!(w.proportion.0, 0.8);
-    assert_eq!(s.site_widths.scan_keys().unwrap().len(), 1, "overwrite, not append");
+    assert_eq!(s.site_widths_all().unwrap().len(), 1, "overwrite, not append");
 }
 
 // ================= tag toggle & paths =================

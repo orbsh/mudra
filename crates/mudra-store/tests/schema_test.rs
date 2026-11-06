@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mudra_store::*;
-use okm_core::{Document, KeyEncode, KvJunction, Quant, Ref};
+use okm_core::{Document, KeyEncode, Quant};
 
 fn open_tmp() -> (tempfile::TempDir, MudraStore) {
     let dir = tempfile::TempDir::new().expect("tempdir");
@@ -154,21 +154,31 @@ fn pages_by_fragment_recalls_and_ranks_the_addressing_text() {
 }
 
 #[test]
-fn page_tag_junction_both_directions() {
-    // Contract: Page↔Tag entries live one in Page ns 2 and one in Tag
-    // ns 1 (junction declares no ns); link/unlink both directions;
-    // cross-tree multi-select = multiple rows.
+fn page_tag_relation_both_directions() {
+    // Contract: one relation row per link in ns 3, keyed by the pair
+    // (page, tag). Forward = prefix read on the key; reverse = the `by_tag`
+    // lead face over the same bytes. Link/unlink in both directions;
+    // cross-tree multi-select = multiple rows; a repeat link is one row.
     let (_d, mut s) = open_tmp();
     let page = PageKey { id: 42 };
     let t1 = TagKey { id: 7 };
     let t2 = TagKey { id: 8 };
     s.link_page_tag(&page, &t1).unwrap();
+    s.link_page_tag(&page, &t1).unwrap(); // idempotent: the pair is the key
     s.link_page_tag(&page, &t2).unwrap();
     assert_eq!(s.tags_of_page(&page).unwrap(), vec![t1.clone(), t2.clone()]);
     assert_eq!(s.pages_of_tag(&t1).unwrap(), vec![page.clone()]);
 
+    // the reverse face answers across pages too: tag 7 on a second page
+    let other = PageKey { id: 43 };
+    s.link_page_tag(&other, &t1).unwrap();
+    assert_eq!(s.pages_of_tag(&t1).unwrap(), vec![page.clone(), other.clone()]);
+
     s.unlink_page_tag(&page, &t1).unwrap();
     assert_eq!(s.tags_of_page(&page).unwrap(), vec![t2.clone()]);
+    assert_eq!(s.pages_of_tag(&t1).unwrap(), vec![other.clone()]);
+
+    s.unlink_page_tag(&other, &t1).unwrap();
     assert!(s.pages_of_tag(&t1).unwrap().is_empty());
 }
 
@@ -232,7 +242,12 @@ fn state_slots_roundtrip_text_and_never_collide() {
     assert_eq!(s.state_text(state::CURRENT_CONTEXT).unwrap(), "work"); // slot isolation
 
     // State row count = written slots only; there is no index on ns 6
-    assert_eq!(s.state.scan_keys().unwrap().len(), 2);
+    let state_keys: Vec<StateKey> = s
+        .state
+        .scan_keys(&okm_core::PrefixProbe::<StateKey>::empty())
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(state_keys.len(), 2);
 }
 
 // ================= hex-stability guard (layout drift defense) =================
@@ -260,16 +275,15 @@ fn physical_key_layout_is_locked() {
     assert_eq!(<State as Document>::NS_PREFIX, vec![0, 6]);
     assert_eq!(<History as Document>::NS_PREFIX, vec![0, 7]);
     assert_eq!(<Event as Document>::NS_PREFIX, vec![0, 8]);
-    assert_eq!(<Hook as Document>::NS_PREFIX, vec![0, 9]); // ns 3 stays the retired hole
+    assert_eq!(<Hook as Document>::NS_PREFIX, vec![0, 9]);
 
-    // junction entries: one per endpoint ns, dir bit in slot low byte
-    let e = PageTag { page: Ref::ref_key(PageKey { id: 1 }), tag: Ref::ref_key(TagKey { id: 2 }) };
-    let a = e.a_side_key();
-    let b = e.b_side_key();
-    assert_eq!(&a[..2], &[0, 2]); // Page side lives in Page's ns 2
-    assert_eq!(&b[..2], &[0, 1]); // Tag side lives in Tag's ns 1
-    assert_eq!(a.len(), 4 + 8 + 4); // head + full PageKey + full TagKey
-    assert_eq!(b.len(), 4 + 4 + 8);
+    // page_tag is a relation table of its own: the pair is the key, page first
+    assert_eq!(<PageTag as Document>::NS_PREFIX, vec![0, 3]);
+    assert_eq!(<PageTagKey as okm_core::KeyEncode>::KEY_LEN, 12);
+    assert_eq!(
+        &PageTagKey { page: 1, tag: 2 }.encode(),
+        &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2]
+    );
 }
 
 #[test]
@@ -283,7 +297,7 @@ fn store_persist_and_reopen_recovers_every_collection() {
     s.tags.put(&tk, &Tag { name: "r".into(), parent_id: -1, ..Default::default() }).unwrap();
     s.pages.put(&pk, &Page { instance_id: ik.id, target_id: "T".into(), ..Default::default() }).unwrap();
     s.instances.put(&ik, &Instance { profile: "r".into(), ..Default::default() }).unwrap();
-    s.page_tags.link(&pk, &tk).unwrap();
+    s.link_page_tag(&pk, &tk).unwrap();
     s.persist().expect("persist");
     drop(s); // fjall single-handle lock: the reopen is the new process
 

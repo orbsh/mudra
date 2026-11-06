@@ -669,7 +669,7 @@ pub async fn scheduler(d: Arc<Daemon>) {
         let candidates: Vec<(u32, u16, String)> = {
             let store = d.store.lock().await;
             let mut out = Vec::new();
-            match store.instances.scan_keys() {
+            match mudra_store::all_keys(&store.instances) {
                 Ok(keys) => {
                     for k in keys {
                         match store.instances.get(&k) {
