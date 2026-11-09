@@ -75,6 +75,13 @@ Rust 重写的 mudrad 用单一 fjall store 取代 sqlite 文件，经 okm 静�
 `put` 幂等（对就是键），`purge` 只删那一行；每条连接没有第二条 entry，也没有
 需要对齐的方向。ns 3 就是连接表的 ns——不再是空位。
 
+**旧载体的结构性缺陷。** junction 的槽位取自 `0x3000 | (id << 1 | dir)`——
+`#[ok_junction(1)]` 即 0x3002 / 0x3003——而 `#[ok_index]` 在同一 0x3 家族里从 0x3001
+顺序编号。Page 声明了三个索引，它的第二个面正是 junction 的 page 侧那个号：索引扫描
+会把 junction 的条目一并扫出来，而它们的 body（12 B 的 `[page][tag]`）会被当成索引
+字段解码。库里还留着这个形状——`ns 2 slot 0x3002` 是 6 条 16 B 的索引 body，没有
+12 B 的条目。上面那条反向读是前导面（0x5nnn），自成一个家族：撞车不可能重演。
+
 ### Instance（ns 4）
 
 - key：`id: u32`（自增，走 `instance_id` 计数器）。

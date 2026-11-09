@@ -88,6 +88,16 @@ Two reads, one stored fact:
 one row; there is no second entry per link and no direction to keep in step.
 ns 3 is the link table's ns — it is no longer a retired hole.
 
+**The carrier's structural flaw.** A junction took its slot from
+`0x3000 | (id << 1 | dir)` — `#[ok_junction(1)]` is 0x3002 / 0x3003 — while
+`#[ok_index]` counts up in the same 0x3 family from 0x3001. Page declares
+three indexes, so its second face carries exactly the number of the junction's
+page-side entry: an index scan over that face walks the junction's entries too,
+and their bodies (12 B of `[page][tag]`) decode as if they were the indexed
+fields. This store still holds that shape — `ns 2 slot 0x3002` is six 16-byte
+index bodies and no 12-byte ones. The reverse read above is a lead face
+(0x5nnn), a family of its own: the collision cannot recur.
+
 ### Instance (ns 4)
 
 - key: `id: u32` (auto-increment via the `instance_id` counter).
