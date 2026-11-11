@@ -9,11 +9,12 @@ description = "mudra console panel: leptos CSR wasm over the bare NestStorage WS
 # of mudra-store pulls it; the panel speaks bytes, mudrad owns semantics).
 mudra-store = { path = "../mudra-store", default-features = false }
 tag-forest = { path = "../tag-forest", features = ["leptos"] }
-# `localstorage` = ADR-0028's consumer half: panel-local UI state rides the
-# SYNC LocalStorageStore (business data stays on the wire/verb path).
-# The WS KV query plane that once needed okm-wire retired with slice 2b —
-# the epoch bus parses JSON text only.
-okm-core = { workspace = true, features = ["localstorage"] }
+# No engine feature: panel-local UI state holds `web_sys::Storage` directly, since
+# `LocalStorageStore` was withdrawn (okm ADR-0028 §Withdrawal) — an engine for two
+# keys of cache, and `okm-core` now carries no browser API. Business data stays on
+# the wire/verb path; the WS KV query plane that once needed okm-wire retired with
+# slice 2b — the epoch bus parses JSON text only.
+okm-core = { workspace = true }
 leptos.workspace = true
 gloo-net.workspace = true
 serde.workspace = true
@@ -22,6 +23,13 @@ wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
 web-sys.workspace = true
 serde_json.workspace = true
+
+# getrandom 0.3 refuses `wasm32-unknown-unknown` until a backend is chosen, and the
+# choice is the APPLICATION's (a library must not pick one). `wasm_js` reads the browser's
+# crypto; the `getrandom_backend="wasm_js"` cfg it also needs lives in the workspace
+# `.cargo/config.toml`, target-gated, so native builds never see either.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 # contract tests (native) need the engine assembly side: dev-dependencies
