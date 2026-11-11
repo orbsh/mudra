@@ -19,7 +19,10 @@ launcher 只保留 `p`（Page 热路径单动作）。面板成为 tag-forest �
 ## 二、面板现状（2026-09 Rust 重写后；solidjs/hyperscript 形态见 git 历史）
 
 - **技术栈**：leptos 0.8（csr）+ trunk 构建，源码在 `crates/mudra-panel/`，产物
-  `crates/mudra-panel/dist/`（`filehash=false`，确定性文件名）。mudrad 内置 HTTP(静态)
+  `crates/mudra-panel/dist/`（`filehash=false`，确定性文件名）。构建入口是 trunk，不是裸
+  cargo：`getrandom` 0.3 的 `wasm_js` 后端还需要 `getrandom_backend="wasm_js"` 这个 cfg，
+  它写在 `crates/mudra-panel/Trunk.toml` 的 `[build] rustflags`（`.cargo` 在本仓被忽略），
+  所以 `cargo check --target wasm32-unknown-unknown` 会拒绝——用 `trunk build`。mudrad 内置 HTTP(静态)
   + WebSocket 服务直接 serve dist。tag-forest UI（胶囊/chip/评分轴）在 `crates/tag-forest/`
   crate（`leptos` feature 提供面板绑定，SSR 面供扩展胶囊）——单一来源两个渲染入口。
 - **入口**：`mudra ui` 经 8899 `/panel` 动词 focus 已有 panel 窗口或 spawn 一个 chromium

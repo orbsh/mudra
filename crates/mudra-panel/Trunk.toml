@@ -2,6 +2,10 @@
 # dev: `trunk serve` from this directory; the built tree lands in dist/
 # (slice 2 switches mudrad's static root to it, replacing frontend/ui).
 [build]
+# getrandom 0.3 refuses `wasm32-unknown-unknown` until a backend is chosen, and the
+# choice is the application's: `wasm_js` reads the browser's crypto. Both halves are
+# required — the `wasm_js` feature (crates/mudra-panel/Cargo.toml) and this cfg.
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 # wasm-bindgen-cli comes from PATH (NixOS wasm-bindgen-cli = pinned crate
 # version); no runtime download is ever attempted.
 target = "index.html"
