@@ -879,7 +879,7 @@ impl MudraStore {
             .tags
             .scan::<ByTagParent>(&parent_id.to_be_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
+            .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
             .collect();
         rows.sort_by_key(|(_, t)| t.rank);
         Ok(rows)
@@ -891,7 +891,7 @@ impl MudraStore {
             .tags
             .scan::<ByTagName>(name.as_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
+            .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
             .collect())
     }
 
@@ -906,7 +906,7 @@ impl MudraStore {
             .pages
             .scan::<ByInstance>(&instance_id.to_be_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| {
+            .filter_map(|(_, pk, row)| {
                 row.filter(|p| include_deleted || p.deleted_at == 0)
                     .map(|p| (pk.decoded, p))
             })
@@ -919,7 +919,7 @@ impl MudraStore {
             .pages
             .scan::<ByPageParent>(&parent_id.to_be_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
+            .filter_map(|(_, pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
             .collect())
     }
 
@@ -932,7 +932,7 @@ impl MudraStore {
             .pages
             .scan::<ByTarget>(target_id.as_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| {
+            .filter_map(|(_, pk, row)| {
                 row.filter(|p| p.closed_at == 0 && p.deleted_at == 0)
                     .map(|p| (pk.decoded, p))
             })
@@ -995,7 +995,7 @@ impl MudraStore {
             .instances
             .scan::<ByProfile>(profile.as_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| row.map(|r| (pk.decoded, r)))
+            .filter_map(|(_, pk, row)| row.map(|r| (pk.decoded, r)))
             .collect())
     }
 
@@ -1036,7 +1036,7 @@ impl MudraStore {
             .site_widths
             .scan::<BySite>(site.as_bytes())?
             .into_iter()
-            .find_map(|(pk, row)| row.map(|r| (pk.decoded, r))))
+            .find_map(|(_, pk, row)| row.map(|r| (pk.decoded, r))))
     }
 
     /// One open-verb visit: bump the History row for `url` (create on
@@ -1051,7 +1051,7 @@ impl MudraStore {
             // The index is a prefix scan, so a short url also matches every
             // longer url that starts with it (`/` vs `/a/b`). Taking the first
             // hit merged unrelated rows; the row must be the exact one.
-            .find_map(|(pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
+            .find_map(|(_, pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
         match hit {
             Some((k, mut row)) => {
                 row.visits += 1;
@@ -1096,7 +1096,7 @@ impl MudraStore {
             .scan::<ByHistoryUrl>(url.as_bytes())?
             .into_iter()
             // Exact url only: the index entry is a prefix of longer urls too.
-            .find_map(|(pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
+            .find_map(|(_, pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
         match hit {
             Some((k, mut row)) => {
                 row.visits = row.visits.max(visits);
@@ -1249,7 +1249,7 @@ impl MudraStore {
             .hooks
             .scan::<ByHookName>(name.as_bytes())?
             .into_iter()
-            .filter_map(|(pk, row)| row.map(|h| (pk.decoded, h)))
+            .filter_map(|(_, pk, row)| row.map(|h| (pk.decoded, h)))
             .next())
     }
 
@@ -1351,14 +1351,17 @@ impl MudraStore {
     /// lead face (`by_tag`). Its segment is the key's own `tag` bytes, so the
     /// tail is the whole pair and the page id comes straight out of it.
     pub fn pages_of_tag(&self, tag: &TagKey) -> StoreResult<Vec<PageKey>> {
-        Ok(self
-            .page_tags
-            .scan::<__OkmLead_PageTag_by_tag>(&tag.id.to_be_bytes()[..])?
-            .into_iter()
-            .map(|(pk, _)| PageKey {
-                id: pk.decoded.page,
-            })
-            .collect())
+        // Entries, not documents: the answer is the key tail of every entry and
+        // nothing in the payload, so this scan skips the fetch-back each hit used
+        // to cost (the face's segment is the key's own bytes, exactly the probe).
+        Ok(okm_core::model::index::scan_index_exact::<_, __OkmLead_PageTag_by_tag>(
+            self.page_tags.store(),
+            <PageTag as okm_core::Document>::NS_PREFIX,
+            &tag.id.to_be_bytes()[..],
+        )?
+        .into_iter()
+        .map(|(_, pk)| PageKey { id: pk.decoded.page })
+        .collect())
     }
 
     /// Link a page to a tag (idempotent: the pair is the key, so a repeat
