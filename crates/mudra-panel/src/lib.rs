@@ -165,7 +165,6 @@ pub fn App() -> impl IntoView {
     // derived indexes (JS indexTagTree's byId/allLeaves/rankRoots
     // triple) rebuild in the same pass.
     let do_forest = {
-        let set_roots = set_roots;
         move |_: ()| {
             spawn_local(async move {
                 match http::forest().await {
@@ -313,7 +312,7 @@ pub fn App() -> impl IntoView {
                     .cloned()
                     .collect();
                 // newest first, always — the sort toggle is gone
-                rows.sort_by(|a, b| b.opened_at.cmp(&a.opened_at));
+                rows.sort_by_key(|p| std::cmp::Reverse(p.opened_at));
                 rows.into_iter()
                     .map(|p| {
                         let kids = build(p.id, list, vis, coll);
@@ -1040,7 +1039,7 @@ fn plain_tag(n: &TagNode) -> bool {
 
 /// Depth-first lookup by id in a forest snapshot (the drill menus carry their
 /// own snapshot, so a re-pull cannot swap the tree under an open menu).
-fn find_tag<'a>(nodes: &'a [TagNode], id: u32) -> Option<&'a TagNode> {
+fn find_tag(nodes: &[TagNode], id: u32) -> Option<&TagNode> {
     for n in nodes {
         if n.id == id {
             return Some(n);

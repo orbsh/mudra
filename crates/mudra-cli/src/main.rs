@@ -11,7 +11,7 @@
 use std::process::exit;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const CONTROL: &str = "http://127.0.0.1:8899";
 
@@ -249,10 +249,20 @@ fn main() {
         Cmd::Close { query, ctx } => close(query, ctx),
         Cmd::Conf { ctx, proxy, ext } => conf(&ctx, proxy, ext),
         Cmd::Col { action, site } => col(&action, site),
-        Cmd::Tag { action, tag_id, page_id } => tag(&action, tag_id, page_id),
-        Cmd::Hook { action, name, code, file, matches, enable, disable } => {
-            hook(&action, name, code, file, matches, enable, disable)
-        }
+        Cmd::Tag {
+            action,
+            tag_id,
+            page_id,
+        } => tag(&action, tag_id, page_id),
+        Cmd::Hook {
+            action,
+            name,
+            code,
+            file,
+            matches,
+            enable,
+            disable,
+        } => hook(&action, name, code, file, matches, enable, disable),
         Cmd::Ui => ui(),
         Cmd::Sort { kind } => {
             let kind = match kind {
@@ -288,16 +298,27 @@ fn ls(ctx: Option<String>, filter: Option<String>) -> i32 {
                 Some(f) => all
                     .iter()
                     .filter(|p| {
-                        format!("{} {}", p["url"].as_str().unwrap_or_default(), p["title"].as_str().unwrap_or_default())
-                            .contains(f.as_str())
+                        format!(
+                            "{} {}",
+                            p["url"].as_str().unwrap_or_default(),
+                            p["title"].as_str().unwrap_or_default()
+                        )
+                        .contains(f.as_str())
                     })
                     .collect(),
                 None => all.iter().collect(),
             };
-            let open_n = pages.iter().filter(|p| p["closed"].as_bool() != Some(true)).count();
+            let open_n = pages
+                .iter()
+                .filter(|p| p["closed"].as_bool() != Some(true))
+                .count();
             println!("ctx {}: {open_n} open / {} pages", repr(&c), pages.len());
             for p in pages {
-                let mark = if p["closed"].as_bool() == Some(true) { "[closed]" } else { "[open]" };
+                let mark = if p["closed"].as_bool() == Some(true) {
+                    "[closed]"
+                } else {
+                    "[open]"
+                };
                 println!(
                     "  {mark} #{} {}  {}",
                     p["position"].as_i64().unwrap_or(0),
@@ -309,7 +330,11 @@ fn ls(ctx: Option<String>, filter: Option<String>) -> i32 {
         None => {
             let r = ctl("/contexts", json!({}));
             for row in r["contexts"].as_array().cloned().unwrap_or_default() {
-                let mark = if row["current"].as_bool() == Some(true) { "*" } else { " " };
+                let mark = if row["current"].as_bool() == Some(true) {
+                    "*"
+                } else {
+                    " "
+                };
                 println!(
                     "{mark} {:<20} {} pages",
                     row["leaf"].as_str().unwrap_or_default(),
@@ -430,7 +455,10 @@ fn show_set_ctx(ctx: Option<String>) -> i32 {
         None => {
             let r = ctl("/ctx_current", json!({}));
             let cur = r["ctx"].as_str().unwrap_or_default();
-            println!("current ctx: {}", if cur.is_empty() { "(none)" } else { cur });
+            println!(
+                "current ctx: {}",
+                if cur.is_empty() { "(none)" } else { cur }
+            );
             0
         }
         Some(c) => match ctl_soft("/ctx", json!({"ctx": c})) {
@@ -451,7 +479,14 @@ fn dev(on: Option<String>) -> i32 {
     match on {
         None => {
             let r = ctl("/dev", json!({}));
-            println!("dev mode: {}", if r["dev"].as_bool() == Some(true) { "on" } else { "off" });
+            println!(
+                "dev mode: {}",
+                if r["dev"].as_bool() == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
             0
         }
         Some(v) => {
@@ -459,7 +494,11 @@ fn dev(on: Option<String>) -> i32 {
             let r = ctl("/dev", json!({"on": on}));
             println!(
                 "dev mode -> {}",
-                if r["dev"].as_bool() == Some(true) { "on" } else { "off" }
+                if r["dev"].as_bool() == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                }
             );
             0
         }
@@ -485,7 +524,10 @@ fn close(query: Option<String>, ctx: Option<String>) -> i32 {
         }
         None => {
             let r = ctl("/close_ctx", with_ctx(json!({}), ctx));
-            println!("closed ctx {}", repr(r["closed"].as_str().unwrap_or_default()));
+            println!(
+                "closed ctx {}",
+                repr(r["closed"].as_str().unwrap_or_default())
+            );
         }
     }
     0
@@ -495,11 +537,19 @@ fn conf(ctx: &str, proxy: Option<String>, ext: Option<String>) -> i32 {
     let mut body = json!({"ctx": ctx});
     // Python resolved the spellings CLI-side: none/off -> clear, default -> clear
     if let Some(p) = proxy {
-        let p = if matches!(p.to_lowercase().as_str(), "none" | "off") { String::new() } else { p };
+        let p = if matches!(p.to_lowercase().as_str(), "none" | "off") {
+            String::new()
+        } else {
+            p
+        };
         body["proxy"] = json!(p);
     }
     if let Some(e) = ext {
-        let e = if matches!(e.to_lowercase().as_str(), "default" | "") { String::new() } else { e };
+        let e = if matches!(e.to_lowercase().as_str(), "default" | "") {
+            String::new()
+        } else {
+            e
+        };
         body["extensions"] = json!(e);
     }
     let r = ctl("/conf", body);
@@ -570,14 +620,20 @@ fn tag(action: &str, tag_id: Option<String>, page_id: Option<String>) -> i32 {
                 match p.parse::<u64>() {
                     Ok(v) => body["page_id"] = json!(v),
                     Err(_) => {
-                        println!("no page to tag (focused window is not a mudra page, or page_id is invalid)");
+                        println!(
+                            "no page to tag (focused window is not a mudra page, or page_id is invalid)"
+                        );
                         return 1;
                     }
                 }
             }
             match ctl_soft("/tag_set", body) {
                 Ok(r) => {
-                    let verb = if action == "add" { "assigned" } else { "removed" };
+                    let verb = if action == "add" {
+                        "assigned"
+                    } else {
+                        "removed"
+                    };
                     println!(
                         "{verb} tag {} -> {} (page#{})",
                         r["tag"].as_str().unwrap_or_default(),
@@ -586,7 +642,10 @@ fn tag(action: &str, tag_id: Option<String>, page_id: Option<String>) -> i32 {
                     );
                 }
                 Err(e) => {
-                    if e.starts_with("tag ") || e.starts_with("page ") || e.contains("focused window") {
+                    if e.starts_with("tag ")
+                        || e.starts_with("page ")
+                        || e.contains("focused window")
+                    {
                         // Python printed these lookup failures, not mudrad errors
                         println!("{e}");
                     } else {
@@ -639,7 +698,11 @@ fn hook(
                 let name = h["name"].as_str().unwrap_or_default();
                 let scope = h["matches"].as_str().unwrap_or_default();
                 let scope = if scope.is_empty() { "*" } else { scope };
-                let flag = if h["enabled"].as_u64().unwrap_or(0) == 1 { "on" } else { "off" };
+                let flag = if h["enabled"].as_u64().unwrap_or(0) == 1 {
+                    "on"
+                } else {
+                    "off"
+                };
                 let bytes = h["code"].as_str().unwrap_or_default().len();
                 println!("{} {} {} {} ({}B)", h["id"], name, flag, scope, bytes);
             }
@@ -688,7 +751,11 @@ fn hook(
             }
             let r = ctl("/hook_set", body);
             let id = r["id"].as_u64().unwrap_or(0);
-            let verb = if r["created"].as_bool().unwrap_or(false) { "created" } else { "updated" };
+            let verb = if r["created"].as_bool().unwrap_or(false) {
+                "created"
+            } else {
+                "updated"
+            };
             println!(
                 "hook '{name}' {verb} id={id} enabled={} injected={}",
                 r["enabled"].as_u64().unwrap_or(0),
