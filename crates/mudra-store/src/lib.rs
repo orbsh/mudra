@@ -24,7 +24,7 @@
 
 use okm_core::{Bytes, DocumentEncode, KeyEncode, Quant};
 #[cfg(feature = "engine")]
-use okm_core::{Collection, FjallStore, PrefixProbe};
+use okm_core::{Collection, FjallStore, PrefixProbe, parts};
 
 #[cfg(feature = "engine")]
 use std::path::Path;
@@ -877,7 +877,8 @@ impl MudraStore {
     pub fn tag_children(&self, parent_id: i32) -> StoreResult<Vec<(TagKey, Tag)>> {
         let mut rows: Vec<(TagKey, Tag)> = self
             .tags
-            .scan::<ByTagParent>(&parent_id.to_be_bytes())?
+            .scan::<ByTagParent, (parts::Fields, parts::Key, parts::Row)>(&parent_id.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
             .collect();
@@ -889,7 +890,8 @@ impl MudraStore {
     pub fn tag_by_name(&self, name: &str) -> StoreResult<Vec<(TagKey, Tag)>> {
         Ok(self
             .tags
-            .scan::<ByTagName>(name.as_bytes())?
+            .scan::<ByTagName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
             .collect())
@@ -904,7 +906,8 @@ impl MudraStore {
     ) -> StoreResult<Vec<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByInstance>(&instance_id.to_be_bytes())?
+            .scan::<ByInstance, (parts::Fields, parts::Key, parts::Row)>(&instance_id.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| {
                 row.filter(|p| include_deleted || p.deleted_at == 0)
@@ -917,7 +920,8 @@ impl MudraStore {
     pub fn page_children(&self, parent_id: u64) -> StoreResult<Vec<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByPageParent>(&parent_id.to_be_bytes())?
+            .scan::<ByPageParent, (parts::Fields, parts::Key, parts::Row)>(&parent_id.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
             .collect())
@@ -930,7 +934,8 @@ impl MudraStore {
     pub fn page_by_target(&self, target_id: &str) -> StoreResult<Option<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByTarget>(target_id.as_bytes())?
+            .scan::<ByTarget, (parts::Fields, parts::Key, parts::Row)>(target_id.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| {
                 row.filter(|p| p.closed_at == 0 && p.deleted_at == 0)
@@ -993,7 +998,8 @@ impl MudraStore {
     pub fn instance_by_profile(&self, profile: &str) -> StoreResult<Vec<(InstanceKey, Instance)>> {
         Ok(self
             .instances
-            .scan::<ByProfile>(profile.as_bytes())?
+            .scan::<ByProfile, (parts::Fields, parts::Key, parts::Row)>(profile.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.map(|r| (pk.decoded, r)))
             .collect())
@@ -1034,7 +1040,8 @@ impl MudraStore {
     pub fn site_width(&self, site: &str) -> StoreResult<Option<(SiteWidthKey, SiteWidth)>> {
         Ok(self
             .site_widths
-            .scan::<BySite>(site.as_bytes())?
+            .scan::<BySite, (parts::Fields, parts::Key, parts::Row)>(site.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .find_map(|(_, pk, row)| row.map(|r| (pk.decoded, r))))
     }
@@ -1046,7 +1053,8 @@ impl MudraStore {
     pub fn history_bump(&mut self, url: &str, title: &str, ts: u64) -> StoreResult<()> {
         let hit = self
             .history
-            .scan::<ByHistoryUrl>(url.as_bytes())?
+            .scan::<ByHistoryUrl, (parts::Fields, parts::Key, parts::Row)>(url.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             // The index is a prefix scan, so a short url also matches every
             // longer url that starts with it (`/` vs `/a/b`). Taking the first
@@ -1093,7 +1101,8 @@ impl MudraStore {
     ) -> StoreResult<bool> {
         let hit = self
             .history
-            .scan::<ByHistoryUrl>(url.as_bytes())?
+            .scan::<ByHistoryUrl, (parts::Fields, parts::Key, parts::Row)>(url.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             // Exact url only: the index entry is a prefix of longer urls too.
             .find_map(|(_, pk, row)| row.filter(|r| r.url == url).map(|r| (pk.decoded, r)));
@@ -1247,7 +1256,8 @@ impl MudraStore {
     pub fn hook_by_name(&self, name: &str) -> StoreResult<Option<(HookKey, Hook)>> {
         Ok(self
             .hooks
-            .scan::<ByHookName>(name.as_bytes())?
+            .scan::<ByHookName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.map(|h| (pk.decoded, h)))
             .next())
@@ -1351,17 +1361,14 @@ impl MudraStore {
     /// lead face (`by_tag`). Its segment is the key's own `tag` bytes, so the
     /// tail is the whole pair and the page id comes straight out of it.
     pub fn pages_of_tag(&self, tag: &TagKey) -> StoreResult<Vec<PageKey>> {
-        // Entries, not documents: the answer is the key tail of every entry and
-        // nothing in the payload, so this scan skips the fetch-back each hit used
-        // to cost (the face's segment is the key's own bytes, exactly the probe).
-        Ok(okm_core::model::index::scan_index_exact::<_, __OkmLead_PageTag_by_tag>(
-            self.page_tags.store(),
-            <PageTag as okm_core::Document>::NS_PREFIX,
-            &tag.id.to_be_bytes()[..],
-        )?
-        .into_iter()
-        .map(|(_, pk)| PageKey { id: pk.decoded.page })
-        .collect())
+        // Keys, not documents: the answer is the key tail of every entry and
+        // nothing in the payload, so the payload tuple names `parts::Key` alone
+        // and no row is ever fetched (the face's segment is the key's own bytes,
+        // exactly the probe).
+        self.page_tags
+            .scan_exact::<__OkmLead_PageTag_by_tag, (parts::Key,)>(&tag.id.to_be_bytes()[..])
+            .map(|hit| hit.map(|(pk,)| PageKey { id: pk.decoded.page }))
+            .collect::<okm_core::error::Result<Vec<_>>>()
     }
 
     /// Link a page to a tag (idempotent: the pair is the key, so a repeat
