@@ -809,7 +809,7 @@ impl MudraStore {
     fn state_u64(&self, slot: u8) -> StoreResult<u64> {
         // `0` is the absent sentinel for every counter/setting slot, so a
         // missing row is absence — a failed read is the `?`.
-        let Some(s) = self.state.get(&StateKey { slot })? else {
+        let Some(s) = self.state.get_row(&StateKey { slot })? else {
             return Ok(0);
         };
         let mut b = [0u8; 8];
@@ -848,7 +848,7 @@ impl MudraStore {
 
     /// Read a text setting slot; empty when unset.
     pub fn state_text(&self, slot: u8) -> StoreResult<String> {
-        match self.state.get(&StateKey { slot })? {
+        match self.state.get_row(&StateKey { slot })? {
             Some(s) => Ok(String::from_utf8_lossy(&s.value.0).into_owned()),
             None => Ok(String::new()),
         }
@@ -877,7 +877,7 @@ impl MudraStore {
     pub fn tag_children(&self, parent_id: i32) -> StoreResult<Vec<(TagKey, Tag)>> {
         let mut rows: Vec<(TagKey, Tag)> = self
             .tags
-            .scan::<ByTagParent, (parts::Fields, parts::Key, parts::Row)>(&parent_id.to_be_bytes())
+            .scan::<ByTagParent>(&parent_id.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
@@ -890,7 +890,7 @@ impl MudraStore {
     pub fn tag_by_name(&self, name: &str) -> StoreResult<Vec<(TagKey, Tag)>> {
         Ok(self
             .tags
-            .scan::<ByTagName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .scan::<ByTagName>(name.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|t| t.deleted == 0).map(|t| (pk.decoded, t)))
@@ -906,7 +906,7 @@ impl MudraStore {
     ) -> StoreResult<Vec<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByInstance, (parts::Fields, parts::Key, parts::Row)>(&instance_id.to_be_bytes())
+            .scan::<ByInstance>(&instance_id.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| {
@@ -920,7 +920,7 @@ impl MudraStore {
     pub fn page_children(&self, parent_id: u64) -> StoreResult<Vec<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByPageParent, (parts::Fields, parts::Key, parts::Row)>(&parent_id.to_be_bytes())
+            .scan::<ByPageParent>(&parent_id.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.filter(|p| p.deleted_at == 0).map(|p| (pk.decoded, p)))
@@ -934,7 +934,7 @@ impl MudraStore {
     pub fn page_by_target(&self, target_id: &str) -> StoreResult<Option<(PageKey, Page)>> {
         Ok(self
             .pages
-            .scan::<ByTarget, (parts::Fields, parts::Key, parts::Row)>(target_id.as_bytes())
+            .scan::<ByTarget>(target_id.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| {
@@ -967,7 +967,7 @@ impl MudraStore {
         let mut rows: Vec<(PageKey, Page)> = Vec::new();
         for k in all_keys(&self.pages)? {
             // a row that vanished mid-walk is absence, not a shorter corpus
-            if let Some(p) = self.pages.get(&k)?
+            if let Some(p) = self.pages.get_row(&k)?
                 && p.deleted_at == 0
             {
                 rows.push((k, p));
@@ -998,7 +998,7 @@ impl MudraStore {
     pub fn instance_by_profile(&self, profile: &str) -> StoreResult<Vec<(InstanceKey, Instance)>> {
         Ok(self
             .instances
-            .scan::<ByProfile, (parts::Fields, parts::Key, parts::Row)>(profile.as_bytes())
+            .scan::<ByProfile>(profile.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.map(|r| (pk.decoded, r)))
@@ -1010,7 +1010,7 @@ impl MudraStore {
     pub fn site_widths_all(&self) -> StoreResult<Vec<SiteWidth>> {
         let mut rows: Vec<SiteWidth> = Vec::new();
         for k in all_keys(&self.site_widths)? {
-            if let Some(row) = self.site_widths.get(&k)? {
+            if let Some(row) = self.site_widths.get_row(&k)? {
                 rows.push(row);
             }
         }
@@ -1040,7 +1040,7 @@ impl MudraStore {
     pub fn site_width(&self, site: &str) -> StoreResult<Option<(SiteWidthKey, SiteWidth)>> {
         Ok(self
             .site_widths
-            .scan::<BySite, (parts::Fields, parts::Key, parts::Row)>(site.as_bytes())
+            .scan::<BySite>(site.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .find_map(|(_, pk, row)| row.map(|r| (pk.decoded, r))))
@@ -1053,7 +1053,7 @@ impl MudraStore {
     pub fn history_bump(&mut self, url: &str, title: &str, ts: u64) -> StoreResult<()> {
         let hit = self
             .history
-            .scan::<ByHistoryUrl, (parts::Fields, parts::Key, parts::Row)>(url.as_bytes())
+            .scan::<ByHistoryUrl>(url.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             // The index is a prefix scan, so a short url also matches every
@@ -1101,7 +1101,7 @@ impl MudraStore {
     ) -> StoreResult<bool> {
         let hit = self
             .history
-            .scan::<ByHistoryUrl, (parts::Fields, parts::Key, parts::Row)>(url.as_bytes())
+            .scan::<ByHistoryUrl>(url.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             // Exact url only: the index entry is a prefix of longer urls too.
@@ -1136,7 +1136,7 @@ impl MudraStore {
     pub fn history_all(&self) -> StoreResult<Vec<History>> {
         let mut rows: Vec<History> = Vec::new();
         for k in all_keys(&self.history)? {
-            if let Some(h) = self.history.get(&k)? {
+            if let Some(h) = self.history.get_row(&k)? {
                 rows.push(h);
             }
         }
@@ -1154,7 +1154,7 @@ impl MudraStore {
         }
         let mut idx = HistoryIndex::default();
         for k in all_keys(&self.history)? {
-            if let Some(h) = self.history.get(&k)? {
+            if let Some(h) = self.history.get_row(&k)? {
                 idx.upsert(k.id, &h);
             }
         }
@@ -1233,7 +1233,7 @@ impl MudraStore {
     pub fn events_since(&self, cursor: u64, limit: usize) -> StoreResult<Vec<(u64, Event)>> {
         let mut out = Vec::new();
         for k in all_keys(&self.events)?.into_iter().filter(|k| k.id > cursor).take(limit) {
-            if let Some(e) = self.events.get(&k)? {
+            if let Some(e) = self.events.get_row(&k)? {
                 out.push((k.id, e));
             }
         }
@@ -1256,7 +1256,7 @@ impl MudraStore {
     pub fn hook_by_name(&self, name: &str) -> StoreResult<Option<(HookKey, Hook)>> {
         Ok(self
             .hooks
-            .scan::<ByHookName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .scan::<ByHookName>(name.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()?
             .into_iter()
             .filter_map(|(_, pk, row)| row.map(|h| (pk.decoded, h)))
@@ -1299,7 +1299,7 @@ impl MudraStore {
     pub fn hooks_all(&self) -> StoreResult<Vec<(HookKey, Hook)>> {
         let mut rows: Vec<(HookKey, Hook)> = Vec::new();
         for k in all_keys(&self.hooks)? {
-            if let Some(h) = self.hooks.get(&k)? {
+            if let Some(h) = self.hooks.get_row(&k)? {
                 rows.push((k, h));
             }
         }
@@ -1334,7 +1334,7 @@ impl MudraStore {
     pub fn page_title_for_url(&self, url: &str) -> StoreResult<Option<String>> {
         let mut best: Option<Page> = None;
         for k in all_keys(&self.pages)? {
-            if let Some(p) = self.pages.get(&k)?
+            if let Some(p) = self.pages.get_row(&k)?
                 && p.url == url
                 && p.deleted_at == 0
                 && !p.title.is_empty()
@@ -1366,7 +1366,8 @@ impl MudraStore {
         // and no row is ever fetched (the face's segment is the key's own bytes,
         // exactly the probe).
         self.page_tags
-            .scan_exact::<__OkmLead_PageTag_by_tag, (parts::Key,)>(&tag.id.to_be_bytes()[..])
+            .scan_exact::<__OkmLead_PageTag_by_tag>(&tag.id.to_be_bytes()[..])
+            .parts::<(parts::Key,)>()
             .map(|hit| hit.map(|(pk,)| PageKey { id: pk.decoded.page }))
             .collect::<okm_core::error::Result<Vec<_>>>()
     }

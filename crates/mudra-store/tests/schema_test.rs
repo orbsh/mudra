@@ -225,7 +225,7 @@ fn epoch_bumps_are_monotonic_and_isolated() {
     let s2 = MudraStore::open(d.path()).expect("reopen");
     assert_eq!(s2.epoch().unwrap(), 2);
     // and the epoch is not readable through page payloads at all
-    let p = s2.pages.get(&k).unwrap().expect("page survives reopen");
+    let p = s2.pages.get_row(&k).unwrap().expect("page survives reopen");
     assert_eq!(p.url, "https://e.test");
 }
 
@@ -302,9 +302,9 @@ fn store_persist_and_reopen_recovers_every_collection() {
     drop(s); // fjall single-handle lock: the reopen is the new process
 
     let s2 = MudraStore::open(d.path()).expect("reopen");
-    assert_eq!(s2.tags.get(&tk).unwrap().unwrap().name, "r");
-    assert_eq!(s2.pages.get(&pk).unwrap().unwrap().instance_id, ik.id);
-    assert_eq!(s2.instances.get(&ik).unwrap().unwrap().profile, "r");
+    assert_eq!(s2.tags.get_row(&tk).unwrap().unwrap().name, "r");
+    assert_eq!(s2.pages.get_row(&pk).unwrap().unwrap().instance_id, ik.id);
+    assert_eq!(s2.instances.get_row(&ik).unwrap().unwrap().profile, "r");
     assert_eq!(s2.tags_of_page(&pk).unwrap(), vec![tk]);
     // counters are State rows too — allocation continues after reopen
     let mut s3 = s2;

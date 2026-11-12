@@ -672,7 +672,7 @@ pub async fn scheduler(d: Arc<Daemon>) {
             match mudra_store::all_keys(&store.instances) {
                 Ok(keys) => {
                     for k in keys {
-                        match store.instances.get(&k) {
+                        match store.instances.get_row(&k) {
                             Ok(Some(i))
                                 if i.running == 1 && spawn::pid_alive(i.pid) && i.port > 0 =>
                             {

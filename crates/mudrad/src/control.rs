@@ -135,7 +135,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     fn running_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
         let mut out = Vec::new();
         for k in all_keys(&self.store.instances).map_err(serr)? {
-            if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+            if let Some(i) = self.store.instances.get_row(&k).map_err(serr)?
                 && i.running == 1
                 && spawn::pid_alive(i.pid) // zombie-safe
             {
@@ -153,7 +153,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
     fn all_instances(&self) -> Result<Vec<(mudra_store::InstanceKey, mudra_store::Instance)>, String> {
         let mut out = Vec::new();
         for k in all_keys(&self.store.instances).map_err(serr)? {
-            if let Some(i) = self.store.instances.get(&k).map_err(serr)? {
+            if let Some(i) = self.store.instances.get_row(&k).map_err(serr)? {
                 out.push((k, i));
             }
         }
@@ -510,14 +510,14 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let page = self
             .store
             .pages
-            .get(&pk)
+            .get_row(&pk)
             .map_err(serr)?
             .filter(|p| p.closed_at == 0 && p.deleted_at == 0)
             .ok_or(format!("page {page_id} not found"))?;
         let inst = self
             .store
             .instances
-            .get(&mudra_store::InstanceKey { id: page.instance_id })
+            .get_row(&mudra_store::InstanceKey { id: page.instance_id })
             .map_err(serr)?
             .filter(|i| i.running == 1 && spawn::pid_alive(i.pid))
             .ok_or("instance down")?;
@@ -588,7 +588,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         // insertion order, not rank order — the rank sort is the panel's)
         let mut rows: Vec<(mudra_store::TagKey, mudra_store::Tag)> = Vec::new();
         for k in all_keys(&self.store.tags).map_err(serr)? {
-            if let Some(t) = self.store.tags.get(&k).map_err(serr)?
+            if let Some(t) = self.store.tags.get_row(&k).map_err(serr)?
                 && t.deleted == 0
             {
                 rows.push((k, t));
@@ -742,7 +742,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let pk = mudra_store::PageKey { id: page_id };
         self.store
             .pages
-            .get(&pk)
+            .get_row(&pk)
             .map_err(serr)?
             .filter(|p| p.deleted_at == 0)
             .ok_or(format!("page {page_id} not found"))?;
@@ -908,17 +908,17 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let pk = mudra_store::PageKey { id: page_id };
         // ops.close_page raised on a missing row — keep that; a row that
         // is already closed is a legitimate no-op (double ⨯ click).
-        if self.store.pages.get(&pk).map_err(serr)?.is_none() {
+        if self.store.pages.get_row(&pk).map_err(serr)?.is_none() {
             return Err(format!("page {page_id} not found"));
         }
         // port order: closed_at first (Python UPDATEs, then closes the
         // target) — a live port/target is best effort like Python's guard
         if let Some((target_id, _epoch)) = self.store.close_page(&pk, crate::watch::now_ms()).map_err(serr)? {
-            let live = match self.store.pages.get(&pk).map_err(serr)? {
+            let live = match self.store.pages.get_row(&pk).map_err(serr)? {
                 Some(p) => self
                     .store
                     .instances
-                    .get(&mudra_store::InstanceKey { id: p.instance_id })
+                    .get_row(&mudra_store::InstanceKey { id: p.instance_id })
                     .map_err(serr)?
                     .filter(|i| i.running == 1 && spawn::pid_alive(i.pid)),
                 None => None,
@@ -940,7 +940,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let page = self
             .store
             .pages
-            .get(&pk)
+            .get_row(&pk)
             .map_err(serr)?
             .ok_or(format!("page {page_id} not found"))?;
         if page.deleted_at != 0 {
@@ -949,7 +949,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let ctx = self
             .store
             .instances
-            .get(&mudra_store::InstanceKey { id: page.instance_id })
+            .get_row(&mudra_store::InstanceKey { id: page.instance_id })
             .map_err(serr)?
             .map(|i| i.profile)
             .filter(|c| !c.is_empty())
@@ -979,7 +979,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let live = self
             .store
             .pages
-            .get(&pk)
+            .get_row(&pk)
             .map_err(serr)?
             .filter(|p| p.closed_at == 0 && p.deleted_at == 0 && !p.target_id.is_empty());
         let target = match live {
@@ -987,7 +987,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
             Some(p) => self
                 .store
                 .instances
-                .get(&mudra_store::InstanceKey { id: p.instance_id })
+                .get_row(&mudra_store::InstanceKey { id: p.instance_id })
                 .map_err(serr)?
                 .filter(|i| i.port > 0 && i.running == 1)
                 .map(|i| (i.port as u16, p.target_id.clone())),
@@ -1287,7 +1287,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let pid = win["pid"].as_u64().ok_or("window has no pid")? as u32;
         let mut inst = None;
         for k in all_keys(&self.store.instances).map_err(serr)? {
-            if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+            if let Some(i) = self.store.instances.get_row(&k).map_err(serr)?
                 && i.running == 1
                 && i.pid == pid
                 && inst.as_ref().is_none_or(|(ik, _): &(mudra_store::InstanceKey, mudra_store::Instance)| k.id > ik.id)
@@ -1359,7 +1359,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let extensions = body.get("extensions").and_then(Value::as_str);
         let k = self.store.config_row(ctx).map_err(serr)?;
         self.store.instance_set_config(&k, proxy, extensions).map_err(serr)?;
-        let row = self.store.instances.get(&k).map_err(serr)?.ok_or("row vanished")?;
+        let row = self.store.instances.get_row(&k).map_err(serr)?.ok_or("row vanished")?;
         Ok(json!({
             "ctx": ctx,
             "proxy": or_none(&row.proxy).map(Value::from).unwrap_or(Value::Null),
@@ -1408,7 +1408,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
         let tag = self
             .store
             .tags
-            .get(&tk)
+            .get_row(&tk)
             .map_err(serr)?
             .filter(|t| t.deleted == 0)
             .ok_or(format!("tag {tag_id} not found"))?;
@@ -1418,7 +1418,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let p = self
                     .store
                     .pages
-                    .get(&pk)
+                    .get_row(&pk)
                     .map_err(serr)?
                     .filter(|p| p.deleted_at == 0)
                     .ok_or(format!("page {id} not found"))?;
@@ -1431,7 +1431,7 @@ impl<'a, R: Runtime> Controller<'a, R> {
                 let title = win["title"].as_str().unwrap_or_default().to_string();
                 let mut inst = None;
                 for k in all_keys(&self.store.instances).map_err(serr)? {
-                    if let Some(i) = self.store.instances.get(&k).map_err(serr)?
+                    if let Some(i) = self.store.instances.get_row(&k).map_err(serr)?
                         && i.running == 1
                         && i.pid == pid
                         && inst.as_ref().is_none_or(|(ik, _): &(mudra_store::InstanceKey, mudra_store::Instance)| k.id > ik.id)

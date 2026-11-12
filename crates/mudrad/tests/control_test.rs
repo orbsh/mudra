@@ -244,7 +244,7 @@ fn open_replaces_a_dead_instance_row_and_carries_config() {
     let mut h = Harness::new();
     let k = seeded(&mut h);
     // kill the liveness: pid -> nonexistent, running flag left at 1
-    let mut inst = h.store.instances.get(&k).unwrap().unwrap();
+    let mut inst = h.store.instances.get_row(&k).unwrap().unwrap();
     inst.pid = u32::MAX;
     h.store.instances.put(&k, &inst).unwrap();
     h.store.put_state_text(state::CURRENT_CONTEXT, "work").unwrap();
@@ -538,7 +538,7 @@ fn ctx_pages_lists_closed_rows_after_the_instance_stopped() {
     let mut h = Harness::new();
     let k = seeded(&mut h);
     h.store.close_target(k.id, "T1", 2000).unwrap();
-    let mut inst = h.store.instances.get(&k).unwrap().unwrap();
+    let mut inst = h.store.instances.get_row(&k).unwrap().unwrap();
     inst.running = 0;
     inst.pid = 0; // the window and its process are gone
     h.store.instances.put(&k, &inst).unwrap();
@@ -594,7 +594,7 @@ fn close_by_id_marks_row_and_closes_target() {
     let _k = seeded(&mut h);
     let pk = h.store.page_by_target("T1").unwrap().unwrap().0;
     h.verb("/close", json!({"page_id": pk.id})).unwrap();
-    let page = h.store.pages.get(&pk).unwrap().unwrap();
+    let page = h.store.pages.get_row(&pk).unwrap().unwrap();
     assert_ne!(page.closed_at, 0);
     let got = h.calls();
     assert!(
@@ -633,7 +633,7 @@ fn delete_requires_closed_first() {
     assert!(h.verb("/delete", json!({"page_id": pk.id})).is_err());
     h.store.close_target(1, "T1", 2000).unwrap();
     h.verb("/delete", json!({"page_id": pk.id})).unwrap();
-    assert_ne!(h.store.pages.get(&pk).unwrap().unwrap().deleted_at, 0);
+    assert_ne!(h.store.pages.get_row(&pk).unwrap().unwrap().deleted_at, 0);
     let calls = h.calls();
     assert!(calls.iter().any(|c| matches!(c, Call::Notify(_))));
 }

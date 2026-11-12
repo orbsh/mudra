@@ -68,7 +68,7 @@ fn same_target_resync_is_a_refresh_not_a_second_row() {
     let (k, _) = s.pages_of_instance(7, false).unwrap().remove(0);
 
     s.sync_targets(7, &[info("T1", "https://a.test/next", "new title", "")], 2000, true).unwrap();
-    let row = s.pages.get(&k).unwrap().expect("same row refreshed");
+    let row = s.pages.get_row(&k).unwrap().expect("same row refreshed");
     assert_eq!(row.url, "https://a.test/next");
     assert_eq!(row.title, "new title");
     assert_eq!(row.opened_at, 1000); // untouched by the refresh
@@ -93,7 +93,7 @@ fn reopen_with_new_target_revives_the_closed_row() {
     true).unwrap();
     assert_eq!(mode, UpsertMode::Revive);
     assert_eq!(k2, k); // same page id across the reopen
-    let row = s.pages.get(&k).unwrap().unwrap();
+    let row = s.pages.get_row(&k).unwrap().unwrap();
     assert_eq!(row.target_id, "T-new");
     assert_eq!(row.closed_at, 0);
     assert_eq!(row.opened_at, 2000);
@@ -115,7 +115,7 @@ fn reopen_cycles_never_duplicate_the_row() {
 
     // the second sync already revives k1 (latest closed, same URL)
     s.sync_targets(7, &[info("T2", "https://a.test", "A", "")], 2000, true).unwrap();
-    let k1_after = s.pages.get(&k1).unwrap().unwrap();
+    let k1_after = s.pages.get_row(&k1).unwrap().unwrap();
     assert_eq!(k1_after.target_id, "T2");
     assert_eq!(k1_after.closed_at, 0);
 
@@ -140,16 +140,16 @@ fn opener_id_backfills_once_and_never_overwrites() {
 
     let (ck, _) = s.page_by_target("T-c").unwrap().expect("child row");
     let (pk, _) = s.page_by_target("T-p").unwrap().expect("parent row");
-    assert_eq!(s.pages.get(&ck).unwrap().unwrap().parent_id, pk.id);
+    assert_eq!(s.pages.get_row(&ck).unwrap().unwrap().parent_id, pk.id);
 
     // a second sync with a DIFFERENT opener must not reparent
     s.sync_targets(7, &[info("T-c", "https://c.test/x", "C2", "other")], 2000, true).unwrap();
-    assert_eq!(s.pages.get(&ck).unwrap().unwrap().parent_id, pk.id);
+    assert_eq!(s.pages.get_row(&ck).unwrap().unwrap().parent_id, pk.id);
 
     // opener outside this batch resolves through the DB (by_target)
     s.sync_targets(7, &[info("T-g", "https://g.test", "G", "T-c")], 3000, true).unwrap();
     let (gk, _) = s.page_by_target("T-g").unwrap().unwrap();
-    assert_eq!(s.pages.get(&gk).unwrap().unwrap().parent_id, ck.id);
+    assert_eq!(s.pages.get_row(&gk).unwrap().unwrap().parent_id, ck.id);
 
     // page_children sorts the subtree
     assert_eq!(s.page_children(pk.id).unwrap().len(), 1);
@@ -189,7 +189,7 @@ fn mark_down_closes_everything_and_flags_the_instance() {
     s.sync_targets(ik.id, &[info("T2", "https://b.test", "B", "")], 2000, true).unwrap();
 
     let e = s.mark_down(ik.id, 3000).unwrap().expect("teardown bumps");
-    let inst = s.instances.get(&ik).unwrap().unwrap();
+    let inst = s.instances.get_row(&ik).unwrap().unwrap();
     assert_eq!(inst.running, 0);
     let closed = s.pages_of_instance(ik.id, false).unwrap();
     assert!(closed.iter().all(|(_, p)| p.closed_at == 3000));
@@ -213,7 +213,7 @@ fn delete_page_requires_closed_and_deletes_once() {
     s.close_target(7, "T1", 1600).unwrap();
     let before = s.epoch().unwrap();
     assert_eq!(s.delete_page(&k, 1700).unwrap(), before + 1);
-    assert_eq!(s.pages.get(&k).unwrap().unwrap().deleted_at, 1700);
+    assert_eq!(s.pages.get_row(&k).unwrap().unwrap().deleted_at, 1700);
 
     // live lists hide it, history lists keep it
     assert!(s.pages_of_instance(7, false).unwrap().is_empty());

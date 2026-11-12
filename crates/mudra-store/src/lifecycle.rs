@@ -56,7 +56,7 @@ impl MudraStore {
         title: &str,
         ts: u64,
     ) -> StoreResult<()> {
-        let ctx = match self.instances.get(&InstanceKey { id: instance_id })? {
+        let ctx = match self.instances.get_row(&InstanceKey { id: instance_id })? {
             Some(i) => i.profile,
             None => String::new(),
         };
@@ -75,11 +75,11 @@ impl MudraStore {
     /// args discipline: full tag_ids, not a delta — a consumer that
     /// missed the toggle sequence still reconstructs state from one row).
     pub(crate) fn emit_tag_set(&mut self, page: &PageKey, ts: u64) -> StoreResult<()> {
-        let Some(p) = self.pages.get(page)? else {
+        let Some(p) = self.pages.get_row(page)? else {
             return Ok(());
         };
         let ids: Vec<u32> = self.tags_of_page(page)?.into_iter().map(|k| k.id).collect();
-        let ctx = match self.instances.get(&InstanceKey { id: p.instance_id })? {
+        let ctx = match self.instances.get_row(&InstanceKey { id: p.instance_id })? {
             Some(i) => i.profile,
             None => String::new(),
         };
@@ -196,7 +196,7 @@ impl MudraStore {
     /// `None` = leave untouched, `Some("")` = clear (Python's 'none'/
     /// 'default' spellings resolve to empty strings upstream).
     pub fn instance_set_config(&mut self, k: &InstanceKey, proxy: Option<&str>, extensions: Option<&str>) -> StoreResult<()> {
-        let Some(mut row) = self.instances.get(k)? else { return Ok(()) };
+        let Some(mut row) = self.instances.get_row(k)? else { return Ok(()) };
         if let Some(v) = proxy {
             row.proxy = v.to_string();
         }
@@ -223,7 +223,7 @@ impl MudraStore {
             // evicted (or never written) falls through to the create path
             // instead of panicking: the caller gets a live instance either
             // way, and the missing row is a state repair, not a fatal error.
-            if let Some(mut row) = self.instances.get(k)? {
+            if let Some(mut row) = self.instances.get_row(k)? {
                 row.port = port;
                 row.pid = pid;
                 row.running = 1;
@@ -252,7 +252,7 @@ impl MudraStore {
     pub fn mark_down(&mut self, instance_id: u32, ts: u64) -> StoreResult<Option<u64>> {
         let mut changed = false;
         let k = InstanceKey { id: instance_id };
-        if let Some(mut inst) = self.instances.get(&k)?
+        if let Some(mut inst) = self.instances.get_row(&k)?
             && inst.running != 0
         {
             inst.running = 0;
@@ -414,7 +414,7 @@ impl MudraStore {
     /// parent never moves; manual values are not overwritten). Port of
     /// `page_set_parent_once` (WHERE parent_id IS NULL).
     pub fn set_parent_once(&mut self, child: &PageKey, parent: &PageKey) -> StoreResult<bool> {
-        match self.pages.get(child)? {
+        match self.pages.get_row(child)? {
             Some(mut p) if p.parent_id == 0 => {
                 p.parent_id = parent.id;
                 self.pages.put(child, &p)?;
@@ -429,7 +429,7 @@ impl MudraStore {
     /// re-implement it (ops.py's "cannot delete an open page" error).
     /// Success always writes, so the new epoch is returned directly.
     pub fn delete_page(&mut self, page: &PageKey, ts: u64) -> StoreResult<u64> {
-        match self.pages.get(page)? {
+        match self.pages.get_row(page)? {
             None => Err(StoreError::Engine(format!("page {} not found", page.id))),
             Some(p) if p.deleted_at != 0 => {
                 Err(StoreError::Engine("page is deleted".into()))
@@ -471,7 +471,7 @@ impl MudraStore {
         let mut keep: Vec<TagKey> = Vec::new();
         for id in tag_ids {
             let tk = TagKey { id: *id };
-            if self.tags.get(&tk)?.is_some_and(|t| t.deleted == 0) {
+            if self.tags.get_row(&tk)?.is_some_and(|t| t.deleted == 0) {
                 keep.push(tk);
             }
         }
@@ -517,7 +517,7 @@ impl MudraStore {
     /// — close_target's `closed_at == 0` guard keeps that idempotent.
     /// Returns the new epoch, or None when the row is not open (no write).
     pub fn close_page(&mut self, page: &PageKey, ts: u64) -> StoreResult<Option<(String, u64)>> {
-        let Some(p) = self.pages.get(page)? else {
+        let Some(p) = self.pages.get_row(page)? else {
             return Ok(None);
         };
         if p.closed_at != 0 {
@@ -537,7 +537,7 @@ impl MudraStore {
         let mut under_situation = false;
         for (_, t) in self.tag_by_name(name)? {
             if t.deleted == 0
-                && let Some(p) = self.tags.get(&TagKey { id: t.parent_id.max(0) as u32 })?
+                && let Some(p) = self.tags.get_row(&TagKey { id: t.parent_id.max(0) as u32 })?
                 && p.name == "situation"
                 && p.parent_id == -1
             {
@@ -557,14 +557,14 @@ impl MudraStore {
     /// Port of `page_tag_paths`' parent walk — the capsule segment source.
     pub fn tag_path(&self, tag: &TagKey) -> StoreResult<Vec<String>> {
         let mut parts = Vec::new();
-        let mut cur = self.tags.get(tag)?;
+        let mut cur = self.tags.get_row(tag)?;
         let mut seen_guard = 0usize;
         while let Some(t) = cur {
             parts.push(t.name.clone());
             if t.parent_id == -1 || seen_guard > 64 {
                 break;
             }
-            cur = self.tags.get(&TagKey { id: t.parent_id as u32 })?;
+            cur = self.tags.get_row(&TagKey { id: t.parent_id as u32 })?;
             seen_guard += 1;
         }
         parts.reverse();
